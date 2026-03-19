@@ -41,28 +41,82 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Dark theme override
+# Dark theme + sidebar metric sizing overrides
 st.markdown("""
 <style>
     .stApp { background-color: #1a1a2e; }
     section[data-testid="stSidebar"] { background-color: #16213e; }
-    .metric-card {
-        background: #20203a;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 12px 16px;
-        margin-bottom: 8px;
-    }
-    .em-box {
+
+    /* ── Shrink sidebar metrics so they don't truncate ── */
+    section[data-testid="stSidebar"] [data-testid="stMetric"] {
         background: #1a1a3e;
-        border: 1px solid #6f7cff;
-        border-radius: 8px;
-        padding: 14px 16px;
-        margin-bottom: 12px;
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 8px 10px;
     }
-    .regime-pos { color: #00c853; font-weight: bold; }
-    .regime-neg { color: #ff5252; font-weight: bold; }
-    .regime-neutral { color: #00e5ff; font-weight: bold; }
+    section[data-testid="stSidebar"] [data-testid="stMetricLabel"] {
+        font-size: 11px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stMetricValue"] {
+        font-size: 16px !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stMetricDelta"] {
+        font-size: 10px !important;
+    }
+
+    /* ── Compact custom level cards ── */
+    .level-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+    .level-card {
+        background: #1a1a3e;
+        border: 1px solid #333;
+        border-radius: 6px;
+        padding: 8px 8px 6px 8px;
+        text-align: center;
+    }
+    .level-card .lbl {
+        font-size: 10px;
+        color: #888;
+        margin-bottom: 2px;
+    }
+    .level-card .val {
+        font-size: 15px;
+        font-weight: bold;
+        color: #fff;
+        word-break: break-all;
+    }
+
+    /* ── Top EM bar ── */
+    .em-bar {
+        display: flex;
+        justify-content: space-around;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 8px 0;
+    }
+    .em-item {
+        text-align: center;
+        min-width: 100px;
+    }
+    .em-item .lbl {
+        font-size: 11px;
+        color: #888;
+    }
+    .em-item .val {
+        font-size: 20px;
+        font-weight: bold;
+        color: #fff;
+    }
+    @media (max-width: 768px) {
+        .em-bar { flex-direction: column; align-items: stretch; }
+        .em-item .val { font-size: 16px; }
+        .level-card .val { font-size: 13px; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -311,10 +365,19 @@ def render_expected_move_panel(em_analysis):
 
     # Straddle & range
     straddle = em.get("straddle", {})
-    col1, col2 = st.columns(2)
-    col1.metric("ATM Straddle", f"{em['expected_move_pts']:.1f} pts",
-                delta=f"{em['expected_move_pct']:.2f}%", delta_color="off")
-    col2.metric("Strike", f"${straddle.get('strike', '?')}")
+    st.markdown(f"""
+    <div class="level-grid" style="grid-template-columns: 1fr 1fr;">
+        <div class="level-card">
+            <div class="lbl">ATM Straddle</div>
+            <div class="val">{em['expected_move_pts']:.1f} pts</div>
+            <div class="lbl">{em['expected_move_pct']:.2f}%</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Strike</div>
+            <div class="val">${straddle.get('strike', '?')}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown(
         f"**Expected Range:** "
@@ -372,32 +435,77 @@ def render_expected_move_panel(em_analysis):
 
 
 def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info):
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Spot", f"${spot:.2f}")
-    col2.metric("Call Wall", f"${levels['call_wall']:.0f}")
-    col3.metric("Put Wall", f"${levels['put_wall']:.0f}")
+    conf_score = confidence_info.get("score", 0)
+    conf_label = confidence_info.get("label", "?")
+    conf_color = "#00c853" if conf_label == "High" else "#ffd600" if conf_label == "Moderate" else "#ff5252"
 
-    col1, col2, col3 = st.columns(3)
-    regime_delta = regime_info["distance_text"]
-    col1.metric("Zero Gamma", f"${levels['zero_gamma']:.2f}")
-    col2.metric("Regime", regime_info["regime"])
-    col3.metric("Confidence", f"{confidence_info['score']:.0f}/100",
-                delta=confidence_info["label"], delta_color="off")
+    st.markdown(f"""
+    <div class="level-grid">
+        <div class="level-card">
+            <div class="lbl">Spot</div>
+            <div class="val" style="color:#ffd600;">${spot:.2f}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Call Wall</div>
+            <div class="val" style="color:#69f0ae;">${levels['call_wall']:.0f}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Put Wall</div>
+            <div class="val" style="color:#ff8a80;">${levels['put_wall']:.0f}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Zero Gamma</div>
+            <div class="val" style="color:#00e5ff;">${levels['zero_gamma']:.2f}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Regime</div>
+            <div class="val" style="color:{regime_info['color']};font-size:12px;">{regime_info['regime']}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Confidence</div>
+            <div class="val" style="color:{conf_color};">{conf_score:.0f}</div>
+            <div class="lbl" style="color:{conf_color};">{conf_label}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def render_scenarios_table(scenarios_df):
     if scenarios_df is None or scenarios_df.empty:
         return
     st.markdown("#### Scenario Analysis")
-    display_cols = ["scenario", "spot", "call_wall", "put_wall", "zero_gamma", "gamma_regime"]
-    available = [c for c in display_cols if c in scenarios_df.columns]
-    st.dataframe(
-        scenarios_df[available].style.format({
-            "spot": "${:.2f}", "call_wall": "${:.0f}",
-            "put_wall": "${:.0f}", "zero_gamma": "${:.2f}",
-        }),
-        use_container_width=True, hide_index=True,
-    )
+
+    rows_html = ""
+    for _, row in scenarios_df.iterrows():
+        regime = row.get("gamma_regime", "")
+        r_color = "#00c853" if "Pos" in regime else "#ff5252" if "Neg" in regime else "#00e5ff"
+        rows_html += f"""
+        <tr>
+            <td style="color:#cfd3ff;font-weight:bold;">{row['scenario']}</td>
+            <td>${row['spot']:.0f}</td>
+            <td style="color:#69f0ae;">${row['call_wall']:.0f}</td>
+            <td style="color:#ff8a80;">${row['put_wall']:.0f}</td>
+            <td style="color:#00e5ff;">${row['zero_gamma']:.0f}</td>
+            <td style="color:{r_color};font-size:9px;">{regime}</td>
+        </tr>"""
+
+    st.markdown(f"""
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">
+        <thead>
+            <tr style="background:#1a1a3e;color:#888;font-size:10px;">
+                <th style="padding:4px;text-align:left;">Scenario</th>
+                <th style="padding:4px;">Spot</th>
+                <th style="padding:4px;">CW</th>
+                <th style="padding:4px;">PW</th>
+                <th style="padding:4px;">ZG</th>
+                <th style="padding:4px;">Regime</th>
+            </tr>
+        </thead>
+        <tbody style="color:#ddd;text-align:center;">
+            {rows_html}
+        </tbody>
+    </table>
+    """, unsafe_allow_html=True)
 
 
 def render_wall_credibility(wall_cred):
@@ -419,18 +527,43 @@ def render_wall_credibility(wall_cred):
 
 def render_data_quality(stats, staleness_info):
     st.markdown("#### Data Quality")
-    col1, col2 = st.columns(2)
-    col1.metric("Used Options", f"{stats.get('used_option_count', 0):,}")
-    col2.metric("Coverage", f"{stats.get('coverage_ratio', 0)*100:.1f}%")
-
-    col1, col2 = st.columns(2)
-    col1.metric("Direct IV", f"{stats.get('direct_iv_count', 0):,}")
-    col2.metric("Synthetic IV", f"{stats.get('synthetic_iv_count', 0):,}")
 
     fresh = staleness_info.get("freshness_score", 0)
     fresh_lbl = staleness_info.get("freshness_label", "?")
-    icon = "🟢" if fresh_lbl == "High" else "🟡" if fresh_lbl == "Moderate" else "🔴"
-    st.markdown(f"{icon} **Freshness:** {fresh:.0f}/100 ({fresh_lbl})")
+    fresh_color = "#00c853" if fresh_lbl == "High" else "#ffd600" if fresh_lbl == "Moderate" else "#ff5252"
+
+    coverage = stats.get("coverage_ratio", 0)
+    cov_color = "#00c853" if coverage >= 0.95 else "#ffd600" if coverage >= 0.85 else "#ff5252"
+
+    st.markdown(f"""
+    <div class="level-grid">
+        <div class="level-card">
+            <div class="lbl">Used Options</div>
+            <div class="val">{stats.get('used_option_count', 0):,}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Coverage</div>
+            <div class="val" style="color:{cov_color};">{coverage*100:.1f}%</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Freshness</div>
+            <div class="val" style="color:{fresh_color};">{fresh:.0f}</div>
+            <div class="lbl" style="color:{fresh_color};">{fresh_lbl}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Direct IV</div>
+            <div class="val">{stats.get('direct_iv_count', 0):,}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Synthetic IV</div>
+            <div class="val">{stats.get('synthetic_iv_count', 0):,}</div>
+        </div>
+        <div class="level-card">
+            <div class="lbl">Skipped</div>
+            <div class="val">{stats.get('skipped_count', 0):,}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -504,12 +637,20 @@ def main():
 
         st.divider()
 
-        auto_refresh = st.toggle("Auto-refresh (90s)", value=False)
+        refresh_option = st.radio(
+            "Auto-refresh",
+            ["Off", "Every 5 min", "Every 30 min"],
+            index=0,
+            horizontal=True,
+        )
         if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
             st.cache_data.clear()
 
+    # ── Refresh interval ──
+    refresh_seconds = {"Off": 0, "Every 5 min": 300, "Every 30 min": 1800}.get(refresh_option, 0)
+
     # ── Run ID for cache busting ──
-    run_id = f"{datetime.utcnow().isoformat()}" if not auto_refresh else "auto"
+    run_id = f"{datetime.utcnow().isoformat()}" if refresh_seconds == 0 else "auto"
 
     # ── Fetch data ──
     with st.spinner("Crunching GEX..."):
@@ -548,21 +689,52 @@ def main():
     if em_data.get("expected_move_pts"):
         cl = em.get("classification", {})
         on = em.get("overnight_move", {})
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Expected Move", f"±{em_data['expected_move_pts']:.0f} pts")
-        c2.metric("EM Range",
-                   f"${em_data['lower_level']:.0f} – ${em_data['upper_level']:.0f}")
         on_pts = on.get("overnight_move_pts")
-        if on_pts is not None:
-            c3.metric("Overnight", f"{on_pts:+.1f} pts",
-                       delta=f"{on.get('overnight_move_pct', 0):+.2f}%",
-                       delta_color="normal")
         ratio = cl.get("move_ratio")
+
+        on_color = "#00c853" if (on_pts or 0) >= 0 else "#ff5252"
+        on_arrow = "▲" if (on_pts or 0) > 0 else "▼" if (on_pts or 0) < 0 else "–"
+        ratio_pct = f"{ratio*100:.0f}%" if ratio is not None else "–"
+
         if ratio is not None:
-            c4.metric("Vol Budget Used", f"{ratio*100:.0f}%")
-        if cl.get("classification"):
-            c5.metric("Session Type", cl["classification"])
+            ratio_color = "#00c853" if ratio < 0.40 else "#ffd600" if ratio < 0.70 else "#ff5252"
+        else:
+            ratio_color = "#aaa"
+
+        cls_name = cl.get("classification", "–")
+        cls_bias = cl.get("bias", "")
+        if cls_bias in ("range-bound", "mean-revert"):
+            cls_color = "#00c853"
+        elif cls_bias in ("directional", "continued-trend"):
+            cls_color = "#ff5252"
+        else:
+            cls_color = "#ffd600"
+
+        st.markdown(f"""
+        <div class="em-bar">
+            <div class="em-item">
+                <div class="lbl">Expected Move</div>
+                <div class="val">±{em_data['expected_move_pts']:.0f} pts</div>
+            </div>
+            <div class="em-item">
+                <div class="lbl">EM Range</div>
+                <div class="val">${em_data['lower_level']:.0f} – ${em_data['upper_level']:.0f}</div>
+            </div>
+            <div class="em-item">
+                <div class="lbl">Overnight</div>
+                <div class="val" style="color:{on_color};">{on_arrow} {on_pts:+.1f} pts</div>
+                <div class="lbl" style="color:{on_color};">{on.get('overnight_move_pct', 0):+.2f}%</div>
+            </div>
+            <div class="em-item">
+                <div class="lbl">Vol Budget Used</div>
+                <div class="val" style="color:{ratio_color};">{ratio_pct}</div>
+            </div>
+            <div class="em-item">
+                <div class="lbl">Session Type</div>
+                <div class="val" style="color:{cls_color};">{cls_name}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── Charts ──
     tab_gex, tab_profile = st.tabs(["📊 Strike GEX", "📈 GEX Profile"])
@@ -588,9 +760,10 @@ def main():
         render_data_quality(data["stats"], data["staleness_info"])
 
     # ── Auto-refresh ──
-    if auto_refresh:
+    if refresh_seconds > 0:
         import time
-        time.sleep(90)
+        time.sleep(refresh_seconds)
+        st.cache_data.clear()
         st.rerun()
 
 
