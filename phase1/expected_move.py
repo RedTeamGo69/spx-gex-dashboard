@@ -257,19 +257,21 @@ def build_expected_move_analysis(
     puts_0dte: list[dict],
     spy_quote: dict | None = None,
     market_open: bool = True,
+    futures_context: dict | None = None,
 ) -> dict:
     """
     Full expected-move analysis combining all signals.
 
     Parameters:
-        spot:           Current reference spot (parity-implied or Tradier)
-        prev_close:     SPX previous close from Tradier quote
-        zero_gamma:     Zero-gamma level from GEX engine
-        gamma_regime:   "Positive Gamma" / "Negative Gamma" / "At Zero Gamma"
-        calls_0dte:     Call chain for the 0DTE expiration
-        puts_0dte:      Put chain for the 0DTE expiration
-        spy_quote:      Optional SPY full quote for pre-market proxy
-        market_open:    Whether the cash market is currently open
+        spot:             Current reference spot (parity-implied or Tradier)
+        prev_close:       SPX previous close from Tradier quote
+        zero_gamma:       Zero-gamma level from GEX engine
+        gamma_regime:     "Positive Gamma" / "Negative Gamma" / "At Zero Gamma"
+        calls_0dte:       Call chain for the 0DTE expiration
+        puts_0dte:        Put chain for the 0DTE expiration
+        spy_quote:        Optional SPY full quote for pre-market proxy
+        market_open:      Whether the cash market is currently open
+        futures_context:  Optional dict from futures_data.build_futures_context()
 
     Returns a comprehensive analysis dict.
     """
@@ -286,7 +288,6 @@ def build_expected_move_analysis(
         spy_current = spy_quote.get("last", 0) or spy_quote.get("bid", 0)
         if spy_current > 0:
             spy_move_pct = (spy_current - spy_quote["prevclose"]) / spy_quote["prevclose"] * 100
-            # Scale SPY move to SPX points
             implied_spx_move = spot * spy_move_pct / 100
             spy_overnight = {
                 "spy_price": round(spy_current, 2),
@@ -297,24 +298,25 @@ def build_expected_move_analysis(
             }
 
     # 4. Determine the best overnight move for classification
-    #    Pre-market: SPX spot == prevclose → overnight move is 0 (stale).
-    #    Use SPY proxy as the real signal if available.
-    #    After hours: SPX move is today's realized move (still useful but retrospective).
+    #    Priority: ES futures > SPY proxy > SPX (when pre-market)
+    #    During market hours: SPX is live and primary
     classification_move_pts = overnight.get("overnight_move_pts")
     classification_source = "spx"
 
     spx_move_is_stale = (
         not market_open
         and classification_move_pts is not None
-        and abs(classification_move_pts) < 0.5  # essentially zero
+        and abs(classification_move_pts) < 0.5
     )
 
-    if spx_move_is_stale and spy_overnight is not None:
-        # Pre-market: SPX hasn't moved, use SPY proxy
+    if not market_open and futures_context is not None:
+        # ES futures available — best pre-market source
+        classification_move_pts = futures_context["overnight_move_pts"]
+        classification_source = f"es_futures ({futures_context['source']})"
+    elif spx_move_is_stale and spy_overnight is not None:
         classification_move_pts = spy_overnight["implied_spx_move_pts"]
         classification_source = "spy_proxy"
     elif not market_open and classification_move_pts is not None and abs(classification_move_pts) > 0.5:
-        # After hours: SPX move is the full day's realized move
         classification_source = "spx_realized"
 
     # 5. Session classification
@@ -325,16 +327,38 @@ def build_expected_move_analysis(
     )
     classification["move_source"] = classification_source
 
-    # 6. Market context
+    # 6. Overnight range context (from ES futures)
+    overnight_range = None
+    if futures_context is not None and futures_context.get("overnight_range_pts") is not None:
+        em_pts = em_info.get("expected_move_pts")
+        max_move = futures_context["max_overnight_move"]
+        overnight_range = {
+            "es_high": futures_context["es_high"],
+            "es_low": futures_context["es_low"],
+            "range_pts": futures_context["overnight_range_pts"],
+            "high_move_from_close": futures_context["overnight_high_move"],
+            "low_move_from_close": futures_context["overnight_low_move"],
+            "max_move_pts": max_move,
+            "max_move_vs_em": round(max_move / em_pts, 3) if em_pts and em_pts > 0 else None,
+        }
+
+    # 7. Market context
     if market_open:
         market_context = "live"
         context_note = None
+    elif futures_context is not None:
+        market_context = "premarket"
+        src_label = "ES futures (Yahoo, ~10 min delayed)" if "yahoo" in futures_context.get("source", "") else "ES futures (manual)"
+        context_note = (
+            f"Pre-market — overnight move from {src_label}. "
+            "The ATM straddle reflects the nearest available chain. "
+            "Re-check after the open for live classification."
+        )
     elif spx_move_is_stale:
         market_context = "premarket"
         context_note = (
-            "Pre-market — SPX is not trading. Overnight move is estimated from SPY pre-market data. "
-            "The ATM straddle reflects the nearest available chain. "
-            "Re-check after the open for live classification."
+            "Pre-market — SPX is not trading. No ES futures data available. "
+            "Enter ES price manually in the sidebar for accurate classification."
         )
     else:
         market_context = "afterhours"
@@ -344,7 +368,7 @@ def build_expected_move_analysis(
             "Run again tomorrow morning before the open for a forward-looking signal."
         )
 
-    # 7. Expected move levels relative to key GEX levels
+    # 8. Expected move levels relative to key GEX levels
     level_context = None
     if em_info["upper_level"] is not None:
         level_context = {
@@ -361,6 +385,8 @@ def build_expected_move_analysis(
         "expected_move": em_info,
         "overnight_move": overnight,
         "spy_proxy": spy_overnight,
+        "futures_context": futures_context,
+        "overnight_range": overnight_range,
         "classification": classification,
         "level_context": level_context,
         "spot": round(spot, 2),

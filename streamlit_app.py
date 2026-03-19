@@ -28,6 +28,7 @@ from phase1.staleness import build_staleness_info
 from phase1.wall_credibility import build_wall_credibility
 from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
+from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
 
 TOOL_VERSION = "v5-web"
 
@@ -200,7 +201,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     )
     regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
 
-    # Expected move
+    # Expected move raw inputs (EM analysis happens in main() with futures data)
     spx_quote = None
     spy_quote = None
     try:
@@ -218,12 +219,12 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
     dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
 
-    em_analysis = build_expected_move_analysis(
-        spot=spot, prev_close=prev_close, zero_gamma=levels["zero_gamma"],
-        gamma_regime=regime_info["regime"],
-        calls_0dte=dte0_calls, puts_0dte=dte0_puts, spy_quote=spy_quote,
-        market_open=bool(spot_info.get("market_open")),
-    )
+    # Try Yahoo ES futures (cached with the rest)
+    yahoo_es = None
+    try:
+        yahoo_es = fetch_es_from_yahoo()
+    except Exception:
+        pass
 
     return {
         "spot": spot,
@@ -246,9 +247,15 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         "confidence_info": confidence_info,
         "wall_cred": wall_cred,
         "regime_info": regime_info,
-        "em_analysis": em_analysis,
         "calendar_snapshot": calendar_snapshot,
         "run_time": run_now.strftime("%I:%M:%S %p ET"),
+        # Raw EM inputs for main() to assemble with futures data
+        "prev_close": prev_close,
+        "spy_quote": spy_quote,
+        "dte0_calls": dte0_calls,
+        "dte0_puts": dte0_puts,
+        "market_open": bool(spot_info.get("market_open")),
+        "yahoo_es": yahoo_es,
     }
 
 
@@ -356,6 +363,8 @@ def render_expected_move_panel(em_analysis):
     on = em_analysis.get("overnight_move", {})
     cl = em_analysis.get("classification", {})
     spy = em_analysis.get("spy_proxy")
+    fc = em_analysis.get("futures_context")
+    overnite_range = em_analysis.get("overnight_range")
     lctx = em_analysis.get("level_context")
 
     if em.get("expected_move_pts") is None:
@@ -379,16 +388,38 @@ def render_expected_move_panel(em_analysis):
         f":red[${em['lower_level']:.0f}] — :green[${em['upper_level']:.0f}]"
     )
 
-    # Overnight move
-    on_pts = on.get("overnight_move_pts")
-    if on_pts is not None:
-        arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
+    # Overnight move — show the source that drove the classification
+    move_source = cl.get("move_source", "spx")
+    if "es_futures" in move_source and fc:
+        arrow = "🟢 ▲" if fc["overnight_move_pts"] >= 0 else "🔴 ▼"
         st.markdown(
-            f"**Overnight Move:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
+            f"**Overnight (ES):** {arrow} **{fc['overnight_move_pts']:+.1f} pts** ({fc['overnight_move_pct']:+.2f}%)"
         )
+        src_label = "manual" if fc["source"] == "manual" else "Yahoo ~10m delayed"
+        st.caption(f"ES: ${fc['es_last']:.2f} vs SPX prevclose ${fc['spx_prevclose']:.2f} ({src_label})")
+    else:
+        on_pts = on.get("overnight_move_pts")
+        if on_pts is not None:
+            arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
+            st.markdown(
+                f"**Overnight Move:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
+            )
 
-    # SPY proxy
-    if spy:
+    # Overnight range (from ES high/low)
+    if overnite_range and overnite_range.get("es_high"):
+        hi = overnite_range["high_move_from_close"]
+        lo = overnite_range["low_move_from_close"]
+        max_em = overnite_range.get("max_move_vs_em")
+        max_em_str = f" ({max_em*100:.0f}% of EM)" if max_em else ""
+        st.markdown(
+            f"**O/N Range:** :green[${overnite_range['es_high']:.0f}] ({hi:+.0f}) "
+            f"— :red[${overnite_range['es_low']:.0f}] ({lo:+.0f}) "
+            f"= {overnite_range['range_pts']:.0f} pts"
+        )
+        st.caption(f"Max overnight excursion: {overnite_range['max_move_pts']:.0f} pts{max_em_str}")
+
+    # SPY proxy (show if available but ES not used)
+    if spy and "es_futures" not in move_source:
         st.caption(
             f"SPY Pre-mkt: ${spy['spy_price']:.2f} ({spy['spy_move_pct']:+.2f}%) "
             f"→ ~{spy['implied_spx_move_pts']:+.1f} SPX pts"
@@ -601,6 +632,28 @@ def main():
         if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
             st.cache_data.clear()
 
+        # ── ES Futures Override ──
+        st.divider()
+        st.markdown("#### 📡 ES Futures (Pre-market)")
+        st.caption("Auto-filled from Yahoo (~10m delay). Override with your own numbers.")
+
+        # We'll fill defaults from Yahoo after data fetch, but declare the
+        # inputs now. Use session_state to persist manual edits.
+        es_manual_last = st.number_input(
+            "ES Last Price", min_value=0.0, value=0.0,
+            step=0.25, format="%.2f", key="es_last_input",
+            help="Current ES futures price. Leave 0 to use Yahoo auto-fetch.",
+        )
+        es_col1, es_col2 = st.columns(2)
+        es_manual_high = es_col1.number_input(
+            "ES O/N High", min_value=0.0, value=0.0,
+            step=0.25, format="%.2f", key="es_high_input",
+        )
+        es_manual_low = es_col2.number_input(
+            "ES O/N Low", min_value=0.0, value=0.0,
+            step=0.25, format="%.2f", key="es_low_input",
+        )
+
     # ── Refresh interval ──
     refresh_seconds = {"Off": 0, "Every 5 min": 300, "Every 30 min": 1800}.get(refresh_option, 0)
 
@@ -619,12 +672,63 @@ def main():
         st.warning("No GEX data returned. The selected expirations may have no usable contracts.")
         st.stop()
 
-    # ── Header metrics ──
+    # ── Build futures context: manual overrides > Yahoo auto ──
     spot = data["spot"]
     levels = data["levels"]
     regime = data["regime_info"]
-    em = data["em_analysis"]
+    prev_close = data["prev_close"]
+    yahoo_es = data.get("yahoo_es")
 
+    # Determine ES values: manual if user entered anything, else Yahoo
+    has_manual = es_manual_last > 0
+
+    if has_manual:
+        es_last = es_manual_last
+        es_high = es_manual_high if es_manual_high > 0 else None
+        es_low = es_manual_low if es_manual_low > 0 else None
+        es_source = "manual"
+    elif yahoo_es is not None:
+        es_last = yahoo_es["last"]
+        es_high = yahoo_es.get("high")
+        es_low = yahoo_es.get("low")
+        es_source = "yahoo_es_f"
+    else:
+        es_last = None
+        es_high = None
+        es_low = None
+        es_source = None
+
+    futures_ctx = None
+    if es_last and es_last > 0 and prev_close > 0:
+        futures_ctx = build_futures_context(es_last, es_high, es_low, prev_close, source=es_source)
+
+    # ── Build EM analysis (fresh each render, not cached) ──
+    em = build_expected_move_analysis(
+        spot=spot,
+        prev_close=prev_close,
+        zero_gamma=levels["zero_gamma"],
+        gamma_regime=regime["regime"],
+        calls_0dte=data["dte0_calls"],
+        puts_0dte=data["dte0_puts"],
+        spy_quote=data["spy_quote"],
+        market_open=data["market_open"],
+        futures_context=futures_ctx,
+    )
+
+    # Show Yahoo ES status in sidebar
+    with st.sidebar:
+        if yahoo_es and not has_manual:
+            es_note = f"Yahoo ES: ${yahoo_es['last']:.2f}"
+            if yahoo_es.get("high"):
+                es_note += f" (H: ${yahoo_es['high']:.2f} L: ${yahoo_es['low']:.2f})"
+            es_note += f" — {yahoo_es.get('note', '~10m delayed')}"
+            st.caption(es_note)
+        elif has_manual:
+            st.caption(f"Using manual ES: ${es_last:.2f}")
+        else:
+            st.caption("No ES data available — enter manually above.")
+
+    # ── Header metrics ──
     regime_color = regime["color"]
     st.markdown(
         f"<div style='text-align:center;padding:6px;'>"
@@ -653,10 +757,16 @@ def main():
         cl = em.get("classification", {})
         on = em.get("overnight_move", {})
         spy = em.get("spy_proxy")
+        fc = em.get("futures_context")
+        overnite_range = em.get("overnight_range")
         move_source = cl.get("move_source", "spx")
 
-        # Pick the right overnight numbers based on what drove the classification
-        if move_source == "spy_proxy" and spy:
+        # Pick the right overnight numbers based on what drove classification
+        if "es_futures" in move_source and fc:
+            display_pts = fc["overnight_move_pts"]
+            display_pct = fc["overnight_move_pct"]
+            on_label = "Overnight (ES)"
+        elif move_source == "spy_proxy" and spy:
             display_pts = spy["implied_spx_move_pts"]
             display_pct = spy["spy_move_pct"]
             on_label = "Overnight (SPY)"
@@ -699,6 +809,24 @@ def main():
             '</div>'
         )
         st.markdown(em_bar_html, unsafe_allow_html=True)
+
+        # Overnight range bar (when ES high/low available)
+        if overnite_range and overnite_range.get("es_high"):
+            hi_move = overnite_range["high_move_from_close"]
+            lo_move = overnite_range["low_move_from_close"]
+            rng = overnite_range["range_pts"]
+            max_vs_em = overnite_range.get("max_move_vs_em")
+            max_vs_em_str = f"{max_vs_em*100:.0f}% of EM" if max_vs_em else ""
+
+            range_html = (
+                '<div class="em-bar" style="padding:2px 0 4px 0;">'
+                f'<div class="em-item"><div class="lbl">O/N High</div><div class="val" style="font-size:16px;color:#69f0ae;">${overnite_range["es_high"]:.0f}</div><div class="lbl" style="color:#69f0ae;">{hi_move:+.1f} pts</div></div>'
+                f'<div class="em-item"><div class="lbl">O/N Low</div><div class="val" style="font-size:16px;color:#ff8a80;">${overnite_range["es_low"]:.0f}</div><div class="lbl" style="color:#ff8a80;">{lo_move:+.1f} pts</div></div>'
+                f'<div class="em-item"><div class="lbl">O/N Range</div><div class="val" style="font-size:16px;">{rng:.0f} pts</div></div>'
+                f'<div class="em-item"><div class="lbl">Max O/N Excursion</div><div class="val" style="font-size:16px;">{overnite_range["max_move_pts"]:.0f} pts</div><div class="lbl">{max_vs_em_str}</div></div>'
+                '</div>'
+            )
+            st.markdown(range_html, unsafe_allow_html=True)
 
     # ── Charts ──
     tab_gex, tab_profile = st.tabs(["📊 Strike GEX", "📈 GEX Profile"])
