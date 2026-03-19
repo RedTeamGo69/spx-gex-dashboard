@@ -366,6 +366,7 @@ def render_expected_move_panel(em_analysis):
     fc = em_analysis.get("futures_context")
     overnite_range = em_analysis.get("overnight_range")
     lctx = em_analysis.get("level_context")
+    market_ctx = em_analysis.get("market_context", "live")
 
     if em.get("expected_move_pts") is None:
         st.caption("Expected move data not available.")
@@ -388,9 +389,18 @@ def render_expected_move_panel(em_analysis):
         f":red[${em['lower_level']:.0f}] — :green[${em['upper_level']:.0f}]"
     )
 
-    # Overnight move — show the source that drove the classification
+    # Move display — label depends on market context
     move_source = cl.get("move_source", "spx")
-    if "es_futures" in move_source and fc:
+
+    if market_ctx == "live":
+        # During market hours: show "Today's Move" from live SPX
+        on_pts = on.get("overnight_move_pts")
+        if on_pts is not None:
+            arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
+            st.markdown(
+                f"**Today's Move:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
+            )
+    elif "es_futures" in move_source and fc:
         arrow = "🟢 ▲" if fc["overnight_move_pts"] >= 0 else "🔴 ▼"
         st.markdown(
             f"**Overnight (ES):** {arrow} **{fc['overnight_move_pts']:+.1f} pts** ({fc['overnight_move_pct']:+.2f}%)"
@@ -400,9 +410,10 @@ def render_expected_move_panel(em_analysis):
     else:
         on_pts = on.get("overnight_move_pts")
         if on_pts is not None:
+            label = "Session Move" if market_ctx == "afterhours" else "Overnight Move"
             arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
             st.markdown(
-                f"**Overnight Move:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
+                f"**{label}:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
             )
 
     # Overnight range (from ES high/low)
@@ -632,27 +643,11 @@ def main():
         if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
             st.cache_data.clear()
 
-        # ── ES Futures Override ──
-        st.divider()
-        st.markdown("#### 📡 ES Futures (Pre-market)")
-        st.caption("Auto-filled from Yahoo (~10m delay). Override with your own numbers.")
-
-        # We'll fill defaults from Yahoo after data fetch, but declare the
-        # inputs now. Use session_state to persist manual edits.
-        es_manual_last = st.number_input(
-            "ES Last Price", min_value=0.0, value=0.0,
-            step=0.25, format="%.2f", key="es_last_input",
-            help="Current ES futures price. Leave 0 to use Yahoo auto-fetch.",
-        )
-        es_col1, es_col2 = st.columns(2)
-        es_manual_high = es_col1.number_input(
-            "ES O/N High", min_value=0.0, value=0.0,
-            step=0.25, format="%.2f", key="es_high_input",
-        )
-        es_manual_low = es_col2.number_input(
-            "ES O/N Low", min_value=0.0, value=0.0,
-            step=0.25, format="%.2f", key="es_low_input",
-        )
+        # ── ES Futures Override (pre-market only) ──
+        # We declare these with defaults; they'll be ignored during market hours.
+        es_manual_last = 0.0
+        es_manual_high = 0.0
+        es_manual_low = 0.0
 
     # ── Refresh interval ──
     refresh_seconds = {"Off": 0, "Every 5 min": 300, "Every 30 min": 1800}.get(refresh_option, 0)
@@ -678,6 +673,28 @@ def main():
     regime = data["regime_info"]
     prev_close = data["prev_close"]
     yahoo_es = data.get("yahoo_es")
+    is_market_open = data["market_open"]
+
+    # Show ES input fields only when market is closed
+    if not is_market_open:
+        with st.sidebar:
+            st.divider()
+            st.markdown("#### 📡 ES Futures (Pre-market)")
+            st.caption("Auto-filled from Yahoo (~10m delay). Override with your own numbers.")
+            es_manual_last = st.number_input(
+                "ES Last Price", min_value=0.0, value=0.0,
+                step=0.25, format="%.2f", key="es_last_input",
+                help="Current ES futures price. Leave 0 to use Yahoo auto-fetch.",
+            )
+            es_col1, es_col2 = st.columns(2)
+            es_manual_high = es_col1.number_input(
+                "ES O/N High", min_value=0.0, value=0.0,
+                step=0.25, format="%.2f", key="es_high_input",
+            )
+            es_manual_low = es_col2.number_input(
+                "ES O/N Low", min_value=0.0, value=0.0,
+                step=0.25, format="%.2f", key="es_low_input",
+            )
 
     # Determine ES values: manual if user entered anything, else Yahoo
     has_manual = es_manual_last > 0
@@ -715,18 +732,19 @@ def main():
         futures_context=futures_ctx,
     )
 
-    # Show Yahoo ES status in sidebar
-    with st.sidebar:
-        if yahoo_es and not has_manual:
-            es_note = f"Yahoo ES: ${yahoo_es['last']:.2f}"
-            if yahoo_es.get("high"):
-                es_note += f" (H: ${yahoo_es['high']:.2f} L: ${yahoo_es['low']:.2f})"
-            es_note += f" — {yahoo_es.get('note', '~10m delayed')}"
-            st.caption(es_note)
-        elif has_manual:
-            st.caption(f"Using manual ES: ${es_last:.2f}")
-        else:
-            st.caption("No ES data available — enter manually above.")
+    # Show Yahoo ES status in sidebar (pre-market only)
+    if not is_market_open:
+        with st.sidebar:
+            if yahoo_es and not has_manual:
+                es_note = f"Yahoo ES: ${yahoo_es['last']:.2f}"
+                if yahoo_es.get("high"):
+                    es_note += f" (H: ${yahoo_es['high']:.2f} L: ${yahoo_es['low']:.2f})"
+                es_note += f" — {yahoo_es.get('note', '~10m delayed')}"
+                st.caption(es_note)
+            elif has_manual:
+                st.caption(f"Using manual ES: ${es_last:.2f}")
+            else:
+                st.caption("No ES data available — enter manually above.")
 
     # ── Header metrics ──
     regime_color = regime["color"]
@@ -747,13 +765,49 @@ def main():
     market_ctx = em.get("market_context", "live")
     context_note = em.get("context_note")
     if market_ctx == "premarket":
-        st.info(f"🌅 **Pre-market** — {context_note}")
+        st.info("🌅 **Pre-market** — GEX levels and gamma regime are current. "
+                "Expected move and session classification will be available after the 9:30 AM open.")
     elif market_ctx == "afterhours":
         st.warning(f"🌙 **After hours** — {context_note}")
 
     # ── Expected Move panel (top of page) ──
     em_data = em.get("expected_move", {})
-    if em_data.get("expected_move_pts"):
+
+    if market_ctx == "premarket":
+        # ── PRE-MARKET: Only show ES overnight move + range, suppress stale straddle/classification ──
+        fc = em.get("futures_context")
+        overnite_range = em.get("overnight_range")
+
+        if fc:
+            on_color = "#00c853" if fc["overnight_move_pts"] >= 0 else "#ff5252"
+            on_arrow = "▲" if fc["overnight_move_pts"] > 0 else "▼" if fc["overnight_move_pts"] < 0 else "–"
+
+            premarket_html = (
+                '<div class="em-bar">'
+                f'<div class="em-item"><div class="lbl">Overnight Move (ES)</div>'
+                f'<div class="val" style="color:{on_color};">{on_arrow} {fc["overnight_move_pts"]:+.1f} pts</div>'
+                f'<div class="lbl" style="color:{on_color};">{fc["overnight_move_pct"]:+.2f}%</div></div>'
+            )
+
+            if overnite_range and overnite_range.get("es_high"):
+                hi_move = overnite_range["high_move_from_close"]
+                lo_move = overnite_range["low_move_from_close"]
+                premarket_html += (
+                    f'<div class="em-item"><div class="lbl">O/N High</div>'
+                    f'<div class="val" style="font-size:16px;color:#69f0ae;">${overnite_range["es_high"]:.0f}</div>'
+                    f'<div class="lbl" style="color:#69f0ae;">{hi_move:+.1f} pts</div></div>'
+                    f'<div class="em-item"><div class="lbl">O/N Low</div>'
+                    f'<div class="val" style="font-size:16px;color:#ff8a80;">${overnite_range["es_low"]:.0f}</div>'
+                    f'<div class="lbl" style="color:#ff8a80;">{lo_move:+.1f} pts</div></div>'
+                    f'<div class="em-item"><div class="lbl">O/N Range</div>'
+                    f'<div class="val" style="font-size:16px;">{overnite_range["range_pts"]:.0f} pts</div></div>'
+                )
+
+            premarket_html += '</div>'
+            st.markdown(premarket_html, unsafe_allow_html=True)
+
+    elif em_data.get("expected_move_pts"):
+        # ── MARKET HOURS / AFTER HOURS: Full EM framework ──
         cl = em.get("classification", {})
         on = em.get("overnight_move", {})
         spy = em.get("spy_proxy")
@@ -761,8 +815,17 @@ def main():
         overnite_range = em.get("overnight_range")
         move_source = cl.get("move_source", "spx")
 
-        # Pick the right overnight numbers based on what drove classification
-        if "es_futures" in move_source and fc:
+        # Pick the right move numbers and label
+        if market_ctx == "live":
+            # During market hours: SPX is live, show "Today's Move"
+            display_pts = on.get("overnight_move_pts", 0)
+            display_pct = on.get("overnight_move_pct", 0)
+            on_label = "Today's Move"
+        elif move_source == "spx_realized":
+            display_pts = on.get("overnight_move_pts", 0)
+            display_pct = on.get("overnight_move_pct", 0)
+            on_label = "Session Move"
+        elif "es_futures" in move_source and fc:
             display_pts = fc["overnight_move_pts"]
             display_pct = fc["overnight_move_pct"]
             on_label = "Overnight (ES)"
@@ -770,10 +833,6 @@ def main():
             display_pts = spy["implied_spx_move_pts"]
             display_pct = spy["spy_move_pct"]
             on_label = "Overnight (SPY)"
-        elif move_source == "spx_realized":
-            display_pts = on.get("overnight_move_pts", 0)
-            display_pct = on.get("overnight_move_pct", 0)
-            on_label = "Session Move"
         else:
             display_pts = on.get("overnight_move_pts", 0)
             display_pct = on.get("overnight_move_pct", 0)
@@ -810,8 +869,8 @@ def main():
         )
         st.markdown(em_bar_html, unsafe_allow_html=True)
 
-        # Overnight range bar (when ES high/low available)
-        if overnite_range and overnite_range.get("es_high"):
+        # Overnight range bar (when ES high/low available, after hours only)
+        if market_ctx == "afterhours" and overnite_range and overnite_range.get("es_high"):
             hi_move = overnite_range["high_move_from_close"]
             lo_move = overnite_range["low_move_from_close"]
             rng = overnite_range["range_pts"]
@@ -842,7 +901,8 @@ def main():
     # ── Sidebar detail panels ──
     with st.sidebar:
         st.divider()
-        render_expected_move_panel(em)
+        if market_ctx != "premarket":
+            render_expected_move_panel(em)
         render_key_levels(levels, spot, regime, data["confidence_info"], data["staleness_info"])
         st.divider()
         render_wall_credibility(data["wall_cred"])
