@@ -732,6 +732,62 @@ def main():
         futures_context=futures_ctx,
     )
 
+    # ── Straddle snapshot: freeze EM at first market-hours refresh ──
+    today_str_snap = now_ny().strftime("%Y-%m-%d")
+
+    # Clear stale snapshot from a previous day
+    if st.session_state.get("em_snapshot_date") != today_str_snap:
+        st.session_state.pop("em_snapshot", None)
+        st.session_state.pop("em_snapshot_date", None)
+        st.session_state.pop("em_snapshot_time", None)
+
+    if is_market_open:
+        em_live = em.get("expected_move", {})
+        if "em_snapshot" not in st.session_state and em_live.get("expected_move_pts"):
+            # First market-hours refresh — capture the straddle
+            st.session_state["em_snapshot"] = {
+                "expected_move_pts": em_live["expected_move_pts"],
+                "expected_move_pct": em_live["expected_move_pct"],
+                "upper_level": em_live["upper_level"],
+                "lower_level": em_live["lower_level"],
+                "straddle": em_live.get("straddle"),
+            }
+            st.session_state["em_snapshot_date"] = today_str_snap
+            st.session_state["em_snapshot_time"] = now_ny().strftime("%I:%M:%S %p ET")
+
+        # Replace the live EM with the frozen snapshot for display
+        if "em_snapshot" in st.session_state:
+            snap = st.session_state["em_snapshot"]
+            em["expected_move"] = {
+                **em.get("expected_move", {}),
+                "expected_move_pts": snap["expected_move_pts"],
+                "expected_move_pct": snap["expected_move_pct"],
+                "upper_level": snap["upper_level"],
+                "lower_level": snap["lower_level"],
+                "straddle": snap["straddle"],
+            }
+            # Recompute vol budget with frozen EM vs live move
+            on_pts = em.get("overnight_move", {}).get("overnight_move_pts")
+            if on_pts is not None and snap["expected_move_pts"] > 0:
+                from phase1.expected_move import classify_session
+                em["classification"] = classify_session(
+                    expected_move_pts=snap["expected_move_pts"],
+                    overnight_move_pts=on_pts,
+                    gamma_regime=regime["regime"],
+                )
+                em["classification"]["move_source"] = "spx"
+            # Update level context with frozen EM
+            if snap["upper_level"] is not None:
+                em["level_context"] = {
+                    "em_upper": snap["upper_level"],
+                    "em_lower": snap["lower_level"],
+                    "zero_gamma": round(levels["zero_gamma"], 2),
+                    "zero_gamma_within_em": (
+                        snap["lower_level"] <= levels["zero_gamma"] <= snap["upper_level"]
+                    ),
+                    "zero_gamma_distance_to_spot": round(spot - levels["zero_gamma"], 2),
+                }
+
     # Show Yahoo ES status in sidebar (pre-market only)
     if not is_market_open:
         with st.sidebar:
@@ -868,6 +924,11 @@ def main():
             '</div>'
         )
         st.markdown(em_bar_html, unsafe_allow_html=True)
+
+        # Show when the straddle was captured
+        snap_time = st.session_state.get("em_snapshot_time")
+        if market_ctx == "live" and snap_time:
+            st.caption(f"📌 Expected move captured at {snap_time} — frozen for the session. Today's move and vol budget update live.")
 
         # Overnight range bar (when ES high/low available, after hours only)
         if market_ctx == "afterhours" and overnite_range and overnite_range.get("es_high"):
