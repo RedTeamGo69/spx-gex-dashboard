@@ -256,6 +256,7 @@ def build_expected_move_analysis(
     calls_0dte: list[dict],
     puts_0dte: list[dict],
     spy_quote: dict | None = None,
+    market_open: bool = True,
 ) -> dict:
     """
     Full expected-move analysis combining all signals.
@@ -268,6 +269,7 @@ def build_expected_move_analysis(
         calls_0dte:     Call chain for the 0DTE expiration
         puts_0dte:      Put chain for the 0DTE expiration
         spy_quote:      Optional SPY full quote for pre-market proxy
+        market_open:    Whether the cash market is currently open
 
     Returns a comprehensive analysis dict.
     """
@@ -294,14 +296,55 @@ def build_expected_move_analysis(
                 "source": "spy_premarket_proxy",
             }
 
-    # 4. Session classification
-    classification = classify_session(
-        expected_move_pts=em_info["expected_move_pts"],
-        overnight_move_pts=overnight["overnight_move_pts"],
-        gamma_regime=gamma_regime,
+    # 4. Determine the best overnight move for classification
+    #    Pre-market: SPX spot == prevclose → overnight move is 0 (stale).
+    #    Use SPY proxy as the real signal if available.
+    #    After hours: SPX move is today's realized move (still useful but retrospective).
+    classification_move_pts = overnight.get("overnight_move_pts")
+    classification_source = "spx"
+
+    spx_move_is_stale = (
+        not market_open
+        and classification_move_pts is not None
+        and abs(classification_move_pts) < 0.5  # essentially zero
     )
 
-    # 5. Expected move levels relative to key GEX levels
+    if spx_move_is_stale and spy_overnight is not None:
+        # Pre-market: SPX hasn't moved, use SPY proxy
+        classification_move_pts = spy_overnight["implied_spx_move_pts"]
+        classification_source = "spy_proxy"
+    elif not market_open and classification_move_pts is not None and abs(classification_move_pts) > 0.5:
+        # After hours: SPX move is the full day's realized move
+        classification_source = "spx_realized"
+
+    # 5. Session classification
+    classification = classify_session(
+        expected_move_pts=em_info["expected_move_pts"],
+        overnight_move_pts=classification_move_pts,
+        gamma_regime=gamma_regime,
+    )
+    classification["move_source"] = classification_source
+
+    # 6. Market context
+    if market_open:
+        market_context = "live"
+        context_note = None
+    elif spx_move_is_stale:
+        market_context = "premarket"
+        context_note = (
+            "Pre-market — SPX is not trading. Overnight move is estimated from SPY pre-market data. "
+            "The ATM straddle reflects the nearest available chain. "
+            "Re-check after the open for live classification."
+        )
+    else:
+        market_context = "afterhours"
+        context_note = (
+            "After hours — the overnight move reflects today's full realized session move, "
+            "not the overnight gap. The classification is retrospective. "
+            "Run again tomorrow morning before the open for a forward-looking signal."
+        )
+
+    # 7. Expected move levels relative to key GEX levels
     level_context = None
     if em_info["upper_level"] is not None:
         level_context = {
@@ -323,4 +366,6 @@ def build_expected_move_analysis(
         "spot": round(spot, 2),
         "prev_close": round(prev_close, 2),
         "gamma_regime": gamma_regime,
+        "market_context": market_context,
+        "context_note": context_note,
     }

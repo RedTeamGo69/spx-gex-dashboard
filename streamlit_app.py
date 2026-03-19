@@ -222,6 +222,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         spot=spot, prev_close=prev_close, zero_gamma=levels["zero_gamma"],
         gamma_regime=regime_info["regime"],
         calls_0dte=dte0_calls, puts_0dte=dte0_puts, spy_quote=spy_quote,
+        market_open=bool(spot_info.get("market_open")),
     )
 
     return {
@@ -638,16 +639,40 @@ def main():
         unsafe_allow_html=True,
     )
 
+    # ── Market context banner ──
+    market_ctx = em.get("market_context", "live")
+    context_note = em.get("context_note")
+    if market_ctx == "premarket":
+        st.info(f"🌅 **Pre-market** — {context_note}")
+    elif market_ctx == "afterhours":
+        st.warning(f"🌙 **After hours** — {context_note}")
+
     # ── Expected Move panel (top of page) ──
     em_data = em.get("expected_move", {})
     if em_data.get("expected_move_pts"):
         cl = em.get("classification", {})
         on = em.get("overnight_move", {})
-        on_pts = on.get("overnight_move_pts")
+        spy = em.get("spy_proxy")
+        move_source = cl.get("move_source", "spx")
+
+        # Pick the right overnight numbers based on what drove the classification
+        if move_source == "spy_proxy" and spy:
+            display_pts = spy["implied_spx_move_pts"]
+            display_pct = spy["spy_move_pct"]
+            on_label = "Overnight (SPY)"
+        elif move_source == "spx_realized":
+            display_pts = on.get("overnight_move_pts", 0)
+            display_pct = on.get("overnight_move_pct", 0)
+            on_label = "Session Move"
+        else:
+            display_pts = on.get("overnight_move_pts", 0)
+            display_pct = on.get("overnight_move_pct", 0)
+            on_label = "Overnight"
+
         ratio = cl.get("move_ratio")
 
-        on_color = "#00c853" if (on_pts or 0) >= 0 else "#ff5252"
-        on_arrow = "▲" if (on_pts or 0) > 0 else "▼" if (on_pts or 0) < 0 else "–"
+        on_color = "#00c853" if (display_pts or 0) >= 0 else "#ff5252"
+        on_arrow = "▲" if (display_pts or 0) > 0 else "▼" if (display_pts or 0) < 0 else "–"
         ratio_pct = f"{ratio*100:.0f}%" if ratio is not None else "–"
 
         if ratio is not None:
@@ -668,7 +693,7 @@ def main():
             '<div class="em-bar">'
             f'<div class="em-item"><div class="lbl">Expected Move</div><div class="val">&plusmn;{em_data["expected_move_pts"]:.0f} pts</div></div>'
             f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data["lower_level"]:.0f} &ndash; ${em_data["upper_level"]:.0f}</div></div>'
-            f'<div class="em-item"><div class="lbl">Overnight</div><div class="val" style="color:{on_color};">{on_arrow} {on_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{on.get("overnight_move_pct", 0):+.2f}%</div></div>'
+            f'<div class="em-item"><div class="lbl">{on_label}</div><div class="val" style="color:{on_color};">{on_arrow} {display_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{display_pct:+.2f}%</div></div>'
             f'<div class="em-item"><div class="lbl">Vol Budget Used</div><div class="val" style="color:{ratio_color};">{ratio_pct}</div></div>'
             f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div></div>'
             '</div>'

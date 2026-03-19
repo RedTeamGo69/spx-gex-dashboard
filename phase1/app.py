@@ -357,6 +357,7 @@ def run_app(
         calls_0dte=dte0_calls,
         puts_0dte=dte0_puts,
         spy_quote=spy_quote,
+        market_open=bool(spot_info.get("market_open")),
     )
 
     print(f"\n{'─' * 58}")
