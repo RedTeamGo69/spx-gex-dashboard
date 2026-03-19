@@ -365,19 +365,13 @@ def render_expected_move_panel(em_analysis):
 
     # Straddle & range
     straddle = em.get("straddle", {})
-    st.markdown(f"""
-    <div class="level-grid" style="grid-template-columns: 1fr 1fr;">
-        <div class="level-card">
-            <div class="lbl">ATM Straddle</div>
-            <div class="val">{em['expected_move_pts']:.1f} pts</div>
-            <div class="lbl">{em['expected_move_pct']:.2f}%</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Strike</div>
-            <div class="val">${straddle.get('strike', '?')}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    straddle_html = (
+        '<div class="level-grid" style="grid-template-columns: 1fr 1fr;">'
+        f'<div class="level-card"><div class="lbl">ATM Straddle</div><div class="val">{em["expected_move_pts"]:.1f} pts</div><div class="lbl">{em["expected_move_pct"]:.2f}%</div></div>'
+        f'<div class="level-card"><div class="lbl">Strike</div><div class="val">${straddle.get("strike", "?")}</div></div>'
+        '</div>'
+    )
+    st.markdown(straddle_html, unsafe_allow_html=True)
 
     st.markdown(
         f"**Expected Range:** "
@@ -439,35 +433,17 @@ def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info
     conf_label = confidence_info.get("label", "?")
     conf_color = "#00c853" if conf_label == "High" else "#ffd600" if conf_label == "Moderate" else "#ff5252"
 
-    st.markdown(f"""
-    <div class="level-grid">
-        <div class="level-card">
-            <div class="lbl">Spot</div>
-            <div class="val" style="color:#ffd600;">${spot:.2f}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Call Wall</div>
-            <div class="val" style="color:#69f0ae;">${levels['call_wall']:.0f}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Put Wall</div>
-            <div class="val" style="color:#ff8a80;">${levels['put_wall']:.0f}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Zero Gamma</div>
-            <div class="val" style="color:#00e5ff;">${levels['zero_gamma']:.2f}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Regime</div>
-            <div class="val" style="color:{regime_info['color']};font-size:12px;">{regime_info['regime']}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Confidence</div>
-            <div class="val" style="color:{conf_color};">{conf_score:.0f}</div>
-            <div class="lbl" style="color:{conf_color};">{conf_label}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    html = (
+        '<div class="level-grid">'
+        f'<div class="level-card"><div class="lbl">Spot</div><div class="val" style="color:#ffd600;">${spot:.2f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Call Wall</div><div class="val" style="color:#69f0ae;">${levels["call_wall"]:.0f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Put Wall</div><div class="val" style="color:#ff8a80;">${levels["put_wall"]:.0f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Zero Gamma</div><div class="val" style="color:#00e5ff;">${levels["zero_gamma"]:.2f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Regime</div><div class="val" style="color:{regime_info["color"]};font-size:12px;">{regime_info["regime"]}</div></div>'
+        f'<div class="level-card"><div class="lbl">Confidence</div><div class="val" style="color:{conf_color};">{conf_score:.0f}</div><div class="lbl" style="color:{conf_color};">{conf_label}</div></div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def render_scenarios_table(scenarios_df):
@@ -479,33 +455,29 @@ def render_scenarios_table(scenarios_df):
     for _, row in scenarios_df.iterrows():
         regime = row.get("gamma_regime", "")
         r_color = "#00c853" if "Pos" in regime else "#ff5252" if "Neg" in regime else "#00e5ff"
-        rows_html += f"""
-        <tr>
-            <td style="color:#cfd3ff;font-weight:bold;">{row['scenario']}</td>
-            <td>${row['spot']:.0f}</td>
-            <td style="color:#69f0ae;">${row['call_wall']:.0f}</td>
-            <td style="color:#ff8a80;">${row['put_wall']:.0f}</td>
-            <td style="color:#00e5ff;">${row['zero_gamma']:.0f}</td>
-            <td style="color:{r_color};font-size:9px;">{regime}</td>
-        </tr>"""
+        rows_html += (
+            f'<tr><td style="color:#cfd3ff;font-weight:bold;">{row["scenario"]}</td>'
+            f'<td>${row["spot"]:.0f}</td>'
+            f'<td style="color:#69f0ae;">${row["call_wall"]:.0f}</td>'
+            f'<td style="color:#ff8a80;">${row["put_wall"]:.0f}</td>'
+            f'<td style="color:#00e5ff;">${row["zero_gamma"]:.0f}</td>'
+            f'<td style="color:{r_color};font-size:9px;">{regime}</td></tr>'
+        )
 
-    st.markdown(f"""
-    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">
-        <thead>
-            <tr style="background:#1a1a3e;color:#888;font-size:10px;">
-                <th style="padding:4px;text-align:left;">Scenario</th>
-                <th style="padding:4px;">Spot</th>
-                <th style="padding:4px;">CW</th>
-                <th style="padding:4px;">PW</th>
-                <th style="padding:4px;">ZG</th>
-                <th style="padding:4px;">Regime</th>
-            </tr>
-        </thead>
-        <tbody style="color:#ddd;text-align:center;">
-            {rows_html}
-        </tbody>
-    </table>
-    """, unsafe_allow_html=True)
+    table_html = (
+        '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">'
+        '<thead><tr style="background:#1a1a3e;color:#888;font-size:10px;">'
+        '<th style="padding:4px;text-align:left;">Scenario</th>'
+        '<th style="padding:4px;">Spot</th>'
+        '<th style="padding:4px;">CW</th>'
+        '<th style="padding:4px;">PW</th>'
+        '<th style="padding:4px;">ZG</th>'
+        '<th style="padding:4px;">Regime</th>'
+        '</tr></thead>'
+        f'<tbody style="color:#ddd;text-align:center;">{rows_html}</tbody>'
+        '</table>'
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
 
 
 def render_wall_credibility(wall_cred):
@@ -535,35 +507,17 @@ def render_data_quality(stats, staleness_info):
     coverage = stats.get("coverage_ratio", 0)
     cov_color = "#00c853" if coverage >= 0.95 else "#ffd600" if coverage >= 0.85 else "#ff5252"
 
-    st.markdown(f"""
-    <div class="level-grid">
-        <div class="level-card">
-            <div class="lbl">Used Options</div>
-            <div class="val">{stats.get('used_option_count', 0):,}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Coverage</div>
-            <div class="val" style="color:{cov_color};">{coverage*100:.1f}%</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Freshness</div>
-            <div class="val" style="color:{fresh_color};">{fresh:.0f}</div>
-            <div class="lbl" style="color:{fresh_color};">{fresh_lbl}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Direct IV</div>
-            <div class="val">{stats.get('direct_iv_count', 0):,}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Synthetic IV</div>
-            <div class="val">{stats.get('synthetic_iv_count', 0):,}</div>
-        </div>
-        <div class="level-card">
-            <div class="lbl">Skipped</div>
-            <div class="val">{stats.get('skipped_count', 0):,}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    html = (
+        '<div class="level-grid">'
+        f'<div class="level-card"><div class="lbl">Used Options</div><div class="val">{stats.get("used_option_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Coverage</div><div class="val" style="color:{cov_color};">{coverage*100:.1f}%</div></div>'
+        f'<div class="level-card"><div class="lbl">Freshness</div><div class="val" style="color:{fresh_color};">{fresh:.0f}</div><div class="lbl" style="color:{fresh_color};">{fresh_lbl}</div></div>'
+        f'<div class="level-card"><div class="lbl">Direct IV</div><div class="val">{stats.get("direct_iv_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Synthetic IV</div><div class="val">{stats.get("synthetic_iv_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Skipped</div><div class="val">{stats.get("skipped_count", 0):,}</div></div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -710,31 +664,16 @@ def main():
         else:
             cls_color = "#ffd600"
 
-        st.markdown(f"""
-        <div class="em-bar">
-            <div class="em-item">
-                <div class="lbl">Expected Move</div>
-                <div class="val">±{em_data['expected_move_pts']:.0f} pts</div>
-            </div>
-            <div class="em-item">
-                <div class="lbl">EM Range</div>
-                <div class="val">${em_data['lower_level']:.0f} – ${em_data['upper_level']:.0f}</div>
-            </div>
-            <div class="em-item">
-                <div class="lbl">Overnight</div>
-                <div class="val" style="color:{on_color};">{on_arrow} {on_pts:+.1f} pts</div>
-                <div class="lbl" style="color:{on_color};">{on.get('overnight_move_pct', 0):+.2f}%</div>
-            </div>
-            <div class="em-item">
-                <div class="lbl">Vol Budget Used</div>
-                <div class="val" style="color:{ratio_color};">{ratio_pct}</div>
-            </div>
-            <div class="em-item">
-                <div class="lbl">Session Type</div>
-                <div class="val" style="color:{cls_color};">{cls_name}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        em_bar_html = (
+            '<div class="em-bar">'
+            f'<div class="em-item"><div class="lbl">Expected Move</div><div class="val">&plusmn;{em_data["expected_move_pts"]:.0f} pts</div></div>'
+            f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data["lower_level"]:.0f} &ndash; ${em_data["upper_level"]:.0f}</div></div>'
+            f'<div class="em-item"><div class="lbl">Overnight</div><div class="val" style="color:{on_color};">{on_arrow} {on_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{on.get("overnight_move_pct", 0):+.2f}%</div></div>'
+            f'<div class="em-item"><div class="lbl">Vol Budget Used</div><div class="val" style="color:{ratio_color};">{ratio_pct}</div></div>'
+            f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div></div>'
+            '</div>'
+        )
+        st.markdown(em_bar_html, unsafe_allow_html=True)
 
     # ── Charts ──
     tab_gex, tab_profile = st.tabs(["📊 Strike GEX", "📈 GEX Profile"])
