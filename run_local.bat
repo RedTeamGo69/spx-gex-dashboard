@@ -1,7 +1,7 @@
 @echo off
 REM ── Fill in your keys below ──
-set TRADIER_TOKEN=6GChMbZONQUUr6vK5A08sDJbPGls
-set FRED_API_KEY=80c20243b2fbb9590f64c7183ae38f53
+set TRADIER_TOKEN=YOUR_TRADIER_TOKEN_HERE
+set FRED_API_KEY=YOUR_FRED_API_KEY_HERE
 
 REM ── Desktop GUI version ──
 REM python main.py
