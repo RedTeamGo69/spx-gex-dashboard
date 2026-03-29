@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # ── Phase1 engine imports ──
-from phase1.config import HEATMAP_EXPS, build_config_snapshot
+from phase1.config import HEATMAP_EXPS, NY_TZ, build_config_snapshot
 from phase1.market_clock import now_ny, get_calendar_snapshot
 from phase1.data_client import TradierDataClient
 from phase1.rates import fetch_risk_free_rate
@@ -319,6 +319,65 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     )
 
 
+@st.cache_data(ttl=90, show_spinner=False)
+def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str):
+    """
+    Compute GEX for 3 timeframe buckets: 0DTE, This Week, This Month.
+    Returns dict of {label: gex_df}.
+    """
+    from phase1.market_clock import now_ny, compute_time_to_expiry_years
+    from phase1.config import T_FLOOR
+
+    client = TradierDataClient(token=tradier_token)
+    run_now = now_ny()
+    today_str = run_now.strftime("%Y-%m-%d")
+    tomorrow_str = (run_now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Build expiration buckets
+    days_to_fri = (4 - run_now.weekday()) % 7
+    fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
+    import calendar as _cal
+    last_day = run_now.replace(day=_cal.monthrange(run_now.year, run_now.month)[1]).strftime("%Y-%m-%d")
+
+    buckets = {
+        "0DTE": [e for e in avail_exps if e == today_str],
+        "This Week": [e for e in avail_exps if today_str <= e <= fri],
+        "This Month": [e for e in avail_exps if today_str <= e <= last_day],
+    }
+
+    results = {}
+    for label, exps in buckets.items():
+        if not exps:
+            continue
+        all_opts = []
+        client.prefetch_chains("SPX", exps)
+        for exp in exps:
+            T, _ = compute_time_to_expiry_years(exp, ts=run_now.astimezone(NY_TZ) if run_now.tzinfo else run_now, floor=T_FLOOR)
+            entry = client.get_chain_cached("SPX", exp)
+            if entry.get("status") != "ok":
+                continue
+            from phase1.model_inputs import prepare_option_for_model
+            lower = spot * 0.95
+            upper = spot * 1.05
+            for raw_opt, sign in [(c, +1) for c in entry["calls"]] + [(p, -1) for p in entry["puts"]]:
+                K = raw_opt["strike"]
+                if K < lower or K > upper:
+                    continue
+                oi = raw_opt["openInterest"]
+                if oi <= 0:
+                    continue
+                prep = prepare_option_for_model(raw_opt, sign, T, spot, rfr)
+                if prep["accepted"]:
+                    norm = prep["normalized"]
+                    all_opts.append((K, oi, norm["iv"], sign, T))
+
+        if all_opts:
+            gex_df = gex_engine.compute_strike_gex_from_all_options(all_opts, spot, r=rfr)
+            results[label] = gex_df
+
+    return results
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Chart builders
 # ─────────────────────────────────────────────────────────────────────────────
@@ -563,25 +622,62 @@ def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info
         st.warning("⚠️ Zero gamma is a fallback estimate — no true sign-change crossing was found in the sweep range. Use this level with caution.")
 
 
+def _fmt_delta(val, base_val):
+    """Format a value as 'value (delta)' with color coding."""
+    delta = val - base_val
+    if abs(delta) < 0.5:
+        return f"${val:.0f}"
+    color = COLORS["positive"] if delta > 0 else COLORS["negative"]
+    return f"${val:.0f} <span style='color:{color};font-size:9px;'>({delta:+.0f})</span>"
+
+
+def _fmt_gex_short(v):
+    if abs(v) >= 1_000_000:
+        return f"{v/1_000_000:.1f}M"
+    if abs(v) >= 1000:
+        return f"{v/1000:.0f}K"
+    return f"{v:.0f}"
+
+
 def render_scenarios_table(scenarios_df):
     if scenarios_df is None or scenarios_df.empty:
         return
     st.markdown("#### Scenario Analysis")
+    st.caption("How key levels shift under spot shocks. Deltas shown vs Base.")
+
+    base = scenarios_df.iloc[0]
+    base_cw = float(base["call_wall"])
+    base_pw = float(base["put_wall"])
+    base_zg = float(base["zero_gamma"])
+    base_gex = float(base.get("net_gex", 0))
 
     rows_html = ""
     for _, row in scenarios_df.iterrows():
         regime = row.get("gamma_regime", "")
+        is_base = row["scenario"] == "Base"
         r_color = COLORS["positive"] if "Pos" in regime else COLORS["negative"] if "Neg" in regime else COLORS["zero_gamma"]
         tl_c = COLORS["text_light"]
         cw_c = COLORS["call_wall"]
         pw_c = COLORS["put_wall"]
         zg_c = COLORS["zero_gamma"]
+        bg = f"background:{COLORS['bg_card']};" if is_base else ""
+
+        net_gex = row.get("net_gex", 0)
+        gex_delta = net_gex - base_gex
+        gex_color = COLORS["positive"] if net_gex > 0 else COLORS["negative"]
+
+        cw_val = f"${row['call_wall']:.0f}" if is_base else _fmt_delta(row["call_wall"], base_cw)
+        pw_val = f"${row['put_wall']:.0f}" if is_base else _fmt_delta(row["put_wall"], base_pw)
+        zg_val = f"${row['zero_gamma']:.0f}" if is_base else _fmt_delta(row["zero_gamma"], base_zg)
+
         rows_html += (
-            f'<tr><td style="color:{tl_c};font-weight:bold;">{row["scenario"]}</td>'
+            f'<tr style="{bg}">'
+            f'<td style="color:{tl_c};font-weight:bold;">{row["scenario"]}</td>'
             f'<td>${row["spot"]:.0f}</td>'
-            f'<td style="color:{cw_c};">${row["call_wall"]:.0f}</td>'
-            f'<td style="color:{pw_c};">${row["put_wall"]:.0f}</td>'
-            f'<td style="color:{zg_c};">${row["zero_gamma"]:.0f}</td>'
+            f'<td style="color:{cw_c};">{cw_val}</td>'
+            f'<td style="color:{pw_c};">{pw_val}</td>'
+            f'<td style="color:{zg_c};">{zg_val}</td>'
+            f'<td style="color:{gex_color};font-size:9px;">{_fmt_gex_short(net_gex)}</td>'
             f'<td style="color:{r_color};font-size:9px;">{regime}</td></tr>'
         )
 
@@ -595,6 +691,7 @@ def render_scenarios_table(scenarios_df):
         '<th style="padding:4px;">CW</th>'
         '<th style="padding:4px;">PW</th>'
         '<th style="padding:4px;">ZG</th>'
+        '<th style="padding:4px;">Net GEX</th>'
         '<th style="padding:4px;">Regime</th>'
         '</tr></thead>'
         f'<tbody style="color:#ddd;text-align:center;">{rows_html}</tbody>'
@@ -777,6 +874,75 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr):
+    """C3: Multi-timeframe GEX comparison — 0DTE vs Weekly vs Monthly."""
+    tradier_token, _ = get_credentials()
+    if not tradier_token:
+        st.info("API token required for multi-timeframe analysis.")
+        return
+
+    run_id = st.session_state.get("em_snapshot_date", "default")
+    with st.spinner("Computing multi-timeframe GEX..."):
+        tf_data = fetch_multi_tf_gex(tradier_token, tuple(avail_exps), spot, rfr, run_id)
+
+    if not tf_data:
+        st.info("No multi-timeframe data available.")
+        return
+
+    # Color mapping for timeframes
+    tf_colors = {
+        "0DTE": "#ff6b6b",
+        "This Week": "#ffd600",
+        "This Month": "#69f0ae",
+    }
+
+    fig = go.Figure()
+    for label, gex_df in tf_data.items():
+        if gex_df.empty:
+            continue
+        df = gex_df.sort_values("strike")
+        color = tf_colors.get(label, "#9c88ff")
+        fig.add_trace(go.Bar(
+            y=df["strike"], x=df["net_gex"], orientation="h",
+            name=label, marker_color=color, marker_opacity=0.6,
+            hovertemplate=f"{label}<br>Strike: $%{{y:.0f}}<br>GEX: %{{x:,.0f}}<extra></extra>",
+        ))
+
+    # Key level lines
+    fig.add_hline(y=spot, line_color=COLORS["spot"], line_dash="dash", line_width=1.5,
+                  annotation_text=f"Spot ${spot:.0f}", annotation_font_color=COLORS["spot"],
+                  annotation_font_size=9, annotation_position="top left")
+    fig.add_hline(y=levels["zero_gamma"], line_color=COLORS["zero_gamma"], line_dash="dot", line_width=1.5,
+                  annotation_text=f"ZG ${levels['zero_gamma']:.0f}", annotation_font_color=COLORS["zero_gamma"],
+                  annotation_font_size=9, annotation_position="top left")
+
+    fig.update_layout(
+        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+        font_color="white", font_size=10,
+        margin=dict(l=80, r=10, t=35, b=35),
+        title="Multi-Timeframe GEX Comparison",
+        xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
+        yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
+        barmode="group",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=700,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # Summary metrics
+    st.markdown("##### Timeframe Summary")
+    cols = st.columns(len(tf_data))
+    for i, (label, gex_df) in enumerate(tf_data.items()):
+        net = gex_df["net_gex"].sum()
+        pos = gex_df[gex_df["net_gex"] > 0]["net_gex"].sum()
+        neg = gex_df[gex_df["net_gex"] < 0]["net_gex"].sum()
+        with cols[i]:
+            st.markdown(f"**{label}**")
+            gex_color = COLORS["positive"] if net > 0 else COLORS["negative"]
+            st.markdown(f"Net GEX: <span style='color:{gex_color};'>{_fmt_gex_short(net)}</span>", unsafe_allow_html=True)
+            st.caption(f"+{_fmt_gex_short(pos)} / {_fmt_gex_short(neg)}")
+
+
 def _render_iv_surface(hm_iv, hm_gex, spot):
     """C4: Render IV surface heatmap (strike × expiration)."""
     if hm_iv is None or hm_iv.empty:
@@ -806,9 +972,16 @@ def _render_iv_surface(hm_iv, hm_gex, spot):
         hovertemplate="Exp: %{x}<br>Strike: %{y}<br>Value: %{z:.4f}<extra></extra>",
     ))
 
-    # Mark spot on y-axis
-    fig.add_hline(y=spot, line_color=COLORS["spot"], line_dash="dash", line_width=1.5,
-                  annotation_text=f"Spot ${spot:.0f}", annotation_font_color=COLORS["spot"])
+    # Mark spot on y-axis — use white with dark background for contrast against heatmap
+    fig.add_hline(
+        y=spot, line_color="white", line_dash="dash", line_width=2,
+        annotation_text=f"  Spot ${spot:.0f}  ",
+        annotation_font_color="white", annotation_font_size=11,
+        annotation_bgcolor="rgba(0,0,0,0.7)",
+        annotation_bordercolor="white", annotation_borderwidth=1,
+        annotation_borderpad=3,
+        annotation_position="right",
+    )
 
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
@@ -839,8 +1012,11 @@ def _render_pin_detection(stats, gex_df, spot):
         # Pin candidates have high OI and balanced call/put ratio
         pins = near_spot[near_spot["oi_balance"] > 0.3].nlargest(3, "total_oi")
         if not pins.empty:
-            pin_strikes = [f"${s:.0f}" for s in pins["strike"]]
-            st.caption(f"📌 Pin candidates: {', '.join(pin_strikes)}")
+            pin_strikes = ", ".join([f"{s:.0f}" for s in pins["strike"]])
+            st.markdown(
+                f'<div style="font-size:12px;color:#ccc;">📌 Pin candidates: <b>{pin_strikes}</b></div>',
+                unsafe_allow_html=True,
+            )
 
 
 def _check_level_crossings(spot, levels, em_analysis):
@@ -1278,8 +1454,8 @@ def main():
             st.markdown(range_html, unsafe_allow_html=True)
 
     # ── Charts ──
-    tab_gex, tab_profile, tab_history, tab_em_track, tab_iv_surface = st.tabs(
-        ["📊 Strike GEX", "📈 GEX Profile", "📅 History", "🎯 EM Tracker", "🌊 IV Surface"]
+    tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface = st.tabs(
+        ["📊 Strike GEX", "📈 GEX Profile", "⏱️ Multi-TF", "📅 History", "🎯 EM Tracker", "🌊 IV Surface"]
     )
 
     with tab_gex:
@@ -1289,6 +1465,10 @@ def main():
     with tab_profile:
         fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis)
         st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+
+    # ── C3: Multi-timeframe GEX comparison ──
+    with tab_multi:
+        _render_multi_timeframe(data.all_options, data.target_exps, data.avail, spot, levels, data.rfr)
 
     # ── C1: Historical GEX trend ──
     with tab_history:
