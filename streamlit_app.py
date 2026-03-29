@@ -9,7 +9,9 @@ from __future__ import annotations
 import os
 import json
 import calendar as cal_mod
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -29,8 +31,67 @@ from phase1.wall_credibility import build_wall_credibility
 from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
+from phase1.gex_history import save_snapshot, get_daily_summary, get_zero_gamma_trend, get_backend as get_history_backend
 
 TOOL_VERSION = "v5-web"
+
+# ── Color palette ──
+COLORS = {
+    "bg_primary": "#1a1a2e",
+    "bg_sidebar": "#16213e",
+    "bg_card": "#1a1a3e",
+    "spot": "#ffd600",
+    "zero_gamma": "#00e5ff",
+    "call_wall": "#69f0ae",
+    "put_wall": "#ff8a80",
+    "positive": "#00c853",
+    "negative": "#ff5252",
+    "bar_green": "#00c853",
+    "bar_red": "#ff1744",
+    "em_level": "#b388ff",
+    "profile_line": "#9c88ff",
+    "warning": "#ffd600",
+    "text_muted": "#888",
+    "text_secondary": "#aaa",
+    "text_light": "#cfd3ff",
+    "text_white": "#fff",
+    "grid_major": "#333",
+    "grid_minor": "#222",
+    "zeroline": "#555",
+}
+
+
+@dataclass
+class GEXData:
+    spot: float
+    spot_source: str
+    spot_info: dict
+    rfr: float
+    rfr_info: dict
+    avail: list
+    target_exps: list
+    gex_df: Any  # pd.DataFrame
+    hm_gex: Any
+    hm_iv: Any
+    stats: dict
+    all_options: list
+    levels: dict
+    profile_df: Any
+    sensitivity_df: Any
+    scenarios_df: Any
+    staleness_info: dict
+    confidence_info: dict
+    wall_cred: dict
+    regime_info: dict
+    calendar_snapshot: dict
+    run_time: str
+    prev_close: float
+    spy_quote: dict | None
+    dte0_calls: list
+    dte0_puts: list
+    market_open: bool
+    yahoo_es: dict | None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -226,37 +287,36 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     except Exception:
         pass
 
-    return {
-        "spot": spot,
-        "spot_source": spot_source,
-        "spot_info": spot_info,
-        "rfr": rfr,
-        "rfr_info": rfr_info,
-        "avail": avail,
-        "target_exps": target_exps,
-        "gex_df": gex_df,
-        "hm_gex": hm_gex,
-        "hm_iv": hm_iv,
-        "stats": stats,
-        "all_options": all_options,
-        "levels": levels,
-        "profile_df": profile_df,
-        "sensitivity_df": sensitivity_df,
-        "scenarios_df": scenarios_df,
-        "staleness_info": staleness_info,
-        "confidence_info": confidence_info,
-        "wall_cred": wall_cred,
-        "regime_info": regime_info,
-        "calendar_snapshot": calendar_snapshot,
-        "run_time": run_now.strftime("%I:%M:%S %p ET"),
-        # Raw EM inputs for main() to assemble with futures data
-        "prev_close": prev_close,
-        "spy_quote": spy_quote,
-        "dte0_calls": dte0_calls,
-        "dte0_puts": dte0_puts,
-        "market_open": bool(spot_info.get("market_open")),
-        "yahoo_es": yahoo_es,
-    }
+    return GEXData(
+        spot=spot,
+        spot_source=spot_source,
+        spot_info=spot_info,
+        rfr=rfr,
+        rfr_info=rfr_info,
+        avail=avail,
+        target_exps=target_exps,
+        gex_df=gex_df,
+        hm_gex=hm_gex,
+        hm_iv=hm_iv,
+        stats=stats,
+        all_options=all_options,
+        levels=levels,
+        profile_df=profile_df,
+        sensitivity_df=sensitivity_df,
+        scenarios_df=scenarios_df,
+        staleness_info=staleness_info,
+        confidence_info=confidence_info,
+        wall_cred=wall_cred,
+        regime_info=regime_info,
+        calendar_snapshot=calendar_snapshot,
+        run_time=run_now.strftime("%I:%M:%S %p ET"),
+        prev_close=prev_close,
+        spy_quote=spy_quote,
+        dte0_calls=dte0_calls,
+        dte0_puts=dte0_puts,
+        market_open=bool(spot_info.get("market_open")),
+        yahoo_es=yahoo_es,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,7 +326,7 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
     df = gex_df.copy().sort_values("strike").reset_index(drop=True)
     strikes = df["strike"].values
     net_gex = df["net_gex"].values
-    colors = ["#00c853" if g >= 0 else "#ff1744" for g in net_gex]
+    colors = [COLORS["bar_green"] if g >= 0 else COLORS["bar_red"] for g in net_gex]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -277,10 +337,10 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
 
     # Level lines
     for val, color, dash, name in [
-        (spot, "#ffd600", "dash", "Spot"),
-        (levels["zero_gamma"], "#00e5ff", "dot", "Zero Γ"),
-        (levels["call_wall"], "#69f0ae", "dashdot", "Call Wall"),
-        (levels["put_wall"], "#ff8a80", "dashdot", "Put Wall"),
+        (spot, COLORS["spot"], "dash", "Spot"),
+        (levels["zero_gamma"], COLORS["zero_gamma"], "dot", "Zero Γ"),
+        (levels["call_wall"], COLORS["call_wall"], "dashdot", "Call Wall"),
+        (levels["put_wall"], COLORS["put_wall"], "dashdot", "Put Wall"),
     ]:
         fig.add_hline(y=val, line_color=color, line_dash=dash, line_width=1.5,
                        annotation_text=f"{name} ${val:.0f}",
@@ -291,18 +351,18 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
     em = em_analysis.get("expected_move", {})
     if em.get("upper_level"):
         for val, label in [(em["upper_level"], "EM+"), (em["lower_level"], "EM−")]:
-            fig.add_hline(y=val, line_color="#b388ff", line_dash="dot", line_width=1.2,
+            fig.add_hline(y=val, line_color=COLORS["em_level"], line_dash="dot", line_width=1.2,
                            annotation_text=f"{label} ${val:.0f}",
-                           annotation_font_color="#b388ff", annotation_font_size=8,
+                           annotation_font_color=COLORS["em_level"], annotation_font_size=8,
                            annotation_position="bottom right")
 
     fig.update_layout(
-        paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
+        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", font_size=10,
         margin=dict(l=80, r=10, t=35, b=35),
         title="Strike-by-Strike Net GEX Proxy",
-        xaxis=dict(title="Net GEX proxy", gridcolor="#333", zerolinecolor="#555"),
-        yaxis=dict(title="Strike", gridcolor="#222", tickfont_size=8),
+        xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
+        yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
         showlegend=False, height=700,
     )
     return fig
@@ -315,23 +375,23 @@ def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=profile_df["price"], y=profile_df["total_gex"],
-        mode="lines", line=dict(color="#9c88ff", width=2),
+        mode="lines", line=dict(color=COLORS["profile_line"], width=2),
         hovertemplate="Price: $%{x:.2f}<br>GEX: %{y:,.0f}<extra></extra>",
     ))
 
     # Level lines
-    fig.add_vline(x=spot, line_color="#ffd600", line_dash="dash", line_width=1.5,
-                   annotation_text="Spot", annotation_font_color="#ffd600")
-    fig.add_vline(x=levels["zero_gamma"], line_color="#00e5ff", line_dash="dot", line_width=1.5,
-                   annotation_text="Zero Γ", annotation_font_color="#00e5ff")
-    fig.add_hline(y=0, line_color="#555", line_width=1)
+    fig.add_vline(x=spot, line_color=COLORS["spot"], line_dash="dash", line_width=1.5,
+                   annotation_text="Spot", annotation_font_color=COLORS["spot"])
+    fig.add_vline(x=levels["zero_gamma"], line_color=COLORS["zero_gamma"], line_dash="dot", line_width=1.5,
+                   annotation_text="Zero Γ", annotation_font_color=COLORS["zero_gamma"])
+    fig.add_hline(y=0, line_color=COLORS["zeroline"], line_width=1)
 
     # EM levels
     em = em_analysis.get("expected_move", {})
     if em.get("upper_level"):
         for val, label in [(em["upper_level"], "EM+"), (em["lower_level"], "EM−")]:
-            fig.add_vline(x=val, line_color="#b388ff", line_dash="dot", line_width=1.2,
-                           annotation_text=label, annotation_font_color="#b388ff",
+            fig.add_vline(x=val, line_color=COLORS["em_level"], line_dash="dot", line_width=1.2,
+                           annotation_text=label, annotation_font_color=COLORS["em_level"],
                            annotation_font_size=9)
 
     # Regime badge
@@ -344,12 +404,12 @@ def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis):
     )
 
     fig.update_layout(
-        paper_bgcolor="#1a1a2e", plot_bgcolor="#1a1a2e",
+        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", font_size=10,
         margin=dict(l=60, r=10, t=35, b=40),
         title="GEX Profile Curve",
-        xaxis=dict(title="Underlying Price", gridcolor="#333"),
-        yaxis=dict(title="Total GEX proxy", gridcolor="#222", zerolinecolor="#555"),
+        xaxis=dict(title="Underlying Price", gridcolor=COLORS["grid_major"]),
+        yaxis=dict(title="Total GEX proxy", gridcolor=COLORS["grid_minor"], zerolinecolor=COLORS["zeroline"]),
         showlegend=False, height=500,
     )
     return fig
@@ -358,65 +418,37 @@ def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis):
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar rendering
 # ─────────────────────────────────────────────────────────────────────────────
-def render_expected_move_panel(em_analysis):
-    em = em_analysis.get("expected_move", {})
-    on = em_analysis.get("overnight_move", {})
-    cl = em_analysis.get("classification", {})
-    spy = em_analysis.get("spy_proxy")
-    fc = em_analysis.get("futures_context")
-    overnite_range = em_analysis.get("overnight_range")
-    lctx = em_analysis.get("level_context")
-    market_ctx = em_analysis.get("market_context", "live")
-
-    if em.get("expected_move_pts") is None:
-        st.caption("Expected move data not available.")
-        return
-
-    st.markdown("#### ⚡ Expected Move — 0DTE")
-
-    # Straddle & range
-    straddle = em.get("straddle", {})
-    straddle_html = (
-        '<div class="level-grid" style="grid-template-columns: 1fr 1fr;">'
-        f'<div class="level-card"><div class="lbl">ATM Straddle</div><div class="val">{em["expected_move_pts"]:.1f} pts</div><div class="lbl">{em["expected_move_pct"]:.2f}%</div></div>'
-        f'<div class="level-card"><div class="lbl">Strike</div><div class="val">${straddle.get("strike", "?")}</div></div>'
-        '</div>'
-    )
-    st.markdown(straddle_html, unsafe_allow_html=True)
-
-    st.markdown(
-        f"**Expected Range:** "
-        f":red[${em['lower_level']:.0f}] — :green[${em['upper_level']:.0f}]"
-    )
-
-    # Move display — label depends on market context
-    move_source = cl.get("move_source", "spx")
+def _render_move_display(overnight, classification, futures_ctx, market_ctx):
+    """Render the overnight/today's move section."""
+    move_source = classification.get("move_source", "spx")
 
     if market_ctx == "live":
-        # During market hours: show "Today's Move" from live SPX
-        on_pts = on.get("overnight_move_pts")
+        on_pts = overnight.get("overnight_move_pts")
         if on_pts is not None:
             arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
             st.markdown(
-                f"**Today's Move:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
+                f"**Today's Move:** {arrow} **{on_pts:+.1f} pts** ({overnight['overnight_move_pct']:+.2f}%)"
             )
-    elif "es_futures" in move_source and fc:
-        arrow = "🟢 ▲" if fc["overnight_move_pts"] >= 0 else "🔴 ▼"
+    elif "es_futures" in move_source and futures_ctx:
+        arrow = "🟢 ▲" if futures_ctx["overnight_move_pts"] >= 0 else "🔴 ▼"
         st.markdown(
-            f"**Overnight (ES):** {arrow} **{fc['overnight_move_pts']:+.1f} pts** ({fc['overnight_move_pct']:+.2f}%)"
+            f"**Overnight (ES):** {arrow} **{futures_ctx['overnight_move_pts']:+.1f} pts** ({futures_ctx['overnight_move_pct']:+.2f}%)"
         )
-        src_label = "manual" if fc["source"] == "manual" else "Yahoo ~10m delayed"
-        st.caption(f"ES: ${fc['es_last']:.2f} vs SPX prevclose ${fc['spx_prevclose']:.2f} ({src_label})")
+        src_label = "manual" if futures_ctx["source"] == "manual" else "Yahoo ~10m delayed"
+        st.caption(f"ES: \\${futures_ctx['es_last']:.2f} vs SPX prevclose \\${futures_ctx['spx_prevclose']:.2f} ({src_label})")
     else:
-        on_pts = on.get("overnight_move_pts")
+        on_pts = overnight.get("overnight_move_pts")
         if on_pts is not None:
             label = "Session Move" if market_ctx == "afterhours" else "Overnight Move"
             arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
             st.markdown(
-                f"**{label}:** {arrow} **{on_pts:+.1f} pts** ({on['overnight_move_pct']:+.2f}%)"
+                f"**{label}:** {arrow} **{on_pts:+.1f} pts** ({overnight['overnight_move_pct']:+.2f}%)"
             )
+    return move_source
 
-    # Overnight range (from ES high/low)
+
+def _render_overnight_range(overnite_range, move_source, spy):
+    """Render overnight range and SPY proxy."""
     if overnite_range and overnite_range.get("es_high"):
         hi = overnite_range["high_move_from_close"]
         lo = overnite_range["low_move_from_close"]
@@ -429,24 +461,24 @@ def render_expected_move_panel(em_analysis):
         )
         st.caption(f"Max overnight excursion: {overnite_range['max_move_pts']:.0f} pts{max_em_str}")
 
-    # SPY proxy (show if available but ES not used)
     if spy and "es_futures" not in move_source:
         st.caption(
             f"SPY Pre-mkt: ${spy['spy_price']:.2f} ({spy['spy_move_pct']:+.2f}%) "
             f"→ ~{spy['implied_spx_move_pts']:+.1f} SPX pts"
         )
 
-    # Move ratio bar
-    ratio = cl.get("move_ratio")
+
+def _render_classification(classification, level_ctx):
+    """Render session classification and zero gamma context."""
+    ratio = classification.get("move_ratio")
     if ratio is not None:
         pct = min(ratio * 100, 100)
-        label = cl.get("move_ratio_label", "")
+        label = classification.get("move_ratio_label", "")
         st.markdown(f"**Vol Budget Used:** {pct:.0f}% ({label})")
         st.progress(min(ratio, 1.0))
 
-    # Session classification
-    if cl.get("classification"):
-        bias = cl.get("bias", "")
+    if classification.get("classification"):
+        bias = classification.get("bias", "")
         if bias in ("range-bound", "mean-revert"):
             cls_icon = "🟢"
         elif bias in ("directional", "continued-trend"):
@@ -454,19 +486,54 @@ def render_expected_move_panel(em_analysis):
         else:
             cls_icon = "🟡"
 
-        st.markdown(f"### {cls_icon} {cl['classification']}")
-        if cl.get("description"):
-            st.caption(cl["description"])
-        if cl.get("favored_strategies"):
-            st.markdown(f"**Favored:** {', '.join(cl['favored_strategies'])}")
+        st.markdown(f"### {cls_icon} {classification['classification']}")
+        if classification.get("description"):
+            st.caption(classification["description"])
+        if classification.get("favored_strategies"):
+            st.markdown(f"**Favored:** {', '.join(classification['favored_strategies'])}")
 
-    # Zero gamma context
-    if lctx and lctx.get("zero_gamma_within_em") is not None:
-        inside = "✅ inside" if lctx["zero_gamma_within_em"] else "⚠️ outside"
+    if level_ctx and level_ctx.get("zero_gamma_within_em") is not None:
+        inside = "✅ inside" if level_ctx["zero_gamma_within_em"] else "⚠️ outside"
         st.markdown(
             f"**Zero Γ:** {inside} expected range "
-            f"({lctx['zero_gamma_distance_to_spot']:+.1f} pts from spot)"
+            f"({level_ctx['zero_gamma_distance_to_spot']:+.1f} pts from spot)"
         )
+
+
+def render_expected_move_panel(em_analysis):
+    em_data = em_analysis.get("expected_move", {})
+    overnight = em_analysis.get("overnight_move", {})
+    classification = em_analysis.get("classification", {})
+    spy = em_analysis.get("spy_proxy")
+    futures_ctx = em_analysis.get("futures_context")
+    overnite_range = em_analysis.get("overnight_range")
+    level_ctx = em_analysis.get("level_context")
+    market_ctx = em_analysis.get("market_context", "live")
+
+    if em_data.get("expected_move_pts") is None:
+        st.caption("Expected move data not available.")
+        return
+
+    st.markdown("#### ⚡ Expected Move — 0DTE")
+
+    # Straddle & range
+    straddle = em_data.get("straddle", {})
+    straddle_html = (
+        '<div class="level-grid" style="grid-template-columns: 1fr 1fr;">'
+        f'<div class="level-card"><div class="lbl">ATM Straddle</div><div class="val">{em_data["expected_move_pts"]:.1f} pts</div><div class="lbl">{em_data["expected_move_pct"]:.2f}%</div></div>'
+        f'<div class="level-card"><div class="lbl">Strike</div><div class="val">${straddle.get("strike", "?")}</div></div>'
+        '</div>'
+    )
+    st.markdown(straddle_html, unsafe_allow_html=True)
+
+    st.markdown(
+        f"**Expected Range:** "
+        f":red[${em_data['lower_level']:.0f}] — :green[${em_data['upper_level']:.0f}]"
+    )
+
+    move_source = _render_move_display(overnight, classification, futures_ctx, market_ctx)
+    _render_overnight_range(overnite_range, move_source, spy)
+    _render_classification(classification, level_ctx)
 
     st.divider()
 
@@ -474,19 +541,26 @@ def render_expected_move_panel(em_analysis):
 def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info):
     conf_score = confidence_info.get("score", 0)
     conf_label = confidence_info.get("label", "?")
-    conf_color = "#00c853" if conf_label == "High" else "#ffd600" if conf_label == "Moderate" else "#ff5252"
+    conf_color = COLORS["positive"] if conf_label == "High" else COLORS["warning"] if conf_label == "Moderate" else COLORS["negative"]
 
+    spot_c = COLORS["spot"]
+    cw_c = COLORS["call_wall"]
+    pw_c = COLORS["put_wall"]
+    zg_c = COLORS["zero_gamma"]
     html = (
         '<div class="level-grid">'
-        f'<div class="level-card"><div class="lbl">Spot</div><div class="val" style="color:#ffd600;">${spot:.2f}</div></div>'
-        f'<div class="level-card"><div class="lbl">Call Wall</div><div class="val" style="color:#69f0ae;">${levels["call_wall"]:.0f}</div></div>'
-        f'<div class="level-card"><div class="lbl">Put Wall</div><div class="val" style="color:#ff8a80;">${levels["put_wall"]:.0f}</div></div>'
-        f'<div class="level-card"><div class="lbl">Zero Gamma</div><div class="val" style="color:#00e5ff;">${levels["zero_gamma"]:.2f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Spot</div><div class="val" style="color:{spot_c};">${spot:.2f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Call Wall</div><div class="val" style="color:{cw_c};">${levels["call_wall"]:.0f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Put Wall</div><div class="val" style="color:{pw_c};">${levels["put_wall"]:.0f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Zero Gamma</div><div class="val" style="color:{zg_c};">${levels["zero_gamma"]:.2f}</div></div>'
         f'<div class="level-card"><div class="lbl">Regime</div><div class="val" style="color:{regime_info["color"]};font-size:12px;">{regime_info["regime"]}</div></div>'
         f'<div class="level-card"><div class="lbl">Confidence</div><div class="val" style="color:{conf_color};">{conf_score:.0f}</div><div class="lbl" style="color:{conf_color};">{conf_label}</div></div>'
         '</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
+
+    if not levels.get("is_true_crossing", True):
+        st.warning("⚠️ Zero gamma is a fallback estimate — no true sign-change crossing was found in the sweep range. Use this level with caution.")
 
 
 def render_scenarios_table(scenarios_df):
@@ -497,19 +571,25 @@ def render_scenarios_table(scenarios_df):
     rows_html = ""
     for _, row in scenarios_df.iterrows():
         regime = row.get("gamma_regime", "")
-        r_color = "#00c853" if "Pos" in regime else "#ff5252" if "Neg" in regime else "#00e5ff"
+        r_color = COLORS["positive"] if "Pos" in regime else COLORS["negative"] if "Neg" in regime else COLORS["zero_gamma"]
+        tl_c = COLORS["text_light"]
+        cw_c = COLORS["call_wall"]
+        pw_c = COLORS["put_wall"]
+        zg_c = COLORS["zero_gamma"]
         rows_html += (
-            f'<tr><td style="color:#cfd3ff;font-weight:bold;">{row["scenario"]}</td>'
+            f'<tr><td style="color:{tl_c};font-weight:bold;">{row["scenario"]}</td>'
             f'<td>${row["spot"]:.0f}</td>'
-            f'<td style="color:#69f0ae;">${row["call_wall"]:.0f}</td>'
-            f'<td style="color:#ff8a80;">${row["put_wall"]:.0f}</td>'
-            f'<td style="color:#00e5ff;">${row["zero_gamma"]:.0f}</td>'
+            f'<td style="color:{cw_c};">${row["call_wall"]:.0f}</td>'
+            f'<td style="color:{pw_c};">${row["put_wall"]:.0f}</td>'
+            f'<td style="color:{zg_c};">${row["zero_gamma"]:.0f}</td>'
             f'<td style="color:{r_color};font-size:9px;">{regime}</td></tr>'
         )
 
+    bg_card = COLORS["bg_card"]
+    text_m = COLORS["text_muted"]
     table_html = (
         '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">'
-        '<thead><tr style="background:#1a1a3e;color:#888;font-size:10px;">'
+        f'<thead><tr style="background:{bg_card};color:{text_m};font-size:10px;">'
         '<th style="padding:4px;text-align:left;">Scenario</th>'
         '<th style="padding:4px;">Spot</th>'
         '<th style="padding:4px;">CW</th>'
@@ -545,10 +625,10 @@ def render_data_quality(stats, staleness_info):
 
     fresh = staleness_info.get("freshness_score", 0)
     fresh_lbl = staleness_info.get("freshness_label", "?")
-    fresh_color = "#00c853" if fresh_lbl == "High" else "#ffd600" if fresh_lbl == "Moderate" else "#ff5252"
+    fresh_color = COLORS["positive"] if fresh_lbl == "High" else COLORS["warning"] if fresh_lbl == "Moderate" else COLORS["negative"]
 
     coverage = stats.get("coverage_ratio", 0)
-    cov_color = "#00c853" if coverage >= 0.95 else "#ffd600" if coverage >= 0.85 else "#ff5252"
+    cov_color = COLORS["positive"] if coverage >= 0.95 else COLORS["warning"] if coverage >= 0.85 else COLORS["negative"]
 
     html = (
         '<div class="level-grid">'
@@ -557,10 +637,300 @@ def render_data_quality(stats, staleness_info):
         f'<div class="level-card"><div class="lbl">Freshness</div><div class="val" style="color:{fresh_color};">{fresh:.0f}</div><div class="lbl" style="color:{fresh_color};">{fresh_lbl}</div></div>'
         f'<div class="level-card"><div class="lbl">Direct IV</div><div class="val">{stats.get("direct_iv_count", 0):,}</div></div>'
         f'<div class="level-card"><div class="lbl">Synthetic IV</div><div class="val">{stats.get("synthetic_iv_count", 0):,}</div></div>'
-        f'<div class="level-card"><div class="lbl">Skipped</div><div class="val">{stats.get("skipped_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Skipped (quality)</div><div class="val">{stats.get("skipped_count", 0):,}</div></div>'
         '</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
+
+    # Detailed filter breakdown
+    range_filt = stats.get("range_filtered_count", 0)
+    zero_oi = stats.get("zero_oi_filtered_count", 0)
+    if range_filt or zero_oi:
+        st.caption(f"Filtered: {range_filt:,} out-of-range strikes, {zero_oi:,} zero-OI contracts")
+
+
+def _render_history_tab(current_spot):
+    """C1: Render historical GEX trend chart."""
+    days = st.selectbox("History range", [7, 14, 30, 60], index=1, key="hist_days")
+    history = get_daily_summary(days=days)
+
+    backend = get_history_backend()
+    if backend == "postgres":
+        st.caption("💾 Connected to Neon Postgres — history persists across sessions")
+    else:
+        st.caption("⚡ Session-only storage — add DATABASE_URL to secrets for persistent history")
+
+    if not history:
+        st.info("No historical data yet. Snapshots are saved automatically on each refresh.")
+        return
+
+    hist_df = pd.DataFrame(history)
+    hist_df["date"] = pd.to_datetime(hist_df["date"])
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=hist_df["date"], y=hist_df["zero_gamma"],
+        mode="lines+markers", name="Zero Gamma",
+        line=dict(color=COLORS["zero_gamma"], width=2),
+        marker=dict(size=5),
+    ))
+    fig.add_trace(go.Scatter(
+        x=hist_df["date"], y=hist_df["spot"],
+        mode="lines+markers", name="Spot",
+        line=dict(color=COLORS["spot"], width=2, dash="dot"),
+        marker=dict(size=4),
+    ))
+    fig.add_trace(go.Scatter(
+        x=hist_df["date"], y=hist_df["call_wall"],
+        mode="lines", name="Call Wall",
+        line=dict(color=COLORS["call_wall"], width=1, dash="dash"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=hist_df["date"], y=hist_df["put_wall"],
+        mode="lines", name="Put Wall",
+        line=dict(color=COLORS["put_wall"], width=1, dash="dash"),
+    ))
+
+    fig.update_layout(
+        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+        font_color="white", font_size=10,
+        margin=dict(l=60, r=10, t=35, b=40),
+        title=f"GEX Key Levels — Last {days} Days",
+        xaxis=dict(gridcolor=COLORS["grid_major"]),
+        yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=500,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # Summary table
+    with st.expander("📋 Daily Summary"):
+        display_cols = ["date", "spot", "zero_gamma", "call_wall", "put_wall", "regime",
+                        "confidence_score", "coverage_ratio"]
+        avail_cols = [c for c in display_cols if c in hist_df.columns]
+        st.dataframe(hist_df[avail_cols].head(30), use_container_width=True, hide_index=True)
+
+
+def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
+    """C5: Show how much of the expected move has been consumed."""
+    em_data = em_analysis.get("expected_move", {})
+    em_pts = em_data.get("expected_move_pts")
+
+    if not em_pts or em_pts <= 0:
+        st.info("Expected move data not available for tracking.")
+        return
+
+    upper = em_data.get("upper_level", 0)
+    lower = em_data.get("lower_level", 0)
+
+    if prev_close > 0:
+        current_move = abs(spot - prev_close)
+        move_pct_of_em = (current_move / em_pts) * 100
+        direction = "up" if spot >= prev_close else "down"
+    else:
+        current_move = 0
+        move_pct_of_em = 0
+        direction = "flat"
+
+    # Gauge display
+    if move_pct_of_em < 40:
+        gauge_color = COLORS["positive"]
+        status = "Plenty of room"
+    elif move_pct_of_em < 70:
+        gauge_color = COLORS["warning"]
+        status = "Moderate — watch for reversal"
+    elif move_pct_of_em < 100:
+        gauge_color = COLORS["negative"]
+        status = "Extended — mean reversion likely"
+    else:
+        gauge_color = "#ff1744"
+        status = "Beyond EM — trend day or breakout"
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Expected Move", f"±{em_pts:.0f} pts")
+    col2.metric("Current Move", f"{current_move:.1f} pts {direction}")
+    col3.metric("EM Consumed", f"{move_pct_of_em:.0f}%")
+
+    st.progress(min(move_pct_of_em / 100, 1.0))
+    st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
+
+    # Visual range display
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=lower, x1=upper, y0=0, y1=1,
+                  fillcolor="rgba(179,136,255,0.15)", line=dict(color=COLORS["em_level"], width=1))
+    fig.add_vline(x=prev_close, line_color=COLORS["text_muted"], line_dash="dash", line_width=1,
+                  annotation_text="Prev Close", annotation_font_color=COLORS["text_muted"], annotation_font_size=9)
+    fig.add_vline(x=spot, line_color=COLORS["spot"], line_width=2,
+                  annotation_text=f"Spot ${spot:.0f}", annotation_font_color=COLORS["spot"], annotation_font_size=10)
+    fig.add_vline(x=lower, line_color=COLORS["em_level"], line_dash="dot", line_width=1,
+                  annotation_text=f"EM− ${lower:.0f}", annotation_font_color=COLORS["em_level"], annotation_font_size=9)
+    fig.add_vline(x=upper, line_color=COLORS["em_level"], line_dash="dot", line_width=1,
+                  annotation_text=f"EM+ ${upper:.0f}", annotation_font_color=COLORS["em_level"], annotation_font_size=9)
+
+    fig.update_layout(
+        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+        font_color="white", height=150, margin=dict(l=10, r=10, t=30, b=10),
+        xaxis=dict(gridcolor=COLORS["grid_major"], title="Price"),
+        yaxis=dict(visible=False), showlegend=False,
+        title="Expected Move Range",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _render_iv_surface(hm_iv, hm_gex, spot):
+    """C4: Render IV surface heatmap (strike × expiration)."""
+    if hm_iv is None or hm_iv.empty:
+        st.info("IV surface data not available. Requires multiple expirations.")
+        return
+
+    view = st.radio("View", ["IV Surface", "GEX Heatmap"], horizontal=True, key="iv_view")
+    hm_data = hm_iv if view == "IV Surface" else hm_gex
+
+    if hm_data.empty:
+        st.info(f"{view} data not available.")
+        return
+
+    # Clean data
+    strikes = hm_data.index.tolist()
+    expirations = hm_data.columns.tolist()
+    z_values = hm_data.values
+
+    colorscale = "Viridis" if view == "IV Surface" else "RdYlGn"
+    title = "Implied Volatility Surface" if view == "IV Surface" else "GEX Heatmap"
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z_values,
+        x=expirations,
+        y=strikes,
+        colorscale=colorscale,
+        hovertemplate="Exp: %{x}<br>Strike: %{y}<br>Value: %{z:.4f}<extra></extra>",
+    ))
+
+    # Mark spot on y-axis
+    fig.add_hline(y=spot, line_color=COLORS["spot"], line_dash="dash", line_width=1.5,
+                  annotation_text=f"Spot ${spot:.0f}", annotation_font_color=COLORS["spot"])
+
+    fig.update_layout(
+        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+        font_color="white", font_size=10,
+        margin=dict(l=60, r=10, t=35, b=60),
+        title=title,
+        xaxis=dict(title="Expiration", tickangle=45),
+        yaxis=dict(title="Strike"),
+        height=600,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _render_pin_detection(stats, gex_df, spot):
+    """C6: Detect potential pin strikes where call+put OI concentrates."""
+    if gex_df.empty:
+        return
+
+    # Find strikes with highest combined OI near spot (within 1%)
+    near_spot = gex_df[abs(gex_df["strike"] - spot) / spot < 0.01].copy()
+    if near_spot.empty:
+        return
+
+    # Pin candidates: strikes where call+put OI are both significant
+    if "call_oi" in near_spot.columns and "put_oi" in near_spot.columns:
+        near_spot["total_oi"] = near_spot["call_oi"] + near_spot["put_oi"]
+        near_spot["oi_balance"] = 1 - abs(near_spot["call_oi"] - near_spot["put_oi"]) / near_spot["total_oi"].clip(lower=1)
+        # Pin candidates have high OI and balanced call/put ratio
+        pins = near_spot[near_spot["oi_balance"] > 0.3].nlargest(3, "total_oi")
+        if not pins.empty:
+            pin_strikes = [f"${s:.0f}" for s in pins["strike"]]
+            st.caption(f"📌 Pin candidates: {', '.join(pin_strikes)}")
+
+
+def _check_level_crossings(spot, levels, em_analysis):
+    """C2: Check if spot has crossed key levels and return alerts."""
+    alerts = []
+    zg = levels.get("zero_gamma", 0)
+    cw = levels.get("call_wall", 0)
+    pw = levels.get("put_wall", 0)
+
+    dist_zg = abs(spot - zg)
+    dist_cw = abs(spot - cw)
+    dist_pw = abs(spot - pw)
+
+    # Alert when within 0.3% of a key level
+    threshold = spot * 0.003
+
+    if dist_zg < threshold:
+        alerts.append(("⚡", f"Spot near Zero Gamma ({zg:.0f}) — regime flip zone"))
+    if dist_cw < threshold:
+        alerts.append(("🟢", f"Spot near Call Wall ({cw:.0f}) — resistance"))
+    if dist_pw < threshold:
+        alerts.append(("🔴", f"Spot near Put Wall ({pw:.0f}) — support"))
+
+    em_data = em_analysis.get("expected_move", {})
+    upper = em_data.get("upper_level")
+    lower = em_data.get("lower_level")
+    if upper and spot > upper:
+        alerts.append(("🚀", f"ABOVE expected move upper ({upper:.0f})"))
+    elif lower and spot < lower:
+        alerts.append(("💥", f"BELOW expected move lower ({lower:.0f})"))
+
+    return alerts
+
+
+def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
+    """Freeze expected move at first market-hours refresh; recompute classification with live data."""
+    today_str = now_ny().strftime("%Y-%m-%d")
+
+    # Clear stale snapshot from a previous day
+    if st.session_state.get("em_snapshot_date") != today_str:
+        st.session_state.pop("em_snapshot", None)
+        st.session_state.pop("em_snapshot_date", None)
+        st.session_state.pop("em_snapshot_time", None)
+
+    if not is_market_open:
+        return em_analysis
+
+    em_live = em_analysis.get("expected_move", {})
+    if "em_snapshot" not in st.session_state and em_live.get("expected_move_pts"):
+        st.session_state["em_snapshot"] = {
+            "expected_move_pts": em_live["expected_move_pts"],
+            "expected_move_pct": em_live["expected_move_pct"],
+            "upper_level": em_live["upper_level"],
+            "lower_level": em_live["lower_level"],
+            "straddle": em_live.get("straddle"),
+        }
+        st.session_state["em_snapshot_date"] = today_str
+        st.session_state["em_snapshot_time"] = now_ny().strftime("%I:%M:%S %p ET")
+
+    if "em_snapshot" in st.session_state:
+        snap = st.session_state["em_snapshot"]
+        em_analysis["expected_move"] = {
+            **em_analysis.get("expected_move", {}),
+            "expected_move_pts": snap["expected_move_pts"],
+            "expected_move_pct": snap["expected_move_pct"],
+            "upper_level": snap["upper_level"],
+            "lower_level": snap["lower_level"],
+            "straddle": snap["straddle"],
+        }
+        on_pts = em_analysis.get("overnight_move", {}).get("overnight_move_pts")
+        if on_pts is not None and snap["expected_move_pts"] > 0:
+            from phase1.expected_move import classify_session
+            em_analysis["classification"] = classify_session(
+                expected_move_pts=snap["expected_move_pts"],
+                overnight_move_pts=on_pts,
+                gamma_regime=regime["regime"],
+            )
+            em_analysis["classification"]["move_source"] = "spx"
+        if snap["upper_level"] is not None:
+            em_analysis["level_context"] = {
+                "em_upper": snap["upper_level"],
+                "em_lower": snap["lower_level"],
+                "zero_gamma": round(levels["zero_gamma"], 2),
+                "zero_gamma_within_em": (
+                    snap["lower_level"] <= levels["zero_gamma"] <= snap["upper_level"]
+                ),
+                "zero_gamma_distance_to_spot": round(spot - levels["zero_gamma"], 2),
+            }
+
+    return em_analysis
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -653,7 +1023,7 @@ def main():
     refresh_seconds = {"Off": 0, "Every 5 min": 300, "Every 30 min": 1800}.get(refresh_option, 0)
 
     # ── Run ID for cache busting ──
-    run_id = f"{datetime.utcnow().isoformat()}" if refresh_seconds == 0 else "auto"
+    run_id = f"{datetime.now(timezone.utc).isoformat()}" if refresh_seconds == 0 else "auto"
 
     # ── Fetch data ──
     with st.spinner("Crunching GEX..."):
@@ -663,17 +1033,17 @@ def main():
             st.error(f"Engine error: {e}")
             st.stop()
 
-    if data["gex_df"].empty:
+    if data.gex_df.empty:
         st.warning("No GEX data returned. The selected expirations may have no usable contracts.")
         st.stop()
 
     # ── Build futures context: manual overrides > Yahoo auto ──
-    spot = data["spot"]
-    levels = data["levels"]
-    regime = data["regime_info"]
-    prev_close = data["prev_close"]
-    yahoo_es = data.get("yahoo_es")
-    is_market_open = data["market_open"]
+    spot = data.spot
+    levels = data.levels
+    regime = data.regime_info
+    prev_close = data.prev_close
+    yahoo_es = data.yahoo_es
+    is_market_open = data.market_open
 
     # Show ES input fields only when market is closed
     if not is_market_open:
@@ -720,106 +1090,62 @@ def main():
         futures_ctx = build_futures_context(es_last, es_high, es_low, prev_close, source=es_source)
 
     # ── Build EM analysis (fresh each render, not cached) ──
-    em = build_expected_move_analysis(
+    em_analysis = build_expected_move_analysis(
         spot=spot,
         prev_close=prev_close,
         zero_gamma=levels["zero_gamma"],
         gamma_regime=regime["regime"],
-        calls_0dte=data["dte0_calls"],
-        puts_0dte=data["dte0_puts"],
-        spy_quote=data["spy_quote"],
-        market_open=data["market_open"],
+        calls_0dte=data.dte0_calls,
+        puts_0dte=data.dte0_puts,
+        spy_quote=data.spy_quote,
+        market_open=data.market_open,
         futures_context=futures_ctx,
     )
 
-    # ── Straddle snapshot: freeze EM at first market-hours refresh ──
-    today_str_snap = now_ny().strftime("%Y-%m-%d")
+    # ── Apply EM snapshot logic ──
+    em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot)
 
-    # Clear stale snapshot from a previous day
-    if st.session_state.get("em_snapshot_date") != today_str_snap:
-        st.session_state.pop("em_snapshot", None)
-        st.session_state.pop("em_snapshot_date", None)
-        st.session_state.pop("em_snapshot_time", None)
-
-    if is_market_open:
-        em_live = em.get("expected_move", {})
-        if "em_snapshot" not in st.session_state and em_live.get("expected_move_pts"):
-            # First market-hours refresh — capture the straddle
-            st.session_state["em_snapshot"] = {
-                "expected_move_pts": em_live["expected_move_pts"],
-                "expected_move_pct": em_live["expected_move_pct"],
-                "upper_level": em_live["upper_level"],
-                "lower_level": em_live["lower_level"],
-                "straddle": em_live.get("straddle"),
-            }
-            st.session_state["em_snapshot_date"] = today_str_snap
-            st.session_state["em_snapshot_time"] = now_ny().strftime("%I:%M:%S %p ET")
-
-        # Replace the live EM with the frozen snapshot for display
-        if "em_snapshot" in st.session_state:
-            snap = st.session_state["em_snapshot"]
-            em["expected_move"] = {
-                **em.get("expected_move", {}),
-                "expected_move_pts": snap["expected_move_pts"],
-                "expected_move_pct": snap["expected_move_pct"],
-                "upper_level": snap["upper_level"],
-                "lower_level": snap["lower_level"],
-                "straddle": snap["straddle"],
-            }
-            # Recompute vol budget with frozen EM vs live move
-            on_pts = em.get("overnight_move", {}).get("overnight_move_pts")
-            if on_pts is not None and snap["expected_move_pts"] > 0:
-                from phase1.expected_move import classify_session
-                em["classification"] = classify_session(
-                    expected_move_pts=snap["expected_move_pts"],
-                    overnight_move_pts=on_pts,
-                    gamma_regime=regime["regime"],
-                )
-                em["classification"]["move_source"] = "spx"
-            # Update level context with frozen EM
-            if snap["upper_level"] is not None:
-                em["level_context"] = {
-                    "em_upper": snap["upper_level"],
-                    "em_lower": snap["lower_level"],
-                    "zero_gamma": round(levels["zero_gamma"], 2),
-                    "zero_gamma_within_em": (
-                        snap["lower_level"] <= levels["zero_gamma"] <= snap["upper_level"]
-                    ),
-                    "zero_gamma_distance_to_spot": round(spot - levels["zero_gamma"], 2),
-                }
+    # ── Save historical snapshot ──
+    try:
+        save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
+    except Exception:
+        pass
 
     # Show Yahoo ES status in sidebar (pre-market only)
     if not is_market_open:
         with st.sidebar:
             if yahoo_es and not has_manual:
-                es_note = f"Yahoo ES: ${yahoo_es['last']:.2f}"
+                es_note = f"Yahoo ES: \\${yahoo_es['last']:.2f}"
                 if yahoo_es.get("high"):
-                    es_note += f" (H: ${yahoo_es['high']:.2f} L: ${yahoo_es['low']:.2f})"
+                    es_note += f" (H: \\${yahoo_es['high']:.2f} L: \\${yahoo_es['low']:.2f})"
                 es_note += f" — {yahoo_es.get('note', '~10m delayed')}"
                 st.caption(es_note)
             elif has_manual:
-                st.caption(f"Using manual ES: ${es_last:.2f}")
+                st.caption(f"Using manual ES: \\${es_last:.2f}")
             else:
                 st.caption("No ES data available — enter manually above.")
 
     # ── Header metrics ──
     regime_color = regime["color"]
+    spot_c = COLORS["spot"]
+    text_sec = COLORS["text_secondary"]
+    text_mut = COLORS["text_muted"]
     st.markdown(
         f"<div style='text-align:center;padding:6px;'>"
-        f"<span style='font-size:22px;font-weight:bold;color:#ffd600;'>SPX ${spot:.2f}</span>"
+        f"<span style='font-size:22px;font-weight:bold;color:{spot_c};'>SPX ${spot:.2f}</span>"
         f"&nbsp;&nbsp;&nbsp;"
         f"<span style='font-size:18px;color:{regime_color};font-weight:bold;'>{regime['regime']}</span>"
         f"&nbsp;&nbsp;"
-        f"<span style='color:#aaa;font-size:13px;'>({regime['distance_text']})</span>"
+        f"<span style='color:{text_sec};font-size:13px;'>({regime['distance_text']})</span>"
         f"&nbsp;&nbsp;&nbsp;"
-        f"<span style='color:#888;font-size:12px;'>Updated {data['run_time']}</span>"
+        f"<span style='color:{text_mut};font-size:12px;'>Updated {data.run_time}</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
 
     # ── Market context banner ──
-    market_ctx = em.get("market_context", "live")
-    context_note = em.get("context_note")
+    market_ctx = em_analysis.get("market_context", "live")
+    context_note = em_analysis.get("context_note")
     if market_ctx == "premarket":
         st.info("🌅 **Pre-market** — GEX levels and gamma regime are current. "
                 "Expected move and session classification will be available after the 9:30 AM open.")
@@ -827,34 +1153,36 @@ def main():
         st.warning(f"🌙 **After hours** — {context_note}")
 
     # ── Expected Move panel (top of page) ──
-    em_data = em.get("expected_move", {})
+    em_data = em_analysis.get("expected_move", {})
 
     if market_ctx == "premarket":
         # ── PRE-MARKET: Only show ES overnight move + range, suppress stale straddle/classification ──
-        fc = em.get("futures_context")
-        overnite_range = em.get("overnight_range")
+        futures_ctx_display = em_analysis.get("futures_context")
+        overnite_range = em_analysis.get("overnight_range")
 
-        if fc:
-            on_color = "#00c853" if fc["overnight_move_pts"] >= 0 else "#ff5252"
-            on_arrow = "▲" if fc["overnight_move_pts"] > 0 else "▼" if fc["overnight_move_pts"] < 0 else "–"
+        if futures_ctx_display:
+            on_color = COLORS["positive"] if futures_ctx_display["overnight_move_pts"] >= 0 else COLORS["negative"]
+            on_arrow = "▲" if futures_ctx_display["overnight_move_pts"] > 0 else "▼" if futures_ctx_display["overnight_move_pts"] < 0 else "–"
 
             premarket_html = (
                 '<div class="em-bar">'
                 f'<div class="em-item"><div class="lbl">Overnight Move (ES)</div>'
-                f'<div class="val" style="color:{on_color};">{on_arrow} {fc["overnight_move_pts"]:+.1f} pts</div>'
-                f'<div class="lbl" style="color:{on_color};">{fc["overnight_move_pct"]:+.2f}%</div></div>'
+                f'<div class="val" style="color:{on_color};">{on_arrow} {futures_ctx_display["overnight_move_pts"]:+.1f} pts</div>'
+                f'<div class="lbl" style="color:{on_color};">{futures_ctx_display["overnight_move_pct"]:+.2f}%</div></div>'
             )
 
             if overnite_range and overnite_range.get("es_high"):
                 hi_move = overnite_range["high_move_from_close"]
                 lo_move = overnite_range["low_move_from_close"]
+                cw_c = COLORS["call_wall"]
+                pw_c = COLORS["put_wall"]
                 premarket_html += (
                     f'<div class="em-item"><div class="lbl">O/N High</div>'
-                    f'<div class="val" style="font-size:16px;color:#69f0ae;">${overnite_range["es_high"]:.0f}</div>'
-                    f'<div class="lbl" style="color:#69f0ae;">{hi_move:+.1f} pts</div></div>'
+                    f'<div class="val" style="font-size:16px;color:{cw_c};">${overnite_range["es_high"]:.0f}</div>'
+                    f'<div class="lbl" style="color:{cw_c};">{hi_move:+.1f} pts</div></div>'
                     f'<div class="em-item"><div class="lbl">O/N Low</div>'
-                    f'<div class="val" style="font-size:16px;color:#ff8a80;">${overnite_range["es_low"]:.0f}</div>'
-                    f'<div class="lbl" style="color:#ff8a80;">{lo_move:+.1f} pts</div></div>'
+                    f'<div class="val" style="font-size:16px;color:{pw_c};">${overnite_range["es_low"]:.0f}</div>'
+                    f'<div class="lbl" style="color:{pw_c};">{lo_move:+.1f} pts</div></div>'
                     f'<div class="em-item"><div class="lbl">O/N Range</div>'
                     f'<div class="val" style="font-size:16px;">{overnite_range["range_pts"]:.0f} pts</div></div>'
                 )
@@ -864,55 +1192,54 @@ def main():
 
     elif em_data.get("expected_move_pts"):
         # ── MARKET HOURS / AFTER HOURS: Full EM framework ──
-        cl = em.get("classification", {})
-        on = em.get("overnight_move", {})
-        spy = em.get("spy_proxy")
-        fc = em.get("futures_context")
-        overnite_range = em.get("overnight_range")
-        move_source = cl.get("move_source", "spx")
+        classification = em_analysis.get("classification", {})
+        overnight = em_analysis.get("overnight_move", {})
+        spy = em_analysis.get("spy_proxy")
+        futures_ctx_display = em_analysis.get("futures_context")
+        overnite_range = em_analysis.get("overnight_range")
+        move_source = classification.get("move_source", "spx")
 
         # Pick the right move numbers and label
         if market_ctx == "live":
-            # During market hours: SPX is live, show "Today's Move"
-            display_pts = on.get("overnight_move_pts", 0)
-            display_pct = on.get("overnight_move_pct", 0)
+            display_pts = overnight.get("overnight_move_pts", 0)
+            display_pct = overnight.get("overnight_move_pct", 0)
             on_label = "Today's Move"
         elif move_source == "spx_realized":
-            display_pts = on.get("overnight_move_pts", 0)
-            display_pct = on.get("overnight_move_pct", 0)
+            display_pts = overnight.get("overnight_move_pts", 0)
+            display_pct = overnight.get("overnight_move_pct", 0)
             on_label = "Session Move"
-        elif "es_futures" in move_source and fc:
-            display_pts = fc["overnight_move_pts"]
-            display_pct = fc["overnight_move_pct"]
+        elif "es_futures" in move_source and futures_ctx_display:
+            display_pts = futures_ctx_display["overnight_move_pts"]
+            display_pct = futures_ctx_display["overnight_move_pct"]
             on_label = "Overnight (ES)"
         elif move_source == "spy_proxy" and spy:
             display_pts = spy["implied_spx_move_pts"]
             display_pct = spy["spy_move_pct"]
             on_label = "Overnight (SPY)"
         else:
-            display_pts = on.get("overnight_move_pts", 0)
-            display_pct = on.get("overnight_move_pct", 0)
+            display_pts = overnight.get("overnight_move_pts", 0)
+            display_pct = overnight.get("overnight_move_pct", 0)
             on_label = "Overnight"
 
-        ratio = cl.get("move_ratio")
+        ratio = classification.get("move_ratio")
 
-        on_color = "#00c853" if (display_pts or 0) >= 0 else "#ff5252"
+        on_color = COLORS["positive"] if (display_pts or 0) >= 0 else COLORS["negative"]
         on_arrow = "▲" if (display_pts or 0) > 0 else "▼" if (display_pts or 0) < 0 else "–"
         ratio_pct = f"{ratio*100:.0f}%" if ratio is not None else "–"
 
         if ratio is not None:
-            ratio_color = "#00c853" if ratio < 0.40 else "#ffd600" if ratio < 0.70 else "#ff5252"
+            ratio_color = COLORS["positive"] if ratio < 0.40 else COLORS["warning"] if ratio < 0.70 else COLORS["negative"]
         else:
-            ratio_color = "#aaa"
+            ratio_color = COLORS["text_secondary"]
 
-        cls_name = cl.get("classification", "–")
-        cls_bias = cl.get("bias", "")
+        cls_name = classification.get("classification", "–")
+        cls_bias = classification.get("bias", "")
         if cls_bias in ("range-bound", "mean-revert"):
-            cls_color = "#00c853"
+            cls_color = COLORS["positive"]
         elif cls_bias in ("directional", "continued-trend"):
-            cls_color = "#ff5252"
+            cls_color = COLORS["negative"]
         else:
-            cls_color = "#ffd600"
+            cls_color = COLORS["warning"]
 
         em_bar_html = (
             '<div class="em-bar">'
@@ -938,10 +1265,12 @@ def main():
             max_vs_em = overnite_range.get("max_move_vs_em")
             max_vs_em_str = f"{max_vs_em*100:.0f}% of EM" if max_vs_em else ""
 
+            cw_c = COLORS["call_wall"]
+            pw_c = COLORS["put_wall"]
             range_html = (
                 '<div class="em-bar" style="padding:2px 0 4px 0;">'
-                f'<div class="em-item"><div class="lbl">O/N High</div><div class="val" style="font-size:16px;color:#69f0ae;">${overnite_range["es_high"]:.0f}</div><div class="lbl" style="color:#69f0ae;">{hi_move:+.1f} pts</div></div>'
-                f'<div class="em-item"><div class="lbl">O/N Low</div><div class="val" style="font-size:16px;color:#ff8a80;">${overnite_range["es_low"]:.0f}</div><div class="lbl" style="color:#ff8a80;">{lo_move:+.1f} pts</div></div>'
+                f'<div class="em-item"><div class="lbl">O/N High</div><div class="val" style="font-size:16px;color:{cw_c};">${overnite_range["es_high"]:.0f}</div><div class="lbl" style="color:{cw_c};">{hi_move:+.1f} pts</div></div>'
+                f'<div class="em-item"><div class="lbl">O/N Low</div><div class="val" style="font-size:16px;color:{pw_c};">${overnite_range["es_low"]:.0f}</div><div class="lbl" style="color:{pw_c};">{lo_move:+.1f} pts</div></div>'
                 f'<div class="em-item"><div class="lbl">O/N Range</div><div class="val" style="font-size:16px;">{rng:.0f} pts</div></div>'
                 f'<div class="em-item"><div class="lbl">Max O/N Excursion</div><div class="val" style="font-size:16px;">{overnite_range["max_move_pts"]:.0f} pts</div><div class="lbl">{max_vs_em_str}</div></div>'
                 '</div>'
@@ -949,28 +1278,51 @@ def main():
             st.markdown(range_html, unsafe_allow_html=True)
 
     # ── Charts ──
-    tab_gex, tab_profile = st.tabs(["📊 Strike GEX", "📈 GEX Profile"])
+    tab_gex, tab_profile, tab_history, tab_em_track, tab_iv_surface = st.tabs(
+        ["📊 Strike GEX", "📈 GEX Profile", "📅 History", "🎯 EM Tracker", "🌊 IV Surface"]
+    )
 
     with tab_gex:
-        fig1 = build_gex_bar_chart(data["gex_df"], levels, spot, em)
+        fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis)
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
 
     with tab_profile:
-        fig2 = build_profile_chart(data["profile_df"], levels, spot, regime, em)
+        fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis)
         st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+
+    # ── C1: Historical GEX trend ──
+    with tab_history:
+        _render_history_tab(spot)
+
+    # ── C5: Expected move consumption tracker ──
+    with tab_em_track:
+        _render_em_tracker(em_analysis, spot, prev_close, market_ctx)
+
+    # ── C4: IV surface visualization ──
+    with tab_iv_surface:
+        _render_iv_surface(data.hm_iv, data.hm_gex, spot)
+
+    # ── C2: Level crossing alerts ──
+    alerts = _check_level_crossings(spot, levels, em_analysis)
+    if alerts:
+        for icon, msg in alerts:
+            st.warning(f"{icon} {msg}")
+
+    # ── C6: Pin point detection ──
+    _render_pin_detection(data.stats, data.gex_df, spot)
 
     # ── Sidebar detail panels ──
     with st.sidebar:
         st.divider()
         if market_ctx != "premarket":
-            render_expected_move_panel(em)
-        render_key_levels(levels, spot, regime, data["confidence_info"], data["staleness_info"])
+            render_expected_move_panel(em_analysis)
+        render_key_levels(levels, spot, regime, data.confidence_info, data.staleness_info)
         st.divider()
-        render_wall_credibility(data["wall_cred"])
+        render_wall_credibility(data.wall_cred)
         st.divider()
-        render_scenarios_table(data["scenarios_df"])
+        render_scenarios_table(data.scenarios_df)
         st.divider()
-        render_data_quality(data["stats"], data["staleness_info"])
+        render_data_quality(data.stats, data.staleness_info)
 
     # ── Auto-refresh ──
     if refresh_seconds > 0:

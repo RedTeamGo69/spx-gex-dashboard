@@ -212,7 +212,7 @@ def classify_session(
         gamma_bucket = "negative"
     else:
         # At zero gamma — could go either way; treat as a blend
-        gamma_bucket = "negative"  # conservative: assume more volatile
+        gamma_bucket = "positive"  # at zero gamma: default to less volatile assumption
 
     # Moderate move ratio: blend characteristics
     if ratio_label == "moderate":
