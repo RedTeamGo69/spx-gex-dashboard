@@ -12,12 +12,12 @@ def build_default_scenarios():
     """
     return [
         {"name": "Base", "spot_shock_pct": 0.0000, "rate_shock_bps": 0},
-        {"name": "Spot -0.50%", "spot_shock_pct": -0.0050, "rate_shock_bps": 0},
-        {"name": "Spot -0.25%", "spot_shock_pct": -0.0025, "rate_shock_bps": 0},
-        {"name": "Spot +0.25%", "spot_shock_pct": 0.0025, "rate_shock_bps": 0},
-        {"name": "Spot +0.50%", "spot_shock_pct": 0.0050, "rate_shock_bps": 0},
-        {"name": "Rate -50bp", "spot_shock_pct": 0.0000, "rate_shock_bps": -50},
-        {"name": "Rate +50bp", "spot_shock_pct": 0.0000, "rate_shock_bps": 50},
+        {"name": "Spot -2.0%", "spot_shock_pct": -0.0200, "rate_shock_bps": 0},
+        {"name": "Spot -1.0%", "spot_shock_pct": -0.0100, "rate_shock_bps": 0},
+        {"name": "Spot -0.5%", "spot_shock_pct": -0.0050, "rate_shock_bps": 0},
+        {"name": "Spot +0.5%", "spot_shock_pct": 0.0050, "rate_shock_bps": 0},
+        {"name": "Spot +1.0%", "spot_shock_pct": 0.0100, "rate_shock_bps": 0},
+        {"name": "Spot +2.0%", "spot_shock_pct": 0.0200, "rate_shock_bps": 0},
     ]
 
 
@@ -55,6 +55,8 @@ def run_scenario_engine(all_options, base_spot, base_r, scenario_defs=None):
 
         regime_info = gex_engine.get_gamma_regime_text(shocked_spot, levels["zero_gamma"])
 
+        net_gex = scenario_gex_df["net_gex"].sum() if not scenario_gex_df.empty else 0.0
+
         rows.append(
             {
                 "scenario": sc["name"],
@@ -67,6 +69,7 @@ def run_scenario_engine(all_options, base_spot, base_r, scenario_defs=None):
                 "zero_gamma": round(float(levels["zero_gamma"]), 2),
                 "zero_gamma_type": levels.get("zero_gamma_type", "Unknown"),
                 "gamma_regime": regime_info["regime"],
+                "net_gex": round(float(net_gex), 2),
             }
         )
 
