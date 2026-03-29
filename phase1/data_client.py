@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+_logger = logging.getLogger(__name__)
 
 from phase1.config import (
     MAX_WORKERS,
@@ -11,11 +14,22 @@ from phase1.config import (
 )
 
 
+_safe_float_coercion_count = 0
+
 def safe_float(x, default=0.0):
+    global _safe_float_coercion_count
     try:
         return float(x)
     except (TypeError, ValueError):
+        _safe_float_coercion_count += 1
         return default
+
+def get_coercion_count():
+    return _safe_float_coercion_count
+
+def reset_coercion_count():
+    global _safe_float_coercion_count
+    _safe_float_coercion_count = 0
 
 
 class TradierDataClient:
@@ -92,6 +106,7 @@ class TradierDataClient:
             iv = greeks.get("ask_iv")
         iv = safe_float(iv, 0.0)
         if iv > 3:
+            _logger.debug("IV normalization: %.4f → %.4f (divided by 100)", iv, iv / 100.0)
             iv /= 100.0
         return max(iv, 0.0)
 

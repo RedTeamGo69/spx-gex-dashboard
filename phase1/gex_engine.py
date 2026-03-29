@@ -13,6 +13,10 @@ from phase1.config import (
     ZG_SWEEP_RANGE_PCT,
     ZG_SWEEP_STEP,
     ZG_FINE_STEP,
+    ZG_SWEEP_DYNAMIC,
+    ZG_SWEEP_MIN_RANGE_PCT,
+    ZG_SWEEP_MAX_RANGE_PCT,
+    ZG_SWEEP_IV_SCALE,
     PROFILE_RANGE_PCT,
     PROFILE_STEP,
     HYBRID_IV_MODE,
@@ -130,6 +134,8 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     no_model_input_count = 0
     skipped_count = 0
     skipped_oi = 0.0
+    range_filtered_count = 0
+    zero_oi_filtered_count = 0
     synthetic_fit_rel_errors = []
 
     client.prefetch_chains(ticker, all_exps)
@@ -152,10 +158,12 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
         for raw_opt, sign in [(c, +1) for c in calls_raw] + [(p, -1) for p in puts_raw]:
             K = raw_opt["strike"]
             if K < lower or K > upper:
+                range_filtered_count += 1
                 continue
 
             oi = raw_opt["openInterest"]
             if oi <= 0 or np.isnan(oi):
+                zero_oi_filtered_count += 1
                 continue
 
             prep = prepare_option_for_model(raw_opt, sign, T, spot, r)
@@ -309,6 +317,8 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
         "synthetic_fit_max_rel_error": float(np.max(synthetic_fit_rel_errors)) if synthetic_fit_rel_errors else None,
         "skipped_count": int(skipped_count),
         "skipped_oi": skipped_oi,
+        "range_filtered_count": int(range_filtered_count),
+        "zero_oi_filtered_count": int(zero_oi_filtered_count),
         "failed_expirations": failed_expirations,
         "failed_exp_count": len(failed_expirations),
         "coverage_ratio": coverage_ratio,
@@ -403,13 +413,23 @@ def _find_nearest_crossing(test_prices, gex_values, spot):
     return None if details is None else details["crossing"]
 
 
-def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
+def _compute_sweep_range_pct(atm_iv=None):
+    """Compute sweep range pct, optionally scaling by ATM IV."""
+    if ZG_SWEEP_DYNAMIC and atm_iv and atm_iv > 0:
+        return max(ZG_SWEEP_MIN_RANGE_PCT, min(ZG_SWEEP_MAX_RANGE_PCT, atm_iv * ZG_SWEEP_IV_SCALE))
+    return ZG_SWEEP_RANGE_PCT
+
+
+def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
     """
     Return rich diagnostics for zero-gamma solving.
 
     A true zero gamma requires a sign change in total GEX across price.
     If no sign change exists in the sweep window, we fall back to the
     minimum-absolute-GEX node and mark it as a fallback.
+
+    If atm_iv is provided and ZG_SWEEP_DYNAMIC is True, the sweep range
+    scales with volatility for better coverage in high-vol environments.
     """
     if not all_options:
         return {
@@ -424,8 +444,9 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
             "sweep_high": None,
         }
 
-    lo = float(spot) * (1 - ZG_SWEEP_RANGE_PCT)
-    hi = float(spot) * (1 + ZG_SWEEP_RANGE_PCT)
+    range_pct = _compute_sweep_range_pct(atm_iv)
+    lo = float(spot) * (1 - range_pct)
+    hi = float(spot) * (1 + range_pct)
 
     coarse_prices = np.arange(lo, hi + ZG_SWEEP_STEP, ZG_SWEEP_STEP, dtype=float)
     coarse_gex = _sweep_gex_at_prices(all_options, coarse_prices, r)
@@ -516,16 +537,17 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
     }
 
 
-def zero_gamma_sweep(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
-    return zero_gamma_sweep_details(all_options, spot, r=r)["zero_gamma"]
+def zero_gamma_sweep(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
+    return zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv)["zero_gamma"]
 
 
-def compute_gex_profile_curve(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
+def compute_gex_profile_curve(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
     if not all_options:
         return pd.DataFrame(columns=["price", "total_gex"])
 
-    lo = math.floor(spot * (1 - PROFILE_RANGE_PCT))
-    hi = math.ceil(spot * (1 + PROFILE_RANGE_PCT))
+    range_pct = _compute_sweep_range_pct(atm_iv) if atm_iv else PROFILE_RANGE_PCT
+    lo = math.floor(spot * (1 - range_pct))
+    hi = math.ceil(spot * (1 + range_pct))
     prices = np.arange(lo, hi + PROFILE_STEP, PROFILE_STEP, dtype=float)
     total_gex = _sweep_gex_at_prices(all_options, prices, r)
 
@@ -563,6 +585,15 @@ def get_gamma_regime_text(spot, zero_gamma):
     }
 
 
+def _estimate_atm_iv(all_options, spot):
+    """Estimate ATM IV from nearest options to spot."""
+    if not all_options:
+        return None
+    nearest = sorted(all_options, key=lambda o: abs(o[0] - spot))[:10]
+    ivs = [o[2] for o in nearest if o[2] > 0]
+    return float(np.mean(ivs)) if ivs else None
+
+
 def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
     if gex_df.empty:
         return {
@@ -587,7 +618,9 @@ def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
         pw = gex_df.loc[gex_df["net_gex"].idxmin()]
 
     if all_options:
-        zg_details = zero_gamma_sweep_details(all_options, spot, r=r)
+        # Compute ATM IV for dynamic sweep range
+        atm_iv = _estimate_atm_iv(all_options, spot)
+        zg_details = zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv)
         zg = zg_details["zero_gamma"]
         print(
             f"  Zero gamma (sweep): ${zg:.2f} "

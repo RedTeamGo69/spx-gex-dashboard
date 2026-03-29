@@ -18,6 +18,12 @@ ZG_SWEEP_RANGE_PCT = 0.05
 ZG_SWEEP_STEP = 5.0
 ZG_FINE_STEP = 0.5
 
+# Dynamic sweep: scale range by ATM IV when available
+ZG_SWEEP_DYNAMIC = True
+ZG_SWEEP_MIN_RANGE_PCT = 0.03
+ZG_SWEEP_MAX_RANGE_PCT = 0.12
+ZG_SWEEP_IV_SCALE = 1.5
+
 # Profile curve config
 PROFILE_RANGE_PCT = 0.05
 PROFILE_STEP = 1.0
@@ -101,6 +107,10 @@ def build_config_snapshot() -> dict:
         "zg_sweep_range_pct": ZG_SWEEP_RANGE_PCT,
         "zg_sweep_step": ZG_SWEEP_STEP,
         "zg_fine_step": ZG_FINE_STEP,
+        "zg_sweep_dynamic": ZG_SWEEP_DYNAMIC,
+        "zg_sweep_min_range_pct": ZG_SWEEP_MIN_RANGE_PCT,
+        "zg_sweep_max_range_pct": ZG_SWEEP_MAX_RANGE_PCT,
+        "zg_sweep_iv_scale": ZG_SWEEP_IV_SCALE,
         "profile_range_pct": PROFILE_RANGE_PCT,
         "profile_step": PROFILE_STEP,
         "t_floor": T_FLOOR,
