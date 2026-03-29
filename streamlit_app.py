@@ -406,7 +406,7 @@ def render_expected_move_panel(em_analysis):
             f"**Overnight (ES):** {arrow} **{fc['overnight_move_pts']:+.1f} pts** ({fc['overnight_move_pct']:+.2f}%)"
         )
         src_label = "manual" if fc["source"] == "manual" else "Yahoo ~10m delayed"
-        st.caption(f"ES: ${fc['es_last']:.2f} vs SPX prevclose ${fc['spx_prevclose']:.2f} ({src_label})")
+        st.caption(f"ES: \\${fc['es_last']:.2f} vs SPX prevclose \\${fc['spx_prevclose']:.2f} ({src_label})")
     else:
         on_pts = on.get("overnight_move_pts")
         if on_pts is not None:
@@ -792,13 +792,13 @@ def main():
     if not is_market_open:
         with st.sidebar:
             if yahoo_es and not has_manual:
-                es_note = f"Yahoo ES: ${yahoo_es['last']:.2f}"
+                es_note = f"Yahoo ES: \\${yahoo_es['last']:.2f}"
                 if yahoo_es.get("high"):
-                    es_note += f" (H: ${yahoo_es['high']:.2f} L: ${yahoo_es['low']:.2f})"
+                    es_note += f" (H: \\${yahoo_es['high']:.2f} L: \\${yahoo_es['low']:.2f})"
                 es_note += f" — {yahoo_es.get('note', '~10m delayed')}"
                 st.caption(es_note)
             elif has_manual:
-                st.caption(f"Using manual ES: ${es_last:.2f}")
+                st.caption(f"Using manual ES: \\${es_last:.2f}")
             else:
                 st.caption("No ES data available — enter manually above.")
 
