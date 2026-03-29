@@ -1,146 +1,282 @@
 """
-Historical GEX snapshot tracking using SQLite.
+Historical GEX snapshot tracking.
 
-Saves daily snapshots of key GEX levels for trend analysis.
+Storage backends (auto-detected):
+1. Neon Postgres — when DATABASE_URL is set in st.secrets or env vars
+   Persistent across sessions and deploys (recommended for Streamlit Cloud)
+2. In-session fallback — st.session_state only
+   Data lost on page refresh (works everywhere, zero config)
 """
 from __future__ import annotations
 
 import os
-import sqlite3
-import threading
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 NY_TZ = ZoneInfo("America/New_York")
+_logger = logging.getLogger(__name__)
 
-_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "gex_history.db")
-_lock = threading.Lock()
+# ── Backend detection ──
+_backend = "session"  # default fallback
+_pg_conn_str = None
+
+# Check for Neon/Postgres connection string
+try:
+    import streamlit as st
+    _pg_conn_str = st.secrets.get("DATABASE_URL", "")
+except Exception:
+    pass
+
+if not _pg_conn_str:
+    _pg_conn_str = os.environ.get("DATABASE_URL", "")
+
+if _pg_conn_str:
+    try:
+        import psycopg2
+        _backend = "postgres"
+    except ImportError:
+        _logger.warning("DATABASE_URL set but psycopg2 not installed. Falling back to session storage.")
+        _pg_conn_str = None
 
 
-def _get_connection():
-    conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+# ── Postgres backend ──
+
+def _pg_get_connection():
+    import psycopg2
+    conn = psycopg2.connect(_pg_conn_str, sslmode="require")
+    conn.autocommit = True
     return conn
 
 
-def _ensure_table(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS gex_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            date TEXT NOT NULL,
-            minute_key TEXT NOT NULL UNIQUE,
-            spot REAL NOT NULL,
-            zero_gamma REAL NOT NULL,
-            is_true_crossing INTEGER NOT NULL DEFAULT 1,
-            call_wall REAL,
-            put_wall REAL,
-            regime TEXT,
-            net_gex REAL,
-            expected_move_pts REAL,
-            confidence_score REAL,
-            freshness_score REAL,
-            coverage_ratio REAL,
-            pc_ratio REAL,
-            gex_ratio REAL,
-            call_iv REAL,
-            put_iv REAL
+def _pg_ensure_table():
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gex_snapshots (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                date TEXT NOT NULL,
+                minute_key TEXT NOT NULL UNIQUE,
+                spot REAL NOT NULL,
+                zero_gamma REAL NOT NULL,
+                is_true_crossing BOOLEAN NOT NULL DEFAULT TRUE,
+                call_wall REAL,
+                put_wall REAL,
+                regime TEXT,
+                net_gex REAL,
+                expected_move_pts REAL,
+                confidence_score REAL,
+                freshness_score REAL,
+                coverage_ratio REAL,
+                pc_ratio REAL,
+                gex_ratio REAL,
+                call_iv REAL,
+                put_iv REAL
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_snapshots_date ON gex_snapshots(date)
+        """)
+    finally:
+        conn.close()
+
+
+def _pg_save_snapshot(row):
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO gex_snapshots
+               (timestamp, date, minute_key, spot, zero_gamma, is_true_crossing,
+                call_wall, put_wall, regime, net_gex, expected_move_pts,
+                confidence_score, freshness_score, coverage_ratio,
+                pc_ratio, gex_ratio, call_iv, put_iv)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (minute_key) DO NOTHING""",
+            (
+                row["timestamp"], row["date"], row["minute_key"],
+                row["spot"], row["zero_gamma"], row["is_true_crossing"],
+                row["call_wall"], row["put_wall"], row["regime"],
+                row["net_gex"], row["expected_move_pts"],
+                row["confidence_score"], row["freshness_score"],
+                row["coverage_ratio"], row["pc_ratio"], row["gex_ratio"],
+                row["call_iv"], row["put_iv"],
+            ),
         )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_snapshots_date ON gex_snapshots(date)
-    """)
-    conn.commit()
+    finally:
+        conn.close()
 
 
-# Initialize on import
-with _lock:
-    _conn = _get_connection()
-    _ensure_table(_conn)
+def _pg_get_daily_summary(days):
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT * FROM gex_snapshots
+               WHERE id IN (
+                   SELECT MAX(id) FROM gex_snapshots
+                   WHERE date >= (CURRENT_DATE - INTERVAL '%s days')::TEXT
+                   GROUP BY date
+               )
+               ORDER BY date DESC""",
+            (days,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
 
 
-def save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
-    """Save a GEX snapshot. Deduplicates by minute-truncated timestamp."""
+def _pg_get_zero_gamma_trend(days):
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT date, zero_gamma, spot FROM gex_snapshots
+               WHERE date >= (CURRENT_DATE - INTERVAL '%s days')::TEXT
+               ORDER BY timestamp ASC""",
+            (days,),
+        )
+        return cur.fetchall()
+    finally:
+        conn.close()
+
+
+def _pg_get_history(days):
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT * FROM gex_snapshots
+               WHERE date >= (CURRENT_DATE - INTERVAL '%s days')::TEXT
+               ORDER BY timestamp DESC""",
+            (days,),
+        )
+        cols = [desc[0] for desc in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# ── Session-state backend ──
+
+def _session_get_store():
+    import streamlit as st
+    if "gex_history" not in st.session_state:
+        st.session_state["gex_history"] = []
+    return st.session_state["gex_history"]
+
+
+def _session_save_snapshot(row):
+    store = _session_get_store()
+    # Dedup by minute_key
+    if store and store[-1].get("minute_key") == row["minute_key"]:
+        return
+    store.append(row)
+    # Keep last 500 snapshots in memory
+    if len(store) > 500:
+        del store[:-500]
+
+
+def _session_get_daily_summary(days):
+    store = _session_get_store()
+    if not store:
+        return []
+    # Group by date, take last per day
+    by_date = {}
+    for row in store:
+        by_date[row["date"]] = row
+    result = sorted(by_date.values(), key=lambda r: r["date"], reverse=True)
+    return result[:days]
+
+
+def _session_get_zero_gamma_trend(days):
+    store = _session_get_store()
+    return [(r["date"], r["zero_gamma"], r["spot"]) for r in store]
+
+
+def _session_get_history(days):
+    store = _session_get_store()
+    return list(reversed(store[-days * 50:]))
+
+
+# ── Initialize Postgres table if needed ──
+
+if _backend == "postgres":
+    try:
+        _pg_ensure_table()
+    except Exception as e:
+        _logger.warning(f"Failed to initialize Postgres table: {e}. Falling back to session storage.")
+        _backend = "session"
+
+
+# ── Public API ──
+
+def get_backend():
+    """Return the active backend name: 'postgres' or 'session'."""
+    return _backend
+
+
+def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
     now = datetime.now(NY_TZ)
-    minute_key = now.strftime("%Y-%m-%d %H:%M")
-    date_str = now.strftime("%Y-%m-%d")
-    ts = now.isoformat()
-
     em_pts = None
     if em_analysis:
         em_data = em_analysis.get("expected_move", {})
         em_pts = em_data.get("expected_move_pts")
 
-    with _lock:
-        try:
-            _conn.execute(
-                """INSERT OR IGNORE INTO gex_snapshots
-                   (timestamp, date, minute_key, spot, zero_gamma, is_true_crossing,
-                    call_wall, put_wall, regime, net_gex, expected_move_pts,
-                    confidence_score, freshness_score, coverage_ratio,
-                    pc_ratio, gex_ratio, call_iv, put_iv)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    ts, date_str, minute_key,
-                    spot,
-                    levels.get("zero_gamma", 0),
-                    1 if levels.get("is_true_crossing", True) else 0,
-                    levels.get("call_wall"),
-                    levels.get("put_wall"),
-                    regime_info.get("regime"),
-                    stats.get("net_gex", 0),
-                    em_pts,
-                    confidence_info.get("score"),
-                    staleness_info.get("freshness_score"),
-                    stats.get("coverage_ratio"),
-                    stats.get("pc_ratio"),
-                    stats.get("gex_ratio"),
-                    stats.get("call_iv"),
-                    stats.get("put_iv"),
-                ),
-            )
-            _conn.commit()
-        except sqlite3.Error:
-            pass  # silently skip on DB errors
+    return {
+        "timestamp": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "minute_key": now.strftime("%Y-%m-%d %H:%M"),
+        "spot": spot,
+        "zero_gamma": levels.get("zero_gamma", 0),
+        "is_true_crossing": bool(levels.get("is_true_crossing", True)),
+        "call_wall": levels.get("call_wall"),
+        "put_wall": levels.get("put_wall"),
+        "regime": regime_info.get("regime"),
+        "net_gex": stats.get("net_gex", 0),
+        "expected_move_pts": em_pts,
+        "confidence_score": confidence_info.get("score"),
+        "freshness_score": staleness_info.get("freshness_score"),
+        "coverage_ratio": stats.get("coverage_ratio"),
+        "pc_ratio": stats.get("pc_ratio"),
+        "gex_ratio": stats.get("gex_ratio"),
+        "call_iv": stats.get("call_iv"),
+        "put_iv": stats.get("put_iv"),
+    }
+
+
+def save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
+    """Save a GEX snapshot. Deduplicates by minute."""
+    row = _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis)
+    try:
+        if _backend == "postgres":
+            _pg_save_snapshot(row)
+        else:
+            _session_save_snapshot(row)
+    except Exception:
+        # Never let history tracking crash the main app
+        pass
 
 
 def get_history(days=30):
-    """Get historical snapshots as a list of dicts, most recent first."""
-    with _lock:
-        rows = _conn.execute(
-            """SELECT * FROM gex_snapshots
-               WHERE date >= date('now', ?)
-               ORDER BY timestamp DESC""",
-            (f"-{days} days",),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    """Get historical snapshots, most recent first."""
+    if _backend == "postgres":
+        return _pg_get_history(days)
+    return _session_get_history(days)
 
 
 def get_zero_gamma_trend(days=14):
-    """Get zero gamma values over time. Returns list of (date, zero_gamma, spot) tuples."""
-    with _lock:
-        rows = _conn.execute(
-            """SELECT date, zero_gamma, spot
-               FROM gex_snapshots
-               WHERE date >= date('now', ?)
-               ORDER BY timestamp ASC""",
-            (f"-{days} days",),
-        ).fetchall()
-    return [(r["date"], r["zero_gamma"], r["spot"]) for r in rows]
+    """Get zero gamma values over time."""
+    if _backend == "postgres":
+        return _pg_get_zero_gamma_trend(days)
+    return _session_get_zero_gamma_trend(days)
 
 
 def get_daily_summary(days=30):
-    """Get one row per day (latest snapshot of each day). Returns list of dicts."""
-    with _lock:
-        rows = _conn.execute(
-            """SELECT * FROM gex_snapshots
-               WHERE id IN (
-                   SELECT MAX(id) FROM gex_snapshots
-                   WHERE date >= date('now', ?)
-                   GROUP BY date
-               )
-               ORDER BY date DESC""",
-            (f"-{days} days",),
-        ).fetchall()
-    return [dict(r) for r in rows]
+    """Get one row per day (latest snapshot). Returns list of dicts."""
+    if _backend == "postgres":
+        return _pg_get_daily_summary(days)
+    return _session_get_daily_summary(days)

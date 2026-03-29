@@ -31,7 +31,7 @@ from phase1.wall_credibility import build_wall_credibility
 from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
-from phase1.gex_history import save_snapshot, get_daily_summary, get_zero_gamma_trend
+from phase1.gex_history import save_snapshot, get_daily_summary, get_zero_gamma_trend, get_backend as get_history_backend
 
 TOOL_VERSION = "v5-web"
 
@@ -653,6 +653,12 @@ def _render_history_tab(current_spot):
     """C1: Render historical GEX trend chart."""
     days = st.selectbox("History range", [7, 14, 30, 60], index=1, key="hist_days")
     history = get_daily_summary(days=days)
+
+    backend = get_history_backend()
+    if backend == "postgres":
+        st.caption("💾 Connected to Neon Postgres — history persists across sessions")
+    else:
+        st.caption("⚡ Session-only storage — add DATABASE_URL to secrets for persistent history")
 
     if not history:
         st.info("No historical data yet. Snapshots are saved automatically on each refresh.")
