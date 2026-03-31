@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 NY_TZ = ZoneInfo("America/New_York")
@@ -112,16 +112,17 @@ def _pg_save_snapshot(row):
 def _pg_get_daily_summary(days):
     conn = _pg_get_connection()
     try:
+        cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         cur = conn.cursor()
         cur.execute(
             """SELECT * FROM gex_snapshots
                WHERE id IN (
                    SELECT MAX(id) FROM gex_snapshots
-                   WHERE date >= (CURRENT_DATE - INTERVAL '%s days')::TEXT
+                   WHERE date >= %s
                    GROUP BY date
                )
                ORDER BY date DESC""",
-            (days,),
+            (cutoff,),
         )
         cols = [desc[0] for desc in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -132,12 +133,13 @@ def _pg_get_daily_summary(days):
 def _pg_get_zero_gamma_trend(days):
     conn = _pg_get_connection()
     try:
+        cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         cur = conn.cursor()
         cur.execute(
             """SELECT date, zero_gamma, spot FROM gex_snapshots
-               WHERE date >= (CURRENT_DATE - INTERVAL '%s days')::TEXT
+               WHERE date >= %s
                ORDER BY timestamp ASC""",
-            (days,),
+            (cutoff,),
         )
         return cur.fetchall()
     finally:
@@ -147,12 +149,13 @@ def _pg_get_zero_gamma_trend(days):
 def _pg_get_history(days):
     conn = _pg_get_connection()
     try:
+        cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         cur = conn.cursor()
         cur.execute(
             """SELECT * FROM gex_snapshots
-               WHERE date >= (CURRENT_DATE - INTERVAL '%s days')::TEXT
+               WHERE date >= %s
                ORDER BY timestamp DESC""",
-            (days,),
+            (cutoff,),
         )
         cols = [desc[0] for desc in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
