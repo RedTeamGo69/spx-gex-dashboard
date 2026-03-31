@@ -31,7 +31,7 @@ from phase1.wall_credibility import build_wall_credibility
 from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
-from phase1.gex_history import save_snapshot, get_daily_summary, get_zero_gamma_trend, get_backend as get_history_backend
+from phase1.gex_history import save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history, get_backend as get_history_backend
 
 TOOL_VERSION = "v5-web"
 
@@ -717,6 +717,81 @@ def render_wall_credibility(wall_cred):
             st.caption(f"  • {r}")
 
 
+def render_gex_stream(stats, levels, spot):
+    """Sidebar GEX Stream panel — key metrics at a glance."""
+    st.markdown("#### 📡 GEX Stream")
+
+    gex_ratio = stats.get("gex_ratio", 0)
+    net_gex = stats.get("net_gex", 0)
+    pc_ratio = stats.get("pc_ratio", 0)
+    call_iv = stats.get("call_iv", 0)
+    put_iv = stats.get("put_iv", 0)
+
+    # Color coding
+    gr_color = COLORS["positive"] if gex_ratio > 1 else COLORS["negative"]
+    ng_color = COLORS["positive"] if net_gex > 0 else COLORS["negative"]
+    cw_c = COLORS["call_wall"]
+    pw_c = COLORS["put_wall"]
+    zg_c = COLORS["zero_gamma"]
+    text_w = COLORS["text_white"]
+    text_m = COLORS["text_muted"]
+
+    # Format net GEX
+    ng_fmt = stats.get("net_gex_fmt", f"{net_gex:.0f}")
+
+    # GEX Ratio sigma (rough heuristic: 1.0 = neutral)
+    gr_sigma = abs(gex_ratio - 1.0) / 0.5
+    gr_sigma_str = f"{gr_sigma:.1f}σ"
+
+    stream_html = f"""
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">GEX Ratio</td>
+        <td style="color:{gr_color};font-weight:bold;text-align:right;padding:3px 6px;">{gex_ratio:.2f}</td>
+        <td style="color:{text_m};font-size:10px;text-align:right;padding:3px 6px;">{gr_sigma_str}</td>
+        <td style="color:{text_m};padding:3px 6px;">Net GEX</td>
+        <td style="color:{ng_color};font-weight:bold;text-align:right;padding:3px 6px;">{ng_fmt}</td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{text_m};padding:3px 6px;">Call OI</td>
+        <td colspan="2" style="color:{cw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("call_oi", "0")} @ {stats.get("call_oi_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Pos GEX</td>
+        <td colspan="2" style="color:{cw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("pos_gex", "0")} @ {stats.get("pos_gex_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Zero Gamma</td>
+        <td colspan="4" style="color:{zg_c};font-weight:bold;text-align:right;padding:3px 6px;">{levels.get("zero_gamma", 0):,.2f}</td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Neg GEX</td>
+        <td colspan="2" style="color:{pw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("neg_gex", "0")} @ {stats.get("neg_gex_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Put OI</td>
+        <td colspan="2" style="color:{pw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("put_oi", "0")} @ {stats.get("put_oi_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{text_m};padding:3px 6px;">Call IV</td>
+        <td style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{call_iv:.1f}%</td>
+        <td style="color:{text_m};padding:3px 6px;"></td>
+        <td style="color:{text_m};padding:3px 6px;">Put IV</td>
+        <td style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{put_iv:.1f}%</td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{text_m};padding:3px 6px;">P/C OI Ratio</td>
+        <td colspan="4" style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{pc_ratio:.2f}</td>
+      </tr>
+    </table>
+    """
+    st.markdown(stream_html, unsafe_allow_html=True)
+
+
 def render_data_quality(stats, staleness_info):
     st.markdown("#### Data Quality")
 
@@ -748,14 +823,78 @@ def render_data_quality(stats, staleness_info):
 
 def _render_history_tab(current_spot):
     """C1: Render historical GEX trend chart."""
+    backend = get_history_backend()
+
+    # ── Save status diagnostic ──
+    save_ok = st.session_state.get("last_save_ok")
+    save_time = st.session_state.get("last_save_time", "–")
+    if save_ok is True:
+        status_icon = "✅"
+        status_text = f"Last save: {save_time}"
+    elif save_ok is False:
+        status_icon = "❌"
+        err = st.session_state.get("last_save_error", "unknown")
+        status_text = f"Save failed: {err}"
+    else:
+        status_icon = "⏳"
+        status_text = "No save attempted yet"
+
+    if backend == "postgres":
+        st.caption(f"💾 Neon Postgres — history persists across sessions &nbsp;|&nbsp; {status_icon} {status_text}")
+    else:
+        st.warning(
+            "⚡ **Session-only storage** — history is lost on page refresh. "
+            "To persist history across sessions, add `DATABASE_URL` to your Streamlit secrets "
+            "(Settings → Secrets on Streamlit Cloud) with your Neon Postgres connection string."
+        )
+        st.caption(f"{status_icon} {status_text}")
+
+    # ── View toggle: daily summary vs intraday snapshots ──
+    view = st.radio("View", ["Daily Summary", "Today's Snapshots"], horizontal=True, key="hist_view")
+
+    if view == "Today's Snapshots":
+        # Show all snapshots from the current session (useful for debugging)
+        all_snaps = get_history(days=1)
+        if not all_snaps:
+            st.info("No snapshots recorded yet this session. Each refresh saves a snapshot automatically.")
+            return
+
+        snap_df = pd.DataFrame(all_snaps)
+        snap_df["time"] = pd.to_datetime(snap_df["timestamp"]).dt.strftime("%H:%M:%S")
+        display_cols = ["time", "spot", "zero_gamma", "call_wall", "put_wall", "regime",
+                        "net_gex", "gex_ratio", "call_iv", "put_iv"]
+        avail_cols = [c for c in display_cols if c in snap_df.columns]
+        st.markdown(f"**{len(snap_df)} snapshot(s)** recorded today")
+        st.dataframe(snap_df[avail_cols], use_container_width=True, hide_index=True)
+
+        # Intraday chart
+        if len(snap_df) >= 2:
+            snap_df["ts"] = pd.to_datetime(snap_df["timestamp"])
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=snap_df["ts"], y=snap_df["spot"], mode="lines+markers",
+                name="Spot", line=dict(color=COLORS["spot"], width=2), marker=dict(size=4),
+            ))
+            fig.add_trace(go.Scatter(
+                x=snap_df["ts"], y=snap_df["zero_gamma"], mode="lines+markers",
+                name="Zero Gamma", line=dict(color=COLORS["zero_gamma"], width=2), marker=dict(size=4),
+            ))
+            fig.update_layout(
+                paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+                font_color="white", font_size=10,
+                margin=dict(l=60, r=10, t=35, b=40),
+                title="Intraday Spot vs Zero Gamma",
+                xaxis=dict(gridcolor=COLORS["grid_major"]),
+                yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                height=400,
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        return
+
+    # ── Daily Summary view ──
     days = st.selectbox("History range", [7, 14, 30, 60], index=1, key="hist_days")
     history = get_daily_summary(days=days)
-
-    backend = get_history_backend()
-    if backend == "postgres":
-        st.caption("💾 Connected to Neon Postgres — history persists across sessions")
-    else:
-        st.caption("⚡ Session-only storage — add DATABASE_URL to secrets for persistent history")
 
     if not history:
         st.info("No historical data yet. Snapshots are saved automatically on each refresh.")
@@ -1284,8 +1423,11 @@ def main():
     # ── Save historical snapshot ──
     try:
         save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
-    except Exception:
-        pass
+        st.session_state["last_save_ok"] = True
+        st.session_state["last_save_time"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    except Exception as e:
+        st.session_state["last_save_ok"] = False
+        st.session_state["last_save_error"] = str(e)
 
     # Show Yahoo ES status in sidebar (pre-market only)
     if not is_market_open:
@@ -1493,6 +1635,8 @@ def main():
 
     # ── Sidebar detail panels ──
     with st.sidebar:
+        st.divider()
+        render_gex_stream(data.stats, levels, spot)
         st.divider()
         if market_ctx != "premarket":
             render_expected_move_panel(em_analysis)
