@@ -991,6 +991,7 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
 
     # Visual range display
+    padding = em_pts * 0.3
     fig = go.Figure()
     fig.add_shape(type="rect", x0=lower, x1=upper, y0=0, y1=1,
                   fillcolor="rgba(179,136,255,0.15)", line=dict(color=COLORS["em_level"], width=1))
@@ -1006,11 +1007,16 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", height=150, margin=dict(l=10, r=10, t=30, b=10),
-        xaxis=dict(gridcolor=COLORS["grid_major"], title="Price"),
+        xaxis=dict(
+            gridcolor=COLORS["grid_major"], title="Price",
+            range=[lower - padding, upper + padding],
+            tickformat="$,.0f",
+        ),
         yaxis=dict(visible=False), showlegend=False,
         title="Expected Move Range",
+        dragmode=False,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 
 def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr):
