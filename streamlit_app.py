@@ -1058,22 +1058,26 @@ def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, 
         st.info("No multi-timeframe data available.")
         return
 
-    # Color mapping for timeframes
-    tf_colors = {
-        "0DTE": "#ff6b6b",
-        "This Week": "#ffd600",
-        "This Month": "#69f0ae",
+    # Color mapping and opacity for timeframes (render order: back to front)
+    # Longest timeframe in back (most transparent), 0DTE on top (most opaque)
+    tf_style = {
+        "This Month": {"color": "#69f0ae", "opacity": 0.35},
+        "This Week":  {"color": "#ffd600", "opacity": 0.55},
+        "0DTE":       {"color": "#ff6b6b", "opacity": 0.85},
     }
+    # Render in back-to-front order so 0DTE is always visible on top
+    render_order = ["This Month", "This Week", "0DTE"]
 
     fig = go.Figure()
-    for label, gex_df in tf_data.items():
-        if gex_df.empty:
+    for label in render_order:
+        gex_df = tf_data.get(label)
+        if gex_df is None or gex_df.empty:
             continue
         df = gex_df.sort_values("strike")
-        color = tf_colors.get(label, "#9c88ff")
+        style = tf_style.get(label, {"color": "#9c88ff", "opacity": 0.6})
         fig.add_trace(go.Bar(
             y=df["strike"], x=df["net_gex"], orientation="h",
-            name=label, marker_color=color, marker_opacity=0.6,
+            name=label, marker_color=style["color"], marker_opacity=style["opacity"],
             hovertemplate=f"{label}<br>Strike: $%{{y:.0f}}<br>GEX: %{{x:,.0f}}<extra></extra>",
         ))
 
@@ -1092,7 +1096,7 @@ def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, 
         title="Multi-Timeframe GEX Comparison",
         xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
-        barmode="group",
+        barmode="overlay",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         height=700,
     )
@@ -1237,8 +1241,18 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
 
     # Try to restore from Postgres if this is a new session (e.g. phone)
     if "em_snapshot" not in st.session_state:
-        db_snap = get_em_snapshot(today_str)
+        try:
+            db_snap = get_em_snapshot(today_str)
+        except Exception:
+            db_snap = None
         if db_snap and db_snap.get("expected_move_pts"):
+            # Fill in expected_move_pct if missing (older DB rows)
+            if not db_snap.get("expected_move_pct") and db_snap["expected_move_pts"] > 0:
+                prev_close = em_analysis.get("overnight_move", {}).get("prev_close")
+                if prev_close and prev_close > 0:
+                    db_snap["expected_move_pct"] = (db_snap["expected_move_pts"] / prev_close) * 100
+                else:
+                    db_snap["expected_move_pct"] = em_live.get("expected_move_pct")
             st.session_state["em_snapshot"] = db_snap
             st.session_state["em_snapshot_date"] = today_str
             captured = db_snap.get("captured_at", "")
@@ -1256,7 +1270,7 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
     if "em_snapshot" not in st.session_state and em_live.get("expected_move_pts"):
         st.session_state["em_snapshot"] = {
             "expected_move_pts": em_live["expected_move_pts"],
-            "expected_move_pct": em_live["expected_move_pct"],
+            "expected_move_pct": em_live.get("expected_move_pct"),
             "upper_level": em_live["upper_level"],
             "lower_level": em_live["lower_level"],
             "straddle": em_live.get("straddle"),
@@ -1271,13 +1285,14 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
 
     if "em_snapshot" in st.session_state:
         snap = st.session_state["em_snapshot"]
+        em_pct = snap.get("expected_move_pct") or em_analysis.get("expected_move", {}).get("expected_move_pct")
         em_analysis["expected_move"] = {
             **em_analysis.get("expected_move", {}),
             "expected_move_pts": snap["expected_move_pts"],
-            "expected_move_pct": snap["expected_move_pct"],
+            "expected_move_pct": em_pct,
             "upper_level": snap["upper_level"],
             "lower_level": snap["lower_level"],
-            "straddle": snap["straddle"],
+            "straddle": snap.get("straddle"),
         }
         on_pts = em_analysis.get("overnight_move", {}).get("overnight_move_pts")
         if on_pts is not None and snap["expected_move_pts"] > 0:
