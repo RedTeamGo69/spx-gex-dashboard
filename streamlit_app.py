@@ -1489,17 +1489,24 @@ def main():
     # ── Apply EM snapshot logic ──
     em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot)
 
-    # ── Save historical snapshot (market hours only) ──
+    # ── Save historical snapshot (market hours only, throttled to refresh interval) ──
     if is_market_open:
-        try:
-            save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
-            st.session_state["last_save_ok"] = True
-            st.session_state["last_save_time"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-            st.session_state["last_save_error"] = None
-        except Exception as e:
-            st.session_state["last_save_ok"] = False
-            st.session_state["last_save_error"] = str(e)
-            _logger.error(f"History save failed: {e}")
+        now_utc = datetime.now(timezone.utc)
+        last_snap_utc = st.session_state.get("_last_snapshot_utc")
+        # Minimum seconds between saves: use refresh interval, or 300s (5 min) if auto-refresh is off
+        min_gap = refresh_seconds if refresh_seconds > 0 else 300
+        should_save = last_snap_utc is None or (now_utc - last_snap_utc).total_seconds() >= min_gap
+        if should_save:
+            try:
+                save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
+                st.session_state["_last_snapshot_utc"] = now_utc
+                st.session_state["last_save_ok"] = True
+                st.session_state["last_save_time"] = now_utc.strftime("%H:%M:%S UTC")
+                st.session_state["last_save_error"] = None
+            except Exception as e:
+                st.session_state["last_save_ok"] = False
+                st.session_state["last_save_error"] = str(e)
+                _logger.error(f"History save failed: {e}")
     else:
         st.session_state["last_save_ok"] = None
         st.session_state["last_save_time"] = "skipped (market closed)"
