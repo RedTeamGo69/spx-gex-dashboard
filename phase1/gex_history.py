@@ -303,19 +303,28 @@ def save_em_snapshot(em_data, date_str):
             CREATE TABLE IF NOT EXISTS em_snapshots (
                 date TEXT PRIMARY KEY,
                 em_pts REAL,
+                em_pct REAL,
                 upper_level REAL,
                 lower_level REAL,
                 straddle_strike REAL,
                 captured_at TEXT
             )
         """)
+        # Add em_pct column if missing (existing tables)
+        cur.execute("""
+            DO $$ BEGIN
+                ALTER TABLE em_snapshots ADD COLUMN em_pct REAL;
+            EXCEPTION WHEN duplicate_column THEN NULL;
+            END $$
+        """)
         cur.execute(
-            """INSERT INTO em_snapshots (date, em_pts, upper_level, lower_level, straddle_strike, captured_at)
-               VALUES (%s, %s, %s, %s, %s, %s)
+            """INSERT INTO em_snapshots (date, em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (date) DO NOTHING""",
             (
                 date_str,
                 em_data.get("expected_move_pts"),
+                em_data.get("expected_move_pct"),
                 em_data.get("upper_level"),
                 em_data.get("lower_level"),
                 em_data.get("straddle", {}).get("strike"),
@@ -333,17 +342,36 @@ def get_em_snapshot(date_str):
     try:
         conn = _pg_get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT em_pts, upper_level, lower_level, straddle_strike, captured_at FROM em_snapshots WHERE date = %s", (date_str,))
-        row = cur.fetchone()
-        conn.close()
-        if row:
-            return {
-                "expected_move_pts": row[0],
-                "upper_level": row[1],
-                "lower_level": row[2],
-                "straddle": {"strike": row[3]},
-                "captured_at": row[4],
-            }
+        # Try reading em_pct (new column); fall back if column doesn't exist yet
+        try:
+            cur.execute("SELECT em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at FROM em_snapshots WHERE date = %s", (date_str,))
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "expected_move_pts": row[0],
+                    "expected_move_pct": row[1],
+                    "upper_level": row[2],
+                    "lower_level": row[3],
+                    "straddle": {"strike": row[4]},
+                    "captured_at": row[5],
+                }
+        except Exception:
+            # em_pct column may not exist yet on older schemas
+            conn = _pg_get_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT em_pts, upper_level, lower_level, straddle_strike, captured_at FROM em_snapshots WHERE date = %s", (date_str,))
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "expected_move_pts": row[0],
+                    "expected_move_pct": None,
+                    "upper_level": row[1],
+                    "lower_level": row[2],
+                    "straddle": {"strike": row[3]},
+                    "captured_at": row[4],
+                }
     except Exception:
         pass
     return None
