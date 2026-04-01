@@ -222,32 +222,39 @@ def get_backend():
     return _backend
 
 
+def _to_float(v):
+    """Convert numpy/pandas numeric types to plain Python float for psycopg2."""
+    if v is None:
+        return None
+    return float(v)
+
+
 def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
     now = datetime.now(NY_TZ)
     em_pts = None
     if em_analysis:
         em_data = em_analysis.get("expected_move", {})
-        em_pts = em_data.get("expected_move_pts")
+        em_pts = _to_float(em_data.get("expected_move_pts"))
 
     return {
         "timestamp": now.isoformat(),
         "date": now.strftime("%Y-%m-%d"),
         "minute_key": now.strftime("%Y-%m-%d %H:%M"),
-        "spot": spot,
-        "zero_gamma": levels.get("zero_gamma", 0),
+        "spot": _to_float(spot),
+        "zero_gamma": _to_float(levels.get("zero_gamma", 0)),
         "is_true_crossing": bool(levels.get("is_true_crossing", True)),
-        "call_wall": levels.get("call_wall"),
-        "put_wall": levels.get("put_wall"),
-        "regime": regime_info.get("regime"),
-        "net_gex": stats.get("net_gex", 0),
+        "call_wall": _to_float(levels.get("call_wall")),
+        "put_wall": _to_float(levels.get("put_wall")),
+        "regime": str(regime_info.get("regime")) if regime_info.get("regime") else None,
+        "net_gex": _to_float(stats.get("net_gex", 0)),
         "expected_move_pts": em_pts,
-        "confidence_score": confidence_info.get("score"),
-        "freshness_score": staleness_info.get("freshness_score"),
-        "coverage_ratio": stats.get("coverage_ratio"),
-        "pc_ratio": stats.get("pc_ratio"),
-        "gex_ratio": stats.get("gex_ratio"),
-        "call_iv": stats.get("call_iv"),
-        "put_iv": stats.get("put_iv"),
+        "confidence_score": _to_float(confidence_info.get("score")),
+        "freshness_score": _to_float(staleness_info.get("freshness_score")),
+        "coverage_ratio": _to_float(stats.get("coverage_ratio")),
+        "pc_ratio": _to_float(stats.get("pc_ratio")),
+        "gex_ratio": _to_float(stats.get("gex_ratio")),
+        "call_iv": _to_float(stats.get("call_iv")),
+        "put_iv": _to_float(stats.get("put_iv")),
     }
 
 
