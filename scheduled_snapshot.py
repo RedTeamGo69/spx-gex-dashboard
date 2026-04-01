@@ -53,6 +53,21 @@ def capture_snapshot():
     today_str = run_now.strftime("%Y-%m-%d")
     _logger.info(f"Starting scheduled snapshot at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
 
+    # ── Market hours guard ──
+    # Both EDT and EST cron triggers fire; skip if outside 9:25 AM - 4:05 PM ET window.
+    hour, minute = run_now.hour, run_now.minute
+    time_val = hour * 60 + minute  # minutes since midnight
+    market_open = 9 * 60 + 25      # 9:25 AM (5-min early buffer)
+    market_close = 16 * 60 + 5     # 4:05 PM (5-min late buffer)
+    if time_val < market_open or time_val > market_close:
+        _logger.info(f"Outside market hours ({run_now.strftime('%I:%M %p ET')}) — skipping (likely wrong DST trigger)")
+        sys.exit(0)
+
+    # Skip weekends (shouldn't happen with Mon-Fri cron, but just in case)
+    if run_now.weekday() >= 5:
+        _logger.info("Weekend — skipping")
+        sys.exit(0)
+
     # ── Fetch market data ──
     client = TradierDataClient(token=tradier_token)
     client.clear_cache()

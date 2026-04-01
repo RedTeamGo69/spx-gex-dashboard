@@ -2,19 +2,24 @@ name: Scheduled GEX Snapshot
 
 on:
   schedule:
-    # 9:30 AM ET = 13:30 UTC (EST+5) or 13:30 UTC (EDT+4)
-    # Using 13:30 UTC covers EDT market open; adjust to 14:30 for EST if needed
-    - cron: "30 13 * * 1-5"   # Mon-Fri 9:30 AM ET (during EDT)
+    # US market hours are 9:30 AM - 4:00 PM Eastern Time.
+    # Eastern = UTC-4 (EDT, Mar-Nov) or UTC-5 (EST, Nov-Mar).
+    # We fire at BOTH possible UTC offsets and let the script skip if
+    # it's outside market hours — no manual DST adjustment needed.
 
-    # 3:59 PM ET = 19:59 UTC (EDT)
-    - cron: "59 19 * * 1-5"   # Mon-Fri 3:59 PM ET (during EDT)
+    # 9:30 AM ET open scan
+    - cron: "30 13 * * 1-5"   # 9:30 AM EDT (Mar-Nov)
+    - cron: "30 14 * * 1-5"   # 9:30 AM EST (Nov-Mar)
+
+    # 3:59 PM ET close scan
+    - cron: "59 19 * * 1-5"   # 3:59 PM EDT (Mar-Nov)
+    - cron: "59 20 * * 1-5"   # 3:59 PM EST (Nov-Mar)
 
   workflow_dispatch:           # Allow manual trigger from GitHub UI
 
 jobs:
   capture:
     runs-on: ubuntu-latest
-    # Skip on US market holidays (best-effort: cron still fires, but Tradier returns no data)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
