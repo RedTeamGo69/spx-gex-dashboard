@@ -926,36 +926,80 @@ def _render_history_tab(current_spot):
 
     hist_df = pd.DataFrame(history)
     hist_df["date"] = pd.to_datetime(hist_df["date"])
+    # Backward compat: tag rows if scan_type not present (old data)
+    if "scan_type" not in hist_df.columns:
+        hist_df["scan_type"] = "close"
+
+    open_df = hist_df[hist_df["scan_type"] == "open"].copy()
+    close_df = hist_df[hist_df["scan_type"] == "close"].copy()
+    # For days with only an open scan and no close yet, also include in close for line continuity
+    if close_df.empty and not open_df.empty:
+        close_df = open_df.copy()
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=hist_df["date"], y=hist_df["zero_gamma"],
-        mode="lines+markers", name="Zero Gamma",
-        line=dict(color=COLORS["zero_gamma"], width=2),
-        marker=dict(size=5),
-    ))
-    fig.add_trace(go.Scatter(
-        x=hist_df["date"], y=hist_df["spot"],
-        mode="lines+markers", name="Spot",
-        line=dict(color=COLORS["spot"], width=2, dash="dot"),
-        marker=dict(size=4),
-    ))
-    fig.add_trace(go.Scatter(
-        x=hist_df["date"], y=hist_df["call_wall"],
-        mode="lines", name="Call Wall",
-        line=dict(color=COLORS["call_wall"], width=1, dash="dash"),
-    ))
-    fig.add_trace(go.Scatter(
-        x=hist_df["date"], y=hist_df["put_wall"],
-        mode="lines", name="Put Wall",
-        line=dict(color=COLORS["put_wall"], width=1, dash="dash"),
-    ))
+
+    # -- Open scan (9:30 AM) --
+    if not open_df.empty:
+        fig.add_trace(go.Scatter(
+            x=open_df["date"], y=open_df["spot"],
+            mode="markers", name="Spot (Open)",
+            marker=dict(size=8, color=COLORS["spot"], symbol="circle-open", line=dict(width=2)),
+            hovertemplate="Open %{x|%b %d}<br>Spot: $%{y:,.0f}<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=open_df["date"], y=open_df["zero_gamma"],
+            mode="markers", name="ZG (Open)",
+            marker=dict(size=8, color=COLORS["zero_gamma"], symbol="circle-open", line=dict(width=2)),
+            hovertemplate="Open %{x|%b %d}<br>ZG: $%{y:,.0f}<extra></extra>",
+        ))
+
+    # -- Close scan (3:59 PM) — connected lines --
+    if not close_df.empty:
+        fig.add_trace(go.Scatter(
+            x=close_df["date"], y=close_df["spot"],
+            mode="lines+markers", name="Spot (Close)",
+            line=dict(color=COLORS["spot"], width=2),
+            marker=dict(size=5),
+            hovertemplate="Close %{x|%b %d}<br>Spot: $%{y:,.0f}<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=close_df["date"], y=close_df["zero_gamma"],
+            mode="lines+markers", name="ZG (Close)",
+            line=dict(color=COLORS["zero_gamma"], width=2),
+            marker=dict(size=5),
+            hovertemplate="Close %{x|%b %d}<br>ZG: $%{y:,.0f}<extra></extra>",
+        ))
+        fig.add_trace(go.Scatter(
+            x=close_df["date"], y=close_df["call_wall"],
+            mode="lines", name="Call Wall",
+            line=dict(color=COLORS["call_wall"], width=1, dash="dash"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=close_df["date"], y=close_df["put_wall"],
+            mode="lines", name="Put Wall",
+            line=dict(color=COLORS["put_wall"], width=1, dash="dash"),
+        ))
+
+    # -- Open-to-Close range shading per day --
+    for _, o_row in open_df.iterrows():
+        c_match = close_df[close_df["date"] == o_row["date"]]
+        if c_match.empty:
+            continue
+        c_row = c_match.iloc[0]
+        spot_open, spot_close = o_row["spot"], c_row["spot"]
+        if spot_open and spot_close and spot_open != spot_close:
+            color = "rgba(105,240,174,0.10)" if spot_close >= spot_open else "rgba(255,107,107,0.10)"
+            fig.add_shape(
+                type="rect", x0=o_row["date"], x1=o_row["date"],
+                y0=min(spot_open, spot_close), y1=max(spot_open, spot_close),
+                fillcolor=color, line_width=0, layer="below",
+            )
 
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", font_size=10,
         margin=dict(l=60, r=10, t=60, b=40),
-        title=f"GEX Key Levels — Last {days} Days",
+        title=f"GEX Key Levels — Last {days} Days (Open + Close)",
         xaxis=dict(gridcolor=COLORS["grid_major"]),
         yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -963,12 +1007,12 @@ def _render_history_tab(current_spot):
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    # Summary table
+    # Summary table — show open and close side by side
     with st.expander("📋 Daily Summary"):
-        display_cols = ["date", "spot", "zero_gamma", "call_wall", "put_wall", "regime",
-                        "confidence_score", "coverage_ratio"]
+        display_cols = ["date", "scan_type", "spot", "zero_gamma", "call_wall", "put_wall",
+                        "regime", "confidence_score", "coverage_ratio"]
         avail_cols = [c for c in display_cols if c in hist_df.columns]
-        st.dataframe(hist_df[avail_cols].head(30), use_container_width=True, hide_index=True)
+        st.dataframe(hist_df[avail_cols].head(60), use_container_width=True, hide_index=True)
 
 
 def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
