@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import calendar as cal_mod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -31,7 +32,13 @@ from phase1.wall_credibility import build_wall_credibility
 from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
-from phase1.gex_history import save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history, get_backend as get_history_backend
+from phase1.gex_history import (
+    save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history,
+    get_backend as get_history_backend, check_db_connection,
+    save_em_snapshot, get_em_snapshot,
+)
+
+_logger = logging.getLogger(__name__)
 
 TOOL_VERSION = "v5-web"
 
@@ -841,6 +848,8 @@ def _render_history_tab(current_spot):
 
     if backend == "postgres":
         st.caption(f"💾 Neon Postgres — history persists across sessions &nbsp;|&nbsp; {status_icon} {status_text}")
+        if save_ok is False:
+            st.error(f"⚠️ Save error: {st.session_state.get('last_save_error', 'unknown')}")
     else:
         st.warning(
             "⚡ **Session-only storage** — history is lost on page refresh. "
@@ -848,6 +857,21 @@ def _render_history_tab(current_spot):
             "(Settings → Secrets on Streamlit Cloud) with your Neon Postgres connection string."
         )
         st.caption(f"{status_icon} {status_text}")
+
+    # ── DB Diagnostic ──
+    if backend == "postgres":
+        with st.expander("🔧 Database Diagnostic"):
+            if st.button("Check DB Connection", key="check_db"):
+                diag = check_db_connection()
+                if diag["ok"]:
+                    st.success(f"Connected! **{diag['total_rows']}** rows stored. Date range: {diag['date_range']}")
+                    if diag["recent"]:
+                        st.markdown("**Most recent snapshots:**")
+                        for ts, s, zg in diag["recent"]:
+                            st.caption(f"  {ts} — Spot: {s}, ZG: {zg}")
+                    st.caption(f"Connection: `{diag['conn_str_prefix']}`")
+                else:
+                    st.error(f"DB Error: {diag.get('error', 'unknown')}")
 
     # ── View toggle: daily summary vs intraday snapshots ──
     view = st.radio("View", ["Daily Summary", "Today's Snapshots"], horizontal=True, key="hist_view")
@@ -1210,6 +1234,25 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
         return em_analysis
 
     em_live = em_analysis.get("expected_move", {})
+
+    # Try to restore from Postgres if this is a new session (e.g. phone)
+    if "em_snapshot" not in st.session_state:
+        db_snap = get_em_snapshot(today_str)
+        if db_snap and db_snap.get("expected_move_pts"):
+            st.session_state["em_snapshot"] = db_snap
+            st.session_state["em_snapshot_date"] = today_str
+            captured = db_snap.get("captured_at", "")
+            if captured:
+                try:
+                    from datetime import datetime as dt_cls
+                    cap_dt = dt_cls.fromisoformat(captured)
+                    st.session_state["em_snapshot_time"] = cap_dt.strftime("%I:%M:%S %p ET")
+                except Exception:
+                    st.session_state["em_snapshot_time"] = "restored from DB"
+            else:
+                st.session_state["em_snapshot_time"] = "restored from DB"
+
+    # First capture of the day — save to session state AND Postgres
     if "em_snapshot" not in st.session_state and em_live.get("expected_move_pts"):
         st.session_state["em_snapshot"] = {
             "expected_move_pts": em_live["expected_move_pts"],
@@ -1220,6 +1263,11 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
         }
         st.session_state["em_snapshot_date"] = today_str
         st.session_state["em_snapshot_time"] = now_ny().strftime("%I:%M:%S %p ET")
+        # Persist to Postgres so other sessions (phone) get the same frozen EM
+        try:
+            save_em_snapshot(em_live, today_str)
+        except Exception:
+            pass
 
     if "em_snapshot" in st.session_state:
         snap = st.session_state["em_snapshot"]
@@ -1431,9 +1479,11 @@ def main():
         save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
         st.session_state["last_save_ok"] = True
         st.session_state["last_save_time"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+        st.session_state["last_save_error"] = None
     except Exception as e:
         st.session_state["last_save_ok"] = False
         st.session_state["last_save_error"] = str(e)
+        _logger.error(f"History save failed: {e}")
 
     # Show Yahoo ES status in sidebar (pre-market only)
     if not is_market_open:

@@ -252,16 +252,94 @@ def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info
 
 
 def save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
-    """Save a GEX snapshot. Deduplicates by minute."""
+    """Save a GEX snapshot. Deduplicates by minute. Raises on error."""
     row = _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis)
+    if _backend == "postgres":
+        _pg_save_snapshot(row)
+    else:
+        _session_save_snapshot(row)
+
+
+def check_db_connection():
+    """Diagnostic: test the Postgres connection and return status info."""
+    if _backend != "postgres":
+        return {"ok": False, "error": "Not using Postgres backend", "backend": _backend}
     try:
-        if _backend == "postgres":
-            _pg_save_snapshot(row)
-        else:
-            _session_save_snapshot(row)
+        conn = _pg_get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM gex_snapshots")
+        count = cur.fetchone()[0]
+        cur.execute("SELECT MIN(date), MAX(date) FROM gex_snapshots")
+        min_date, max_date = cur.fetchone()
+        cur.execute("SELECT timestamp, spot, zero_gamma FROM gex_snapshots ORDER BY id DESC LIMIT 3")
+        recent = cur.fetchall()
+        conn.close()
+        return {
+            "ok": True,
+            "total_rows": count,
+            "date_range": f"{min_date} to {max_date}" if min_date else "empty",
+            "recent": recent,
+            "conn_str_prefix": _pg_conn_str[:40] + "..." if _pg_conn_str else "none",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def save_em_snapshot(em_data, date_str):
+    """Persist EM snapshot to Postgres so it survives across sessions on the same day."""
+    if _backend != "postgres":
+        return
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS em_snapshots (
+                date TEXT PRIMARY KEY,
+                em_pts REAL,
+                upper_level REAL,
+                lower_level REAL,
+                straddle_strike REAL,
+                captured_at TEXT
+            )
+        """)
+        cur.execute(
+            """INSERT INTO em_snapshots (date, em_pts, upper_level, lower_level, straddle_strike, captured_at)
+               VALUES (%s, %s, %s, %s, %s, %s)
+               ON CONFLICT (date) DO NOTHING""",
+            (
+                date_str,
+                em_data.get("expected_move_pts"),
+                em_data.get("upper_level"),
+                em_data.get("lower_level"),
+                em_data.get("straddle", {}).get("strike"),
+                datetime.now(NY_TZ).isoformat(),
+            ),
+        )
+    finally:
+        conn.close()
+
+
+def get_em_snapshot(date_str):
+    """Retrieve today's persisted EM snapshot, if any."""
+    if _backend != "postgres":
+        return None
+    try:
+        conn = _pg_get_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT em_pts, upper_level, lower_level, straddle_strike, captured_at FROM em_snapshots WHERE date = %s", (date_str,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return {
+                "expected_move_pts": row[0],
+                "upper_level": row[1],
+                "lower_level": row[2],
+                "straddle": {"strike": row[3]},
+                "captured_at": row[4],
+            }
     except Exception:
-        # Never let history tracking crash the main app
         pass
+    return None
 
 
 def get_history(days=30):
