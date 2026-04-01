@@ -906,11 +906,11 @@ def _render_history_tab(current_spot):
             fig.update_layout(
                 paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
                 font_color="white", font_size=10,
-                margin=dict(l=60, r=10, t=35, b=40),
+                margin=dict(l=60, r=10, t=60, b=40),
                 title="Intraday Spot vs Zero Gamma",
                 xaxis=dict(gridcolor=COLORS["grid_major"]),
                 yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 height=400,
             )
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -954,11 +954,11 @@ def _render_history_tab(current_spot):
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", font_size=10,
-        margin=dict(l=60, r=10, t=35, b=40),
+        margin=dict(l=60, r=10, t=60, b=40),
         title=f"GEX Key Levels — Last {days} Days",
         xaxis=dict(gridcolor=COLORS["grid_major"]),
         yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         height=500,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1474,16 +1474,20 @@ def main():
     # ── Apply EM snapshot logic ──
     em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot)
 
-    # ── Save historical snapshot ──
-    try:
-        save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
-        st.session_state["last_save_ok"] = True
-        st.session_state["last_save_time"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-        st.session_state["last_save_error"] = None
-    except Exception as e:
-        st.session_state["last_save_ok"] = False
-        st.session_state["last_save_error"] = str(e)
-        _logger.error(f"History save failed: {e}")
+    # ── Save historical snapshot (market hours only) ──
+    if is_market_open:
+        try:
+            save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
+            st.session_state["last_save_ok"] = True
+            st.session_state["last_save_time"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            st.session_state["last_save_error"] = None
+        except Exception as e:
+            st.session_state["last_save_ok"] = False
+            st.session_state["last_save_error"] = str(e)
+            _logger.error(f"History save failed: {e}")
+    else:
+        st.session_state["last_save_ok"] = None
+        st.session_state["last_save_time"] = "skipped (market closed)"
 
     # Show Yahoo ES status in sidebar (pre-market only)
     if not is_market_open:
