@@ -1,0 +1,38 @@
+name: Scheduled GEX Snapshot
+
+on:
+  schedule:
+    # 9:30 AM ET = 13:30 UTC (EST+5) or 13:30 UTC (EDT+4)
+    # Using 13:30 UTC covers EDT market open; adjust to 14:30 for EST if needed
+    - cron: "30 13 * * 1-5"   # Mon-Fri 9:30 AM ET (during EDT)
+
+    # 3:59 PM ET = 19:59 UTC (EDT)
+    - cron: "59 19 * * 1-5"   # Mon-Fri 3:59 PM ET (during EDT)
+
+  workflow_dispatch:           # Allow manual trigger from GitHub UI
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    # Skip on US market holidays (best-effort: cron still fires, but Tradier returns no data)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scheduled snapshot
+        env:
+          TRADIER_TOKEN: ${{ secrets.TRADIER_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python scheduled_snapshot.py

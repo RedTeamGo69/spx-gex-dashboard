@@ -110,22 +110,38 @@ def _pg_save_snapshot(row):
 
 
 def _pg_get_daily_summary(days):
+    """Return first (open) and last (close) snapshot per day."""
     conn = _pg_get_connection()
     try:
         cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         cur = conn.cursor()
+        # Get first and last snapshot id per day
         cur.execute(
             """SELECT * FROM gex_snapshots
                WHERE id IN (
-                   SELECT MAX(id) FROM gex_snapshots
-                   WHERE date >= %s
-                   GROUP BY date
+                   SELECT MIN(id) FROM gex_snapshots WHERE date >= %s GROUP BY date
+                   UNION
+                   SELECT MAX(id) FROM gex_snapshots WHERE date >= %s GROUP BY date
                )
-               ORDER BY date DESC""",
-            (cutoff,),
+               ORDER BY date DESC, id ASC""",
+            (cutoff, cutoff),
         )
         cols = [desc[0] for desc in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # Tag each row as 'open' or 'close'
+        from itertools import groupby
+        tagged = []
+        for _date, group in groupby(rows, key=lambda r: r["date"]):
+            group_list = list(group)
+            if len(group_list) == 1:
+                group_list[0]["scan_type"] = "open"
+                tagged.append(group_list[0])
+            else:
+                group_list[0]["scan_type"] = "open"
+                group_list[-1]["scan_type"] = "close"
+                tagged.extend(group_list)
+        return tagged
     finally:
         conn.close()
 
@@ -187,12 +203,22 @@ def _session_get_daily_summary(days):
     store = _session_get_store()
     if not store:
         return []
-    # Group by date, take last per day
-    by_date = {}
+    # Group by date, take first and last per day
+    first_by_date = {}
+    last_by_date = {}
     for row in store:
-        by_date[row["date"]] = row
-    result = sorted(by_date.values(), key=lambda r: r["date"], reverse=True)
-    return result[:days]
+        d = row["date"]
+        if d not in first_by_date:
+            first_by_date[d] = row
+        last_by_date[d] = row
+    tagged = []
+    for d in sorted(first_by_date.keys(), reverse=True)[:days]:
+        first = {**first_by_date[d], "scan_type": "open"}
+        tagged.append(first)
+        if last_by_date[d] is not first_by_date[d]:
+            last = {**last_by_date[d], "scan_type": "close"}
+            tagged.append(last)
+    return tagged
 
 
 def _session_get_zero_gamma_trend(days):
