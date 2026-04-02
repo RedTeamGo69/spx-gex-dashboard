@@ -68,6 +68,14 @@ def capture_snapshot():
         _logger.info("Weekend — skipping")
         sys.exit(0)
 
+    # ── Holiday check via pandas_market_calendars ──
+    from phase1.market_clock import get_session_state
+    from phase1.config import CASH_CALENDAR
+    session = get_session_state(CASH_CALENDAR, run_now)
+    if session.market_open is None:
+        _logger.info(f"Market holiday ({today_str}) — skipping")
+        sys.exit(0)
+
     # ── Fetch market data ──
     client = TradierDataClient(token=tradier_token)
     client.clear_cache()
