@@ -1027,10 +1027,13 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     upper = em_data.get("upper_level", 0)
     lower = em_data.get("lower_level", 0)
 
-    if prev_close > 0:
-        current_move = abs(spot - prev_close)
+    # The EM range is anchored to spot at capture time (upper = anchor + em, lower = anchor - em).
+    # Measure consumption from that same anchor so the % matches the visual range.
+    em_anchor = (upper + lower) / 2 if (upper and lower) else prev_close
+    if em_anchor > 0:
+        current_move = abs(spot - em_anchor)
         move_pct_of_em = (current_move / em_pts) * 100
-        direction = "up" if spot >= prev_close else "down"
+        direction = "up" if spot >= em_anchor else "down"
     else:
         current_move = 0
         move_pct_of_em = 0
@@ -1063,8 +1066,8 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     fig = go.Figure()
     fig.add_shape(type="rect", x0=lower, x1=upper, y0=0, y1=1,
                   fillcolor="rgba(179,136,255,0.15)", line=dict(color=COLORS["em_level"], width=1))
-    fig.add_vline(x=prev_close, line_color=COLORS["text_muted"], line_dash="dash", line_width=1,
-                  annotation_text="Prev Close", annotation_font_color=COLORS["text_muted"], annotation_font_size=9)
+    fig.add_vline(x=em_anchor, line_color=COLORS["text_muted"], line_dash="dash", line_width=1,
+                  annotation_text="EM Anchor", annotation_font_color=COLORS["text_muted"], annotation_font_size=9)
     fig.add_vline(x=spot, line_color=COLORS["spot"], line_width=2,
                   annotation_text=f"Spot ${spot:.0f}", annotation_font_color=COLORS["spot"], annotation_font_size=10)
     fig.add_vline(x=lower, line_color=COLORS["em_level"], line_dash="dot", line_width=1,
