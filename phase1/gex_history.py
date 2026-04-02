@@ -58,7 +58,8 @@ def _pg_ensure_table():
                 id SERIAL PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 date TEXT NOT NULL,
-                minute_key TEXT NOT NULL UNIQUE,
+                minute_key TEXT NOT NULL,
+                ticker TEXT NOT NULL DEFAULT 'SPX',
                 spot REAL NOT NULL,
                 zero_gamma REAL NOT NULL,
                 is_true_crossing BOOLEAN NOT NULL DEFAULT TRUE,
@@ -79,6 +80,24 @@ def _pg_ensure_table():
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_snapshots_date ON gex_snapshots(date)
         """)
+        # Migration: add ticker column if missing (existing tables)
+        cur.execute("""
+            DO $$ BEGIN
+                ALTER TABLE gex_snapshots ADD COLUMN ticker TEXT NOT NULL DEFAULT 'SPX';
+            EXCEPTION WHEN duplicate_column THEN NULL;
+            END $$
+        """)
+        # Migration: drop old unique constraint on minute_key alone, add composite
+        cur.execute("""
+            DO $$ BEGIN
+                ALTER TABLE gex_snapshots DROP CONSTRAINT IF EXISTS gex_snapshots_minute_key_key;
+            EXCEPTION WHEN undefined_object THEN NULL;
+            END $$
+        """)
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_ticker_minute
+            ON gex_snapshots(ticker, minute_key)
+        """)
     finally:
         conn.close()
 
@@ -89,14 +108,14 @@ def _pg_save_snapshot(row):
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO gex_snapshots
-               (timestamp, date, minute_key, spot, zero_gamma, is_true_crossing,
+               (timestamp, date, minute_key, ticker, spot, zero_gamma, is_true_crossing,
                 call_wall, put_wall, regime, net_gex, expected_move_pts,
                 confidence_score, freshness_score, coverage_ratio,
                 pc_ratio, gex_ratio, call_iv, put_iv)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (minute_key) DO NOTHING""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (ticker, minute_key) DO NOTHING""",
             (
-                row["timestamp"], row["date"], row["minute_key"],
+                row["timestamp"], row["date"], row["minute_key"], row["ticker"],
                 row["spot"], row["zero_gamma"], row["is_true_crossing"],
                 row["call_wall"], row["put_wall"], row["regime"],
                 row["net_gex"], row["expected_move_pts"],
@@ -109,8 +128,8 @@ def _pg_save_snapshot(row):
         conn.close()
 
 
-def _pg_get_daily_summary(days):
-    """Return first (open) and last (close) snapshot per day."""
+def _pg_get_daily_summary(days, ticker="SPX"):
+    """Return first (open) and last (close) snapshot per day for a given ticker."""
     conn = _pg_get_connection()
     try:
         cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -119,12 +138,12 @@ def _pg_get_daily_summary(days):
         cur.execute(
             """SELECT * FROM gex_snapshots
                WHERE id IN (
-                   SELECT MIN(id) FROM gex_snapshots WHERE date >= %s GROUP BY date
+                   SELECT MIN(id) FROM gex_snapshots WHERE date >= %s AND ticker = %s GROUP BY date
                    UNION
-                   SELECT MAX(id) FROM gex_snapshots WHERE date >= %s GROUP BY date
+                   SELECT MAX(id) FROM gex_snapshots WHERE date >= %s AND ticker = %s GROUP BY date
                )
                ORDER BY date DESC, id ASC""",
-            (cutoff, cutoff),
+            (cutoff, ticker, cutoff, ticker),
         )
         cols = [desc[0] for desc in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -139,6 +158,8 @@ def _pg_get_daily_summary(days):
                 tagged.append(group_list[0])
             else:
                 group_list[0]["scan_type"] = "open"
+                for mid in group_list[1:-1]:
+                    mid["scan_type"] = "intraday"
                 group_list[-1]["scan_type"] = "close"
                 tagged.extend(group_list)
         return tagged
@@ -146,32 +167,32 @@ def _pg_get_daily_summary(days):
         conn.close()
 
 
-def _pg_get_zero_gamma_trend(days):
+def _pg_get_zero_gamma_trend(days, ticker="SPX"):
     conn = _pg_get_connection()
     try:
         cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         cur = conn.cursor()
         cur.execute(
             """SELECT date, zero_gamma, spot FROM gex_snapshots
-               WHERE date >= %s
+               WHERE date >= %s AND ticker = %s
                ORDER BY timestamp ASC""",
-            (cutoff,),
+            (cutoff, ticker),
         )
         return cur.fetchall()
     finally:
         conn.close()
 
 
-def _pg_get_history(days):
+def _pg_get_history(days, ticker="SPX"):
     conn = _pg_get_connection()
     try:
         cutoff = (datetime.now(NY_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
         cur = conn.cursor()
         cur.execute(
             """SELECT * FROM gex_snapshots
-               WHERE date >= %s
+               WHERE date >= %s AND ticker = %s
                ORDER BY timestamp DESC""",
-            (cutoff,),
+            (cutoff, ticker),
         )
         cols = [desc[0] for desc in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -255,7 +276,7 @@ def _to_float(v):
     return float(v)
 
 
-def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
+def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None, ticker="SPX"):
     now = datetime.now(NY_TZ)
     em_pts = None
     if em_analysis:
@@ -266,6 +287,7 @@ def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info
         "timestamp": now.isoformat(),
         "date": now.strftime("%Y-%m-%d"),
         "minute_key": now.strftime("%Y-%m-%d %H:%M"),
+        "ticker": ticker,
         "spot": _to_float(spot),
         "zero_gamma": _to_float(levels.get("zero_gamma", 0)),
         "is_true_crossing": bool(levels.get("is_true_crossing", True)),
@@ -284,9 +306,9 @@ def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info
     }
 
 
-def save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None):
-    """Save a GEX snapshot. Deduplicates by minute. Raises on error."""
-    row = _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis)
+def save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None, ticker="SPX"):
+    """Save a GEX snapshot. Deduplicates by (ticker, minute). Raises on error."""
+    row = _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis, ticker=ticker)
     if _backend == "postgres":
         _pg_save_snapshot(row)
     else:
@@ -318,7 +340,7 @@ def check_db_connection():
         return {"ok": False, "error": str(e)}
 
 
-def save_em_snapshot(em_data, date_str):
+def save_em_snapshot(em_data, date_str, ticker="SPX"):
     """Persist EM snapshot to Postgres so it survives across sessions on the same day."""
     if _backend != "postgres":
         return
@@ -327,28 +349,40 @@ def save_em_snapshot(em_data, date_str):
         cur = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS em_snapshots (
-                date TEXT PRIMARY KEY,
+                date TEXT NOT NULL,
+                ticker TEXT NOT NULL DEFAULT 'SPX',
                 em_pts REAL,
                 em_pct REAL,
                 upper_level REAL,
                 lower_level REAL,
                 straddle_strike REAL,
-                captured_at TEXT
+                captured_at TEXT,
+                PRIMARY KEY (ticker, date)
             )
         """)
-        # Add em_pct column if missing (existing tables)
+        # Migration: add ticker column and update PK if missing
+        cur.execute("""
+            DO $$ BEGIN
+                ALTER TABLE em_snapshots ADD COLUMN ticker TEXT NOT NULL DEFAULT 'SPX';
+            EXCEPTION WHEN duplicate_column THEN NULL;
+            END $$
+        """)
         cur.execute("""
             DO $$ BEGIN
                 ALTER TABLE em_snapshots ADD COLUMN em_pct REAL;
             EXCEPTION WHEN duplicate_column THEN NULL;
             END $$
         """)
+        # Try creating the composite unique index (covers both old single-PK and new schemas)
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_em_ticker_date ON em_snapshots(ticker, date)
+        """)
         cur.execute(
-            """INSERT INTO em_snapshots (date, em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT (date) DO NOTHING""",
+            """INSERT INTO em_snapshots (date, ticker, em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (ticker, date) DO NOTHING""",
             (
-                date_str,
+                date_str, ticker,
                 em_data.get("expected_move_pts"),
                 em_data.get("expected_move_pct"),
                 em_data.get("upper_level"),
@@ -361,16 +395,19 @@ def save_em_snapshot(em_data, date_str):
         conn.close()
 
 
-def get_em_snapshot(date_str):
-    """Retrieve today's persisted EM snapshot, if any."""
+def get_em_snapshot(date_str, ticker="SPX"):
+    """Retrieve today's persisted EM snapshot for a given ticker, if any."""
     if _backend != "postgres":
         return None
     try:
         conn = _pg_get_connection()
         cur = conn.cursor()
-        # Try reading em_pct (new column); fall back if column doesn't exist yet
         try:
-            cur.execute("SELECT em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at FROM em_snapshots WHERE date = %s", (date_str,))
+            cur.execute(
+                "SELECT em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at "
+                "FROM em_snapshots WHERE date = %s AND ticker = %s",
+                (date_str, ticker),
+            )
             row = cur.fetchone()
             conn.close()
             if row:
@@ -383,10 +420,14 @@ def get_em_snapshot(date_str):
                     "captured_at": row[5],
                 }
         except Exception:
-            # em_pct column may not exist yet on older schemas
+            # Fallback: ticker column may not exist yet on older schemas
             conn = _pg_get_connection()
             cur = conn.cursor()
-            cur.execute("SELECT em_pts, upper_level, lower_level, straddle_strike, captured_at FROM em_snapshots WHERE date = %s", (date_str,))
+            cur.execute(
+                "SELECT em_pts, upper_level, lower_level, straddle_strike, captured_at "
+                "FROM em_snapshots WHERE date = %s",
+                (date_str,),
+            )
             row = cur.fetchone()
             conn.close()
             if row:
@@ -403,22 +444,22 @@ def get_em_snapshot(date_str):
     return None
 
 
-def get_history(days=30):
+def get_history(days=30, ticker="SPX"):
     """Get historical snapshots, most recent first."""
     if _backend == "postgres":
-        return _pg_get_history(days)
+        return _pg_get_history(days, ticker=ticker)
     return _session_get_history(days)
 
 
-def get_zero_gamma_trend(days=14):
+def get_zero_gamma_trend(days=14, ticker="SPX"):
     """Get zero gamma values over time."""
     if _backend == "postgres":
-        return _pg_get_zero_gamma_trend(days)
+        return _pg_get_zero_gamma_trend(days, ticker=ticker)
     return _session_get_zero_gamma_trend(days)
 
 
-def get_daily_summary(days=30):
-    """Get one row per day (latest snapshot). Returns list of dicts."""
+def get_daily_summary(days=30, ticker="SPX"):
+    """Get first + last snapshot per day. Returns list of dicts."""
     if _backend == "postgres":
-        return _pg_get_daily_summary(days)
+        return _pg_get_daily_summary(days, ticker=ticker)
     return _session_get_daily_summary(days)

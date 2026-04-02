@@ -36,6 +36,7 @@ def capture_snapshot():
         sys.exit(1)
 
     fred_key = os.environ.get("FRED_API_KEY", "")
+    ticker = os.environ.get("TICKER", "SPX")
 
     # ── Imports (after env check so errors are clear) ──
     from phase1.market_clock import now_ny, get_calendar_snapshot
@@ -51,7 +52,7 @@ def capture_snapshot():
 
     run_now = now_ny()
     today_str = run_now.strftime("%Y-%m-%d")
-    _logger.info(f"Starting scheduled snapshot at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
+    _logger.info(f"Starting scheduled snapshot for {ticker} at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
 
     # ── Market hours guard ──
     # Both EDT and EST cron triggers fire; skip if outside 9:25 AM - 4:05 PM ET window.
@@ -86,11 +87,14 @@ def capture_snapshot():
     rfr = rfr_info["rate"]
     _logger.info(f"Risk-free rate: {rfr:.4f} (source: {rfr_info['source']})")
 
-    avail = client.get_expirations("SPX")
+    avail = client.get_expirations(ticker)
+    if not avail:
+        _logger.error(f"No expirations returned from Tradier API for {ticker}")
+        sys.exit(1)
     nearest_exp = next((e for e in avail if e >= today_str), avail[0])
 
     spot_info = get_reference_spot_details(
-        ticker="SPX",
+        ticker=ticker,
         nearest_exp=nearest_exp,
         get_spot_price_func=client.get_spot_price,
         get_chain_cached_func=client.get_chain_cached,
@@ -98,14 +102,14 @@ def capture_snapshot():
         now=run_now,
     )
     spot = spot_info["spot"]
-    _logger.info(f"Spot: {spot:.2f} (source: {spot_info['source']})")
+    _logger.info(f"{ticker} Spot: {spot:.2f} (source: {spot_info['source']})")
 
     # ── Select expirations: 0DTE + next 3 nearest ──
     target_exps = [e for e in avail if e >= today_str][:4]
 
     # ── Compute GEX ──
     gex_df, _hm_gex, _hm_iv, stats, all_options, _strike_sup, _exp_sup = (
-        gex_engine.calculate_all(client, "SPX", target_exps, spot, target_exps, r=rfr, now=run_now)
+        gex_engine.calculate_all(client, ticker, target_exps, spot, target_exps, r=rfr, now=run_now)
     )
 
     if gex_df.empty:
@@ -121,16 +125,16 @@ def capture_snapshot():
                  f"Put Wall: {levels.get('put_wall')} | Regime: {regime_info.get('regime')}")
 
     # ── Expected move ──
-    spx_quote = None
+    index_quote = None
     prev_close = 0.0
     try:
-        spx_quote = client.get_full_quote("SPX")
-        prev_close = spx_quote.get("prevclose", 0.0)
+        index_quote = client.get_full_quote(ticker)
+        prev_close = index_quote.get("prevclose", 0.0)
     except Exception as e:
-        _logger.warning(f"SPX quote fetch failed: {e}")
+        _logger.warning(f"{ticker} quote fetch failed: {e}")
 
     dte0_exp = target_exps[0]
-    dte0_entry = client.get_chain_cached("SPX", dte0_exp)
+    dte0_entry = client.get_chain_cached(ticker, dte0_exp)
     dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
     dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
 
@@ -162,8 +166,8 @@ def capture_snapshot():
 
     # ── Save GEX snapshot ──
     try:
-        save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis)
-        _logger.info("GEX snapshot saved to Postgres")
+        save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis, ticker=ticker)
+        _logger.info(f"{ticker} GEX snapshot saved to Postgres")
     except Exception as e:
         _logger.error(f"Failed to save GEX snapshot: {e}")
         sys.exit(1)
@@ -172,7 +176,7 @@ def capture_snapshot():
     em_data = em_analysis.get("expected_move", {})
     if em_data.get("expected_move_pts"):
         try:
-            save_em_snapshot(em_data, today_str)
+            save_em_snapshot(em_data, today_str, ticker=ticker)
             _logger.info(f"EM snapshot saved: {em_data['expected_move_pts']:.2f} pts")
         except Exception as e:
             _logger.warning(f"EM snapshot save failed: {e}")

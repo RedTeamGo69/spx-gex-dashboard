@@ -104,7 +104,7 @@ class GEXData:
 # Page config
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="SPX GEX Dashboard",
+    page_title="GEX Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -218,7 +218,7 @@ def get_credentials():
 # Data fetching (cached)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=90, show_spinner=False)
-def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run_id: str):
+def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run_id: str, ticker: str = "SPX"):
     """
     Run the full GEX engine pipeline. Cached for 90 seconds.
     _run_id forces a cache bust when the user clicks Refresh.
@@ -232,12 +232,14 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     rfr_info = fetch_risk_free_rate(fred_key)
     rfr = rfr_info["rate"]
 
-    avail = client.get_expirations("SPX")
+    avail = client.get_expirations(ticker)
+    if not avail:
+        raise RuntimeError(f"No expirations returned from Tradier API for {ticker}")
     today_str = run_now.strftime("%Y-%m-%d")
     nearest_exp = next((e for e in avail if e >= today_str), avail[0])
 
     spot_info = get_reference_spot_details(
-        ticker="SPX",
+        ticker=ticker,
         nearest_exp=nearest_exp,
         get_spot_price_func=client.get_spot_price,
         get_chain_cached_func=client.get_chain_cached,
@@ -251,7 +253,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     heatmap_exps = [e for e in avail if e >= today_str][:HEATMAP_EXPS]
 
     gex_df, hm_gex, hm_iv, stats, all_options, strike_support_df, exp_support_df = (
-        gex_engine.calculate_all(client, "SPX", target_exps, spot, heatmap_exps, r=rfr, now=run_now)
+        gex_engine.calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=rfr, now=run_now)
     )
 
     levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
@@ -270,10 +272,10 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
 
     # Expected move raw inputs (EM analysis happens in main() with futures data)
-    spx_quote = None
+    index_quote = None
     spy_quote = None
     try:
-        spx_quote = client.get_full_quote("SPX")
+        index_quote = client.get_full_quote(ticker)
     except Exception:
         pass
     try:
@@ -281,9 +283,9 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     except Exception:
         pass
 
-    prev_close = spx_quote["prevclose"] if spx_quote else 0.0
+    prev_close = index_quote["prevclose"] if index_quote else 0.0
     dte0_exp = target_exps[0] if target_exps else nearest_exp
-    dte0_entry = client.get_chain_cached("SPX", dte0_exp)
+    dte0_entry = client.get_chain_cached(ticker, dte0_exp)
     dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
     dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
 
@@ -327,7 +329,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
 
 
 @st.cache_data(ttl=90, show_spinner=False)
-def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str):
+def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str, ticker: str = "SPX"):
     """
     Compute GEX for 3 timeframe buckets: 0DTE, This Week, This Month.
     Returns dict of {label: gex_df}.
@@ -357,10 +359,10 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
         if not exps:
             continue
         all_opts = []
-        client.prefetch_chains("SPX", exps)
+        client.prefetch_chains(ticker, exps)
         for exp in exps:
             T, _ = compute_time_to_expiry_years(exp, ts=run_now.astimezone(NY_TZ) if run_now.tzinfo else run_now, floor=T_FLOOR)
-            entry = client.get_chain_cached("SPX", exp)
+            entry = client.get_chain_cached(ticker, exp)
             if entry.get("status") != "ok":
                 continue
             from phase1.model_inputs import prepare_option_for_model
@@ -584,18 +586,23 @@ def render_expected_move_panel(em_analysis):
 
     # Straddle & range
     straddle = em_data.get("straddle", {})
+    em_pts_val = em_data.get("expected_move_pts", 0) or 0
+    em_pct_val = em_data.get("expected_move_pct", 0) or 0
+    em_lower = em_data.get("lower_level")
+    em_upper = em_data.get("upper_level")
     straddle_html = (
         '<div class="level-grid" style="grid-template-columns: 1fr 1fr;">'
-        f'<div class="level-card"><div class="lbl">ATM Straddle</div><div class="val">{em_data["expected_move_pts"]:.1f} pts</div><div class="lbl">{em_data["expected_move_pct"]:.2f}%</div></div>'
+        f'<div class="level-card"><div class="lbl">ATM Straddle</div><div class="val">{em_pts_val:.1f} pts</div><div class="lbl">{em_pct_val:.2f}%</div></div>'
         f'<div class="level-card"><div class="lbl">Strike</div><div class="val">${straddle.get("strike", "?")}</div></div>'
         '</div>'
     )
     st.markdown(straddle_html, unsafe_allow_html=True)
 
-    st.markdown(
-        f"**Expected Range:** "
-        f":red[${em_data['lower_level']:.0f}] — :green[${em_data['upper_level']:.0f}]"
-    )
+    if em_lower is not None and em_upper is not None:
+        st.markdown(
+            f"**Expected Range:** "
+            f":red[${em_lower:.0f}] — :green[${em_upper:.0f}]"
+        )
 
     move_source = _render_move_display(overnight, classification, futures_ctx, market_ctx)
     _render_overnight_range(overnite_range, move_source, spy)
@@ -828,7 +835,7 @@ def render_data_quality(stats, staleness_info):
         st.caption(f"Filtered: {range_filt:,} out-of-range strikes, {zero_oi:,} zero-OI contracts")
 
 
-def _render_history_tab(current_spot):
+def _render_history_tab(current_spot, ticker="SPX"):
     """C1: Render historical GEX trend chart."""
     backend = get_history_backend()
 
@@ -878,7 +885,7 @@ def _render_history_tab(current_spot):
 
     if view == "Today's Snapshots":
         # Show all snapshots from the current session (useful for debugging)
-        all_snaps = get_history(days=1)
+        all_snaps = get_history(days=1, ticker=ticker)
         if not all_snaps:
             st.info("No snapshots recorded yet this session. Each refresh saves a snapshot automatically.")
             return
@@ -918,7 +925,7 @@ def _render_history_tab(current_spot):
 
     # ── Daily Summary view ──
     days = st.selectbox("History range", [7, 14, 30, 60], index=1, key="hist_days")
-    history = get_daily_summary(days=days)
+    history = get_daily_summary(days=days, ticker=ticker)
 
     if not history:
         st.info("No historical data yet. Snapshots are saved automatically on each refresh.")
@@ -1024,12 +1031,12 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
         st.info("Expected move data not available for tracking.")
         return
 
-    upper = em_data.get("upper_level", 0)
-    lower = em_data.get("lower_level", 0)
+    upper = em_data.get("upper_level")
+    lower = em_data.get("lower_level")
 
     # The EM range is anchored to spot at capture time (upper = anchor + em, lower = anchor - em).
     # Measure consumption from that same anchor so the % matches the visual range.
-    em_anchor = (upper + lower) / 2 if (upper and lower) else prev_close
+    em_anchor = (upper + lower) / 2 if (upper is not None and lower is not None) else prev_close
     if em_anchor > 0:
         current_move = abs(spot - em_anchor)
         move_pct_of_em = (current_move / em_pts) * 100
@@ -1062,6 +1069,8 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
 
     # Visual range display
+    if upper is None or lower is None:
+        return
     padding = em_pts * 0.3
     fig = go.Figure()
     fig.add_shape(type="rect", x0=lower, x1=upper, y0=0, y1=1,
@@ -1090,16 +1099,16 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 
-def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr):
+def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr, ticker="SPX"):
     """C3: Multi-timeframe GEX comparison — 0DTE vs Weekly vs Monthly."""
     tradier_token, _ = get_credentials()
     if not tradier_token:
         st.info("API token required for multi-timeframe analysis.")
         return
 
-    run_id = st.session_state.get("em_snapshot_date", "default")
+    run_id = st.session_state.get(f"em_snapshot_date_{ticker}", "default")
     with st.spinner("Computing multi-timeframe GEX..."):
-        tf_data = fetch_multi_tf_gex(tradier_token, tuple(avail_exps), spot, rfr, run_id)
+        tf_data = fetch_multi_tf_gex(tradier_token, tuple(avail_exps), spot, rfr, run_id, ticker=ticker)
 
     if not tf_data:
         st.info("No multi-timeframe data available.")
@@ -1271,15 +1280,20 @@ def _check_level_crossings(spot, levels, em_analysis):
     return alerts
 
 
-def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
+def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker="SPX"):
     """Freeze expected move at first market-hours refresh; recompute classification with live data."""
     today_str = now_ny().strftime("%Y-%m-%d")
 
+    # Ticker-specific session state keys so SPX and XSP don't collide
+    sk_snap = f"em_snapshot_{ticker}"
+    sk_date = f"em_snapshot_date_{ticker}"
+    sk_time = f"em_snapshot_time_{ticker}"
+
     # Clear stale snapshot from a previous day
-    if st.session_state.get("em_snapshot_date") != today_str:
-        st.session_state.pop("em_snapshot", None)
-        st.session_state.pop("em_snapshot_date", None)
-        st.session_state.pop("em_snapshot_time", None)
+    if st.session_state.get(sk_date) != today_str:
+        st.session_state.pop(sk_snap, None)
+        st.session_state.pop(sk_date, None)
+        st.session_state.pop(sk_time, None)
 
     if not is_market_open:
         return em_analysis
@@ -1287,9 +1301,9 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
     em_live = em_analysis.get("expected_move", {})
 
     # Try to restore from Postgres if this is a new session (e.g. phone)
-    if "em_snapshot" not in st.session_state:
+    if sk_snap not in st.session_state:
         try:
-            db_snap = get_em_snapshot(today_str)
+            db_snap = get_em_snapshot(today_str, ticker=ticker)
         except Exception:
             db_snap = None
         if db_snap and db_snap.get("expected_move_pts"):
@@ -1300,38 +1314,38 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
                     db_snap["expected_move_pct"] = (db_snap["expected_move_pts"] / prev_close) * 100
                 else:
                     db_snap["expected_move_pct"] = em_live.get("expected_move_pct")
-            st.session_state["em_snapshot"] = db_snap
-            st.session_state["em_snapshot_date"] = today_str
+            st.session_state[sk_snap] = db_snap
+            st.session_state[sk_date] = today_str
             captured = db_snap.get("captured_at", "")
             if captured:
                 try:
                     from datetime import datetime as dt_cls
                     cap_dt = dt_cls.fromisoformat(captured)
-                    st.session_state["em_snapshot_time"] = cap_dt.strftime("%I:%M:%S %p ET")
+                    st.session_state[sk_time] = cap_dt.strftime("%I:%M:%S %p ET")
                 except Exception:
-                    st.session_state["em_snapshot_time"] = "restored from DB"
+                    st.session_state[sk_time] = "restored from DB"
             else:
-                st.session_state["em_snapshot_time"] = "restored from DB"
+                st.session_state[sk_time] = "restored from DB"
 
     # First capture of the day — save to session state AND Postgres
-    if "em_snapshot" not in st.session_state and em_live.get("expected_move_pts"):
-        st.session_state["em_snapshot"] = {
-            "expected_move_pts": em_live["expected_move_pts"],
+    if sk_snap not in st.session_state and em_live.get("expected_move_pts"):
+        st.session_state[sk_snap] = {
+            "expected_move_pts": em_live.get("expected_move_pts"),
             "expected_move_pct": em_live.get("expected_move_pct"),
-            "upper_level": em_live["upper_level"],
-            "lower_level": em_live["lower_level"],
+            "upper_level": em_live.get("upper_level"),
+            "lower_level": em_live.get("lower_level"),
             "straddle": em_live.get("straddle"),
         }
-        st.session_state["em_snapshot_date"] = today_str
-        st.session_state["em_snapshot_time"] = now_ny().strftime("%I:%M:%S %p ET")
+        st.session_state[sk_date] = today_str
+        st.session_state[sk_time] = now_ny().strftime("%I:%M:%S %p ET")
         # Persist to Postgres so other sessions (phone) get the same frozen EM
         try:
-            save_em_snapshot(em_live, today_str)
+            save_em_snapshot(em_live, today_str, ticker=ticker)
         except Exception:
             pass
 
-    if "em_snapshot" in st.session_state:
-        snap = st.session_state["em_snapshot"]
+    if sk_snap in st.session_state:
+        snap = st.session_state[sk_snap]
         em_pct = snap.get("expected_move_pct") or em_analysis.get("expected_move", {}).get("expected_move_pct")
         em_analysis["expected_move"] = {
             **em_analysis.get("expected_move", {}),
@@ -1349,7 +1363,7 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
                 overnight_move_pts=on_pts,
                 gamma_regime=regime["regime"],
             )
-            em_analysis["classification"]["move_source"] = "spx"
+            em_analysis["classification"]["move_source"] = ticker.lower()
         if snap["upper_level"] is not None:
             em_analysis["level_context"] = {
                 "em_upper": snap["upper_level"],
@@ -1368,7 +1382,7 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot):
 # Main app
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    st.title("📊 SPX Gamma Exposure")
+    st.title("📊 Gamma Exposure Dashboard")
     st.caption(f"GEX Calculator {TOOL_VERSION} — Implied spot | Zero gamma sweep | Expected move | Hybrid IV")
 
     tradier_token, fred_key = get_credentials()
@@ -1390,11 +1404,14 @@ def main():
 
         st.divider()
 
+        # Ticker selector
+        ticker = st.selectbox("Index", ["SPX", "XSP"], index=0, key="ticker_select")
+
         # Expiration picker
         with st.spinner("Loading expirations..."):
             try:
                 temp_client = TradierDataClient(token=tradier_token)
-                avail = temp_client.get_expirations("SPX")
+                avail = temp_client.get_expirations(ticker)
             except Exception as e:
                 st.error(f"Could not fetch expirations: {e}")
                 st.stop()
@@ -1459,7 +1476,7 @@ def main():
     # ── Fetch data ──
     with st.spinner("Crunching GEX..."):
         try:
-            data = fetch_all_data(tradier_token, fred_key or "", tuple(selected), run_id)
+            data = fetch_all_data(tradier_token, fred_key or "", tuple(selected), run_id, ticker=ticker)
         except Exception as e:
             st.error(f"Engine error: {e}")
             st.stop()
@@ -1534,7 +1551,7 @@ def main():
     )
 
     # ── Apply EM snapshot logic ──
-    em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot)
+    em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker=ticker)
 
     # ── Save historical snapshot (market hours only, throttled to refresh interval) ──
     if is_market_open:
@@ -1545,7 +1562,7 @@ def main():
         should_save = last_snap_utc is None or (now_utc - last_snap_utc).total_seconds() >= min_gap
         if should_save:
             try:
-                save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis)
+                save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis, ticker=ticker)
                 st.session_state["_last_snapshot_utc"] = now_utc
                 st.session_state["last_save_ok"] = True
                 st.session_state["last_save_time"] = now_utc.strftime("%H:%M:%S UTC")
@@ -1579,7 +1596,7 @@ def main():
     text_mut = COLORS["text_muted"]
     st.markdown(
         f"<div style='text-align:center;padding:6px;'>"
-        f"<span style='font-size:22px;font-weight:bold;color:{spot_c};'>SPX ${spot:.2f}</span>"
+        f"<span style='font-size:22px;font-weight:bold;color:{spot_c};'>{ticker} ${spot:.2f}</span>"
         f"&nbsp;&nbsp;&nbsp;"
         f"<span style='font-size:18px;color:{regime_color};font-weight:bold;'>{regime['regime']}</span>"
         f"&nbsp;&nbsp;"
@@ -1690,8 +1707,8 @@ def main():
 
         em_bar_html = (
             '<div class="em-bar">'
-            f'<div class="em-item"><div class="lbl">Expected Move</div><div class="val">&plusmn;{em_data["expected_move_pts"]:.0f} pts</div></div>'
-            f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data["lower_level"]:.0f} &ndash; ${em_data["upper_level"]:.0f}</div></div>'
+            f'<div class="em-item"><div class="lbl">Expected Move</div><div class="val">&plusmn;{em_data.get("expected_move_pts", 0) or 0:.0f} pts</div></div>'
+            f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data.get("lower_level", 0) or 0:.0f} &ndash; ${em_data.get("upper_level", 0) or 0:.0f}</div></div>'
             f'<div class="em-item"><div class="lbl">{on_label}</div><div class="val" style="color:{on_color};">{on_arrow} {display_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{display_pct:+.2f}%</div></div>'
             f'<div class="em-item"><div class="lbl">Vol Budget Used</div><div class="val" style="color:{ratio_color};">{ratio_pct}</div></div>'
             f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div></div>'
@@ -1700,7 +1717,7 @@ def main():
         st.markdown(em_bar_html, unsafe_allow_html=True)
 
         # Show when the straddle was captured
-        snap_time = st.session_state.get("em_snapshot_time")
+        snap_time = st.session_state.get(f"em_snapshot_time_{ticker}")
         if market_ctx == "live" and snap_time:
             st.caption(f"📌 Expected move captured at {snap_time} — frozen for the session. Today's move and vol budget update live.")
 
@@ -1739,11 +1756,11 @@ def main():
 
     # ── C3: Multi-timeframe GEX comparison ──
     with tab_multi:
-        _render_multi_timeframe(data.all_options, data.target_exps, data.avail, spot, levels, data.rfr)
+        _render_multi_timeframe(data.all_options, data.target_exps, data.avail, spot, levels, data.rfr, ticker=ticker)
 
     # ── C1: Historical GEX trend ──
     with tab_history:
-        _render_history_tab(spot)
+        _render_history_tab(spot, ticker=ticker)
 
     # ── C5: Expected move consumption tracker ──
     with tab_em_track:

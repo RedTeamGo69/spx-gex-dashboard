@@ -20,6 +20,9 @@ on:
 jobs:
   capture:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ticker: [SPX, XSP]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,9 +38,10 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run scheduled snapshot
+      - name: Run scheduled snapshot (${{ matrix.ticker }})
         env:
           TRADIER_TOKEN: ${{ secrets.TRADIER_TOKEN }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          TICKER: ${{ matrix.ticker }}
         run: python scheduled_snapshot.py
