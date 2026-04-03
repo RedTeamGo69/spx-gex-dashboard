@@ -30,12 +30,16 @@ from phase1.confidence import build_run_confidence
 from phase1.staleness import build_staleness_info
 from phase1.wall_credibility import build_wall_credibility
 from phase1.scenarios import run_scenario_engine
-from phase1.expected_move import build_expected_move_analysis
+from phase1.expected_move import (
+    build_expected_move_analysis, compute_em_for_expiration,
+    find_weekly_expiration, find_monthly_expiration,
+)
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
 from phase1.gex_history import (
     save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history,
     get_backend as get_history_backend, check_db_connection,
     save_em_snapshot, get_em_snapshot,
+    get_weekly_em_date_key, get_monthly_em_date_key,
 )
 
 _logger = logging.getLogger(__name__)
@@ -1047,13 +1051,15 @@ def _render_history_tab(current_spot, ticker="SPX"):
         st.dataframe(hist_df[avail_cols].head(60), use_container_width=True, hide_index=True)
 
 
-def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
+def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=None):
     """C5: Show how much of the expected move has been consumed."""
-    em_data = em_analysis.get("expected_move", {})
+    em_data = em_analysis.get("expected_move", {}) if isinstance(em_analysis, dict) and "expected_move" in em_analysis else em_analysis
+    if em_data is None:
+        em_data = {}
     em_pts = em_data.get("expected_move_pts")
 
     if not em_pts or em_pts <= 0:
-        st.info("Expected move data not available for tracking.")
+        st.info(f"{label} expected move data not available for tracking.")
         return
 
     upper = em_data.get("upper_level")
@@ -1085,8 +1091,11 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
         gauge_color = "#ff1744"
         status = "Beyond EM — trend day or breakout"
 
+    if subtitle:
+        st.caption(subtitle)
+
     col1, col2, col3 = st.columns(3)
-    col1.metric("Expected Move", f"±{em_pts:.0f} pts")
+    col1.metric(f"{label} Expected Move", f"±{em_pts:.0f} pts")
     col2.metric("Current Move", f"{current_move:.1f} pts {direction}")
     col3.metric("EM Consumed", f"{move_pct_of_em:.0f}%")
 
@@ -1118,7 +1127,7 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx):
             tickformat="$,.0f",
         ),
         yaxis=dict(visible=False), showlegend=False,
-        title="Expected Move Range",
+        title=f"{label} Expected Move Range",
         dragmode=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
@@ -1131,7 +1140,7 @@ def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, 
         st.info("API token required for multi-timeframe analysis.")
         return
 
-    run_id = st.session_state.get(f"em_snapshot_date_{ticker}", "default")
+    run_id = st.session_state.get(f"em_snapshot_date_daily_{ticker}", "default")
     with st.spinner("Computing multi-timeframe GEX..."):
         tf_data = fetch_multi_tf_gex(tradier_token, tuple(avail_exps), spot, rfr, run_id, ticker=ticker)
 
@@ -1305,42 +1314,73 @@ def _check_level_crossings(spot, levels, em_analysis):
     return alerts
 
 
-def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker="SPX"):
-    """Freeze expected move at first market-hours refresh; recompute classification with live data."""
-    today_str = now_ny().strftime("%Y-%m-%d")
+def _is_trading_day(dt_obj):
+    """Check if a given date is a trading day (not weekend, not holiday)."""
+    from phase1.market_clock import get_session_state
+    from phase1.config import CASH_CALENDAR
+    if dt_obj.weekday() >= 5:
+        return False
+    sess = get_session_state(CASH_CALENDAR, dt_obj if hasattr(dt_obj, 'hour') else None)
+    # If market_open is None, the schedule was empty → holiday
+    return sess.market_open is not None
 
-    # Ticker-specific session state keys so SPX and XSP don't collide
-    sk_snap = f"em_snapshot_{ticker}"
-    sk_date = f"em_snapshot_date_{ticker}"
-    sk_time = f"em_snapshot_time_{ticker}"
 
-    # Clear stale snapshot from a previous day
-    if st.session_state.get(sk_date) != today_str:
+def _is_weekly_freeze_day(now_et):
+    """True if today is Monday (or Tuesday if Monday was a holiday)."""
+    if now_et.weekday() == 0:  # Monday
+        return True
+    if now_et.weekday() == 1:  # Tuesday — check if Monday was a holiday
+        monday = now_et - timedelta(days=1)
+        if not _is_trading_day(monday):
+            return True
+    return False
+
+
+def _is_monthly_freeze_day(now_et):
+    """True if today is the first trading day of the month."""
+    first = now_et.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    # Walk forward from the 1st to find the first trading weekday
+    for offset in range(10):
+        candidate = first + timedelta(days=offset)
+        if candidate.weekday() >= 5:
+            continue
+        if not _is_trading_day(candidate):
+            continue
+        # This is the first trading day
+        today = now_et.date() if hasattr(now_et, 'date') else now_et
+        return candidate.date() == today
+    return False
+
+
+def _apply_typed_em_snapshot(em_live_data, is_market_open, spot, ticker, em_type, date_key, should_freeze):
+    """
+    Generic EM snapshot freeze/restore for any em_type (daily/weekly/monthly).
+
+    em_live_data: dict with expected_move_pts, upper_level, etc. (or None)
+    Returns the frozen snapshot dict, or None if unavailable.
+    """
+    sk_snap = f"em_snapshot_{em_type}_{ticker}"
+    sk_date = f"em_snapshot_date_{em_type}_{ticker}"
+    sk_time = f"em_snapshot_time_{em_type}_{ticker}"
+
+    # Clear stale snapshot from a previous period
+    if st.session_state.get(sk_date) != date_key:
         st.session_state.pop(sk_snap, None)
         st.session_state.pop(sk_date, None)
         st.session_state.pop(sk_time, None)
 
     if not is_market_open:
-        return em_analysis
+        return st.session_state.get(sk_snap)
 
-    em_live = em_analysis.get("expected_move", {})
-
-    # Try to restore from Postgres if this is a new session (e.g. phone)
+    # Try to restore from Postgres
     if sk_snap not in st.session_state:
         try:
-            db_snap = get_em_snapshot(today_str, ticker=ticker)
+            db_snap = get_em_snapshot(date_key, ticker=ticker, em_type=em_type)
         except Exception:
             db_snap = None
         if db_snap and db_snap.get("expected_move_pts"):
-            # Fill in expected_move_pct if missing (older DB rows)
-            if not db_snap.get("expected_move_pct") and db_snap["expected_move_pts"] > 0:
-                prev_close = em_analysis.get("overnight_move", {}).get("prev_close")
-                if prev_close and prev_close > 0:
-                    db_snap["expected_move_pct"] = (db_snap["expected_move_pts"] / prev_close) * 100
-                else:
-                    db_snap["expected_move_pct"] = em_live.get("expected_move_pct")
             st.session_state[sk_snap] = db_snap
-            st.session_state[sk_date] = today_str
+            st.session_state[sk_date] = date_key
             captured = db_snap.get("captured_at", "")
             if captured:
                 try:
@@ -1352,25 +1392,35 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker
             else:
                 st.session_state[sk_time] = "restored from DB"
 
-    # First capture of the day — save to session state AND Postgres
-    if sk_snap not in st.session_state and em_live.get("expected_move_pts"):
-        st.session_state[sk_snap] = {
-            "expected_move_pts": em_live.get("expected_move_pts"),
-            "expected_move_pct": em_live.get("expected_move_pct"),
-            "upper_level": em_live.get("upper_level"),
-            "lower_level": em_live.get("lower_level"),
-            "straddle": em_live.get("straddle"),
+    # First capture of the period — only on the correct freeze day
+    if sk_snap not in st.session_state and should_freeze and em_live_data and em_live_data.get("expected_move_pts"):
+        snap = {
+            "expected_move_pts": em_live_data.get("expected_move_pts"),
+            "expected_move_pct": em_live_data.get("expected_move_pct"),
+            "upper_level": em_live_data.get("upper_level"),
+            "lower_level": em_live_data.get("lower_level"),
+            "straddle": em_live_data.get("straddle"),
+            "expiration": em_live_data.get("expiration"),
         }
-        st.session_state[sk_date] = today_str
+        st.session_state[sk_snap] = snap
+        st.session_state[sk_date] = date_key
         st.session_state[sk_time] = now_ny().strftime("%I:%M:%S %p ET")
-        # Persist to Postgres so other sessions (phone) get the same frozen EM
         try:
-            save_em_snapshot(em_live, today_str, ticker=ticker)
+            save_em_snapshot(em_live_data, date_key, ticker=ticker, em_type=em_type)
         except Exception:
             pass
 
-    if sk_snap in st.session_state:
-        snap = st.session_state[sk_snap]
+    return st.session_state.get(sk_snap)
+
+
+def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker="SPX"):
+    """Freeze expected move at first market-hours refresh; recompute classification with live data."""
+    today_str = now_ny().strftime("%Y-%m-%d")
+    em_live = em_analysis.get("expected_move", {})
+
+    snap = _apply_typed_em_snapshot(em_live, is_market_open, spot, ticker, "daily", today_str, True)
+
+    if snap and snap.get("expected_move_pts"):
         em_pct = snap.get("expected_move_pct") or em_analysis.get("expected_move", {}).get("expected_move_pct")
         em_analysis["expected_move"] = {
             **em_analysis.get("expected_move", {}),
@@ -1389,7 +1439,7 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker
                 gamma_regime=regime["regime"],
             )
             em_analysis["classification"]["move_source"] = ticker.lower()
-        if snap["upper_level"] is not None:
+        if snap.get("upper_level") is not None:
             em_analysis["level_context"] = {
                 "em_upper": snap["upper_level"],
                 "em_lower": snap["lower_level"],
@@ -1580,6 +1630,28 @@ def main():
     # ── Apply EM snapshot logic ──
     em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker=ticker)
 
+    # ── Weekly & Monthly EM ──
+    run_now = now_ny()
+    temp_client = TradierDataClient(token=tradier_token)
+
+    # Weekly EM: straddle from this Friday's expiration, frozen Monday at open
+    weekly_exp = find_weekly_expiration(data.avail, run_now.date())
+    weekly_em_live = compute_em_for_expiration(temp_client, ticker, weekly_exp, spot) if weekly_exp else None
+    weekly_date_key = get_weekly_em_date_key(run_now)
+    weekly_em_snap = _apply_typed_em_snapshot(
+        weekly_em_live, is_market_open, spot, ticker,
+        "weekly", weekly_date_key, _is_weekly_freeze_day(run_now),
+    )
+
+    # Monthly EM: straddle from monthly OpEx (3rd Friday), frozen 1st trading day
+    monthly_exp = find_monthly_expiration(data.avail, run_now.date())
+    monthly_em_live = compute_em_for_expiration(temp_client, ticker, monthly_exp, spot) if monthly_exp else None
+    monthly_date_key = get_monthly_em_date_key(run_now)
+    monthly_em_snap = _apply_typed_em_snapshot(
+        monthly_em_live, is_market_open, spot, ticker,
+        "monthly", monthly_date_key, _is_monthly_freeze_day(run_now),
+    )
+
     # ── Save historical snapshot (market hours only, throttled to refresh interval) ──
     if is_market_open:
         now_utc = datetime.now(timezone.utc)
@@ -1744,7 +1816,7 @@ def main():
         st.markdown(em_bar_html, unsafe_allow_html=True)
 
         # Show when the straddle was captured
-        snap_time = st.session_state.get(f"em_snapshot_time_{ticker}")
+        snap_time = st.session_state.get(f"em_snapshot_time_daily_{ticker}")
         if market_ctx == "live" and snap_time:
             st.caption(f"📌 Expected move captured at {snap_time} — frozen for the session. Today's move and vol budget update live.")
 
@@ -1789,9 +1861,26 @@ def main():
     with tab_history:
         _render_history_tab(spot, ticker=ticker)
 
-    # ── C5: Expected move consumption tracker ──
+    # ── C5: Expected move consumption trackers (0DTE / Weekly / Monthly) ──
     with tab_em_track:
-        _render_em_tracker(em_analysis, spot, prev_close, market_ctx)
+        # Daily (0DTE)
+        daily_cap = st.session_state.get(f"em_snapshot_time_daily_{ticker}")
+        daily_sub = f"Frozen at {daily_cap}" if daily_cap else None
+        _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=daily_sub)
+
+        st.divider()
+
+        # Weekly
+        weekly_sub = f"Frozen Mon open | Exp: {weekly_exp}" if weekly_exp else "No weekly expiration found"
+        weekly_em_for_render = {"expected_move": weekly_em_snap} if weekly_em_snap else {"expected_move": weekly_em_live or {}}
+        _render_em_tracker(weekly_em_for_render, spot, prev_close, market_ctx, label="Weekly", subtitle=weekly_sub)
+
+        st.divider()
+
+        # Monthly
+        monthly_sub = f"Frozen 1st trading day | Exp: {monthly_exp}" if monthly_exp else "No monthly expiration found"
+        monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": monthly_em_live or {}}
+        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="Monthly", subtitle=monthly_sub)
 
     # ── C4: IV surface visualization ──
     with tab_iv_surface:

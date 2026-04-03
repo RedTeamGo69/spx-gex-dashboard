@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import calendar as _cal
 import math
+from datetime import date, timedelta
+
 import numpy as np
 
 from phase1.quote_filters import quote_mid, has_two_sided_quote, is_crossed
@@ -84,6 +87,87 @@ def compute_expected_move(straddle_info: dict | None, spot: float) -> dict:
         "lower_level": round(spot - em, 2),
         "straddle": straddle_info,
     }
+
+
+# ── Expiration finders for weekly / monthly EM ─────────────────────────────
+
+def find_weekly_expiration(avail_exps: list[str], ref_date: date) -> str | None:
+    """Find this Friday's expiration (or nearest weekly within 7 days)."""
+    days_to_fri = (4 - ref_date.weekday()) % 7
+    if days_to_fri == 0 and ref_date.weekday() != 4:
+        days_to_fri = 7  # not actually Friday, wrap around
+    friday = (ref_date + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
+
+    # Exact Friday match
+    if friday in avail_exps:
+        return friday
+
+    # Fallback: nearest expiration between tomorrow and 7 days out
+    today_str = ref_date.strftime("%Y-%m-%d")
+    cutoff = (ref_date + timedelta(days=7)).strftime("%Y-%m-%d")
+    candidates = sorted(e for e in avail_exps if today_str < e <= cutoff)
+    return candidates[-1] if candidates else None  # prefer the furthest in the week
+
+
+def find_monthly_expiration(avail_exps: list[str], ref_date: date) -> str | None:
+    """Find the standard monthly options expiration (3rd Friday of month)."""
+    # Compute 3rd Friday of current month
+    year, month = ref_date.year, ref_date.month
+    first_day_weekday = _cal.weekday(year, month, 1)  # 0=Mon
+    # First Friday: day offset from 1st to first Friday
+    first_fri = 1 + (4 - first_day_weekday) % 7
+    third_fri = first_fri + 14
+    third_fri_date = date(year, month, third_fri)
+
+    # If 3rd Friday has passed, use next month
+    if third_fri_date < ref_date:
+        if month == 12:
+            year, month = year + 1, 1
+        else:
+            month += 1
+        first_day_weekday = _cal.weekday(year, month, 1)
+        first_fri = 1 + (4 - first_day_weekday) % 7
+        third_fri = first_fri + 14
+        third_fri_date = date(year, month, third_fri)
+
+    target = third_fri_date.strftime("%Y-%m-%d")
+    if target in avail_exps:
+        return target
+
+    # Fallback: nearest available within 5 days of the 3rd Friday
+    window_start = (third_fri_date - timedelta(days=5)).strftime("%Y-%m-%d")
+    window_end = (third_fri_date + timedelta(days=5)).strftime("%Y-%m-%d")
+    candidates = sorted(e for e in avail_exps if window_start <= e <= window_end)
+    # Prefer the one closest to the 3rd Friday
+    if candidates:
+        candidates.sort(key=lambda e: abs((date.fromisoformat(e) - third_fri_date).days))
+        return candidates[0]
+    return None
+
+
+def compute_em_for_expiration(client, ticker: str, expiration: str, spot: float) -> dict | None:
+    """Compute Expected Move from the ATM straddle of a specific expiration.
+
+    Returns the same dict shape as compute_expected_move(), or None on failure.
+    """
+    if not expiration:
+        return None
+    try:
+        entry = client.get_chain_cached(ticker, expiration)
+        if entry.get("status") != "ok":
+            return None
+        calls = entry.get("calls", [])
+        puts = entry.get("puts", [])
+        if not calls or not puts:
+            return None
+        straddle = find_atm_straddle(calls, puts, spot)
+        em = compute_expected_move(straddle, spot)
+        if em.get("expected_move_pts") is not None:
+            em["expiration"] = expiration
+            return em
+    except Exception:
+        pass
+    return None
 
 
 # ── Overnight move analysis ─────────────────────────────────────────────────

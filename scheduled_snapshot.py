@@ -176,10 +176,59 @@ def capture_snapshot():
     em_data = em_analysis.get("expected_move", {})
     if em_data.get("expected_move_pts"):
         try:
-            save_em_snapshot(em_data, today_str, ticker=ticker)
-            _logger.info(f"EM snapshot saved: {em_data['expected_move_pts']:.2f} pts")
+            save_em_snapshot(em_data, today_str, ticker=ticker, em_type="daily")
+            _logger.info(f"Daily EM snapshot saved: {em_data['expected_move_pts']:.2f} pts")
         except Exception as e:
-            _logger.warning(f"EM snapshot save failed: {e}")
+            _logger.warning(f"Daily EM snapshot save failed: {e}")
+
+    # ── Weekly EM: capture on Mondays (or Tuesday if Monday was a holiday) ──
+    from phase1.expected_move import find_weekly_expiration, find_monthly_expiration, compute_em_for_expiration
+    from phase1.gex_history import get_weekly_em_date_key, get_monthly_em_date_key
+
+    is_monday = run_now.weekday() == 0
+    is_tuesday_after_holiday = False
+    if run_now.weekday() == 1:
+        monday = run_now - __import__('datetime').timedelta(days=1)
+        mon_session = get_session_state(CASH_CALENDAR, monday)
+        is_tuesday_after_holiday = mon_session.market_open is None
+
+    if is_monday or is_tuesday_after_holiday:
+        weekly_exp = find_weekly_expiration(avail, run_now.date())
+        if weekly_exp:
+            weekly_em = compute_em_for_expiration(client, ticker, weekly_exp, spot)
+            if weekly_em and weekly_em.get("expected_move_pts"):
+                try:
+                    weekly_key = get_weekly_em_date_key(run_now)
+                    save_em_snapshot(weekly_em, weekly_key, ticker=ticker, em_type="weekly")
+                    _logger.info(f"Weekly EM saved: ±{weekly_em['expected_move_pts']:.2f} pts (exp: {weekly_exp})")
+                except Exception as e:
+                    _logger.warning(f"Weekly EM save failed: {e}")
+
+    # ── Monthly EM: capture on the first trading day of the month ──
+    is_first_trading_day = False
+    from datetime import timedelta as _td
+    first = run_now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    for offset in range(10):
+        candidate = first + _td(days=offset)
+        if candidate.weekday() >= 5:
+            continue
+        cand_session = get_session_state(CASH_CALENDAR, candidate)
+        if cand_session.market_open is None:
+            continue
+        is_first_trading_day = (candidate.date() == run_now.date())
+        break
+
+    if is_first_trading_day:
+        monthly_exp = find_monthly_expiration(avail, run_now.date())
+        if monthly_exp:
+            monthly_em = compute_em_for_expiration(client, ticker, monthly_exp, spot)
+            if monthly_em and monthly_em.get("expected_move_pts"):
+                try:
+                    monthly_key = get_monthly_em_date_key(run_now)
+                    save_em_snapshot(monthly_em, monthly_key, ticker=ticker, em_type="monthly")
+                    _logger.info(f"Monthly EM saved: ±{monthly_em['expected_move_pts']:.2f} pts (exp: {monthly_exp})")
+                except Exception as e:
+                    _logger.warning(f"Monthly EM save failed: {e}")
 
     _logger.info("Scheduled snapshot complete")
 

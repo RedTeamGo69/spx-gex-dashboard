@@ -340,7 +340,7 @@ def check_db_connection():
         return {"ok": False, "error": str(e)}
 
 
-def save_em_snapshot(em_data, date_str, ticker="SPX"):
+def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
     """Persist EM snapshot to Postgres so it survives across sessions on the same day."""
     if _backend != "postgres":
         return
@@ -351,42 +351,49 @@ def save_em_snapshot(em_data, date_str, ticker="SPX"):
             CREATE TABLE IF NOT EXISTS em_snapshots (
                 date TEXT NOT NULL,
                 ticker TEXT NOT NULL DEFAULT 'SPX',
+                em_type TEXT NOT NULL DEFAULT 'daily',
                 em_pts REAL,
                 em_pct REAL,
                 upper_level REAL,
                 lower_level REAL,
+                anchor_spot REAL,
                 straddle_strike REAL,
                 captured_at TEXT,
-                PRIMARY KEY (ticker, date)
+                PRIMARY KEY (ticker, date, em_type)
             )
         """)
-        # Migration: add ticker column and update PK if missing
+        # Migrations for older schemas
+        for col, typedef in [
+            ("ticker", "TEXT NOT NULL DEFAULT 'SPX'"),
+            ("em_pct", "REAL"),
+            ("em_type", "TEXT NOT NULL DEFAULT 'daily'"),
+            ("anchor_spot", "REAL"),
+        ]:
+            cur.execute(f"""
+                DO $$ BEGIN
+                    ALTER TABLE em_snapshots ADD COLUMN {col} {typedef};
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$
+            """)
+        # Drop old index and create new composite one
+        cur.execute("DROP INDEX IF EXISTS idx_em_ticker_date")
         cur.execute("""
-            DO $$ BEGIN
-                ALTER TABLE em_snapshots ADD COLUMN ticker TEXT NOT NULL DEFAULT 'SPX';
-            EXCEPTION WHEN duplicate_column THEN NULL;
-            END $$
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_em_ticker_date_type
+            ON em_snapshots(ticker, date, em_type)
         """)
-        cur.execute("""
-            DO $$ BEGIN
-                ALTER TABLE em_snapshots ADD COLUMN em_pct REAL;
-            EXCEPTION WHEN duplicate_column THEN NULL;
-            END $$
-        """)
-        # Try creating the composite unique index (covers both old single-PK and new schemas)
-        cur.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_em_ticker_date ON em_snapshots(ticker, date)
-        """)
+        # Compute anchor_spot from EM range midpoint
+        upper = em_data.get("upper_level")
+        lower = em_data.get("lower_level")
+        anchor_spot = round((upper + lower) / 2, 2) if upper is not None and lower is not None else None
         cur.execute(
-            """INSERT INTO em_snapshots (date, ticker, em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT (ticker, date) DO NOTHING""",
+            """INSERT INTO em_snapshots (date, ticker, em_type, em_pts, em_pct, upper_level, lower_level, anchor_spot, straddle_strike, captured_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (ticker, date, em_type) DO NOTHING""",
             (
-                date_str, ticker,
+                date_str, ticker, em_type,
                 em_data.get("expected_move_pts"),
                 em_data.get("expected_move_pct"),
-                em_data.get("upper_level"),
-                em_data.get("lower_level"),
+                upper, lower, anchor_spot,
                 em_data.get("straddle", {}).get("strike"),
                 datetime.now(NY_TZ).isoformat(),
             ),
@@ -395,14 +402,35 @@ def save_em_snapshot(em_data, date_str, ticker="SPX"):
         conn.close()
 
 
-def get_em_snapshot(date_str, ticker="SPX"):
-    """Retrieve today's persisted EM snapshot for a given ticker, if any."""
+def get_em_snapshot(date_str, ticker="SPX", em_type="daily"):
+    """Retrieve persisted EM snapshot for a given ticker/type/date, if any."""
     if _backend != "postgres":
         return None
     try:
         conn = _pg_get_connection()
         cur = conn.cursor()
         try:
+            cur.execute(
+                "SELECT em_pts, em_pct, upper_level, lower_level, anchor_spot, straddle_strike, captured_at "
+                "FROM em_snapshots WHERE date = %s AND ticker = %s AND em_type = %s",
+                (date_str, ticker, em_type),
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "expected_move_pts": row[0],
+                    "expected_move_pct": row[1],
+                    "upper_level": row[2],
+                    "lower_level": row[3],
+                    "anchor_spot": row[4],
+                    "straddle": {"strike": row[5]},
+                    "captured_at": row[6],
+                }
+        except Exception:
+            # Fallback: older schema without em_type/anchor_spot
+            conn = _pg_get_connection()
+            cur = conn.cursor()
             cur.execute(
                 "SELECT em_pts, em_pct, upper_level, lower_level, straddle_strike, captured_at "
                 "FROM em_snapshots WHERE date = %s AND ticker = %s",
@@ -416,32 +444,30 @@ def get_em_snapshot(date_str, ticker="SPX"):
                     "expected_move_pct": row[1],
                     "upper_level": row[2],
                     "lower_level": row[3],
+                    "anchor_spot": None,
                     "straddle": {"strike": row[4]},
                     "captured_at": row[5],
-                }
-        except Exception:
-            # Fallback: ticker column may not exist yet on older schemas
-            conn = _pg_get_connection()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT em_pts, upper_level, lower_level, straddle_strike, captured_at "
-                "FROM em_snapshots WHERE date = %s",
-                (date_str,),
-            )
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                return {
-                    "expected_move_pts": row[0],
-                    "expected_move_pct": None,
-                    "upper_level": row[1],
-                    "lower_level": row[2],
-                    "straddle": {"strike": row[3]},
-                    "captured_at": row[4],
                 }
     except Exception:
         pass
     return None
+
+
+def get_weekly_em_date_key(now):
+    """Return Monday's date string for the current trading week."""
+    days_since_monday = now.weekday()  # 0=Mon
+    if hasattr(now, 'date'):
+        monday = (now - timedelta(days=days_since_monday)).date()
+    else:
+        monday = now - timedelta(days=days_since_monday)
+    return monday.strftime("%Y-%m-%d")
+
+
+def get_monthly_em_date_key(now):
+    """Return 1st of the current month as date key."""
+    if hasattr(now, 'date'):
+        return now.date().replace(day=1).strftime("%Y-%m-%d")
+    return now.replace(day=1).strftime("%Y-%m-%d")
 
 
 def get_history(days=30, ticker="SPX"):
