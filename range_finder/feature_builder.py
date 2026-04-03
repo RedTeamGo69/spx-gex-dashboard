@@ -308,8 +308,9 @@ def build_features(conn: sqlite3.Connection) -> pd.DataFrame:
     gex_df = load_gex_inputs(conn)
 
     # --- VIX implied range ---
-    # Compute from same-week VIX first, then lag below
-    weekly["vix_implied_range"] = (weekly["vix_close"] / math.sqrt(52)) * 0.68 / 100
+    # VIX / sqrt(52) = 1-SD weekly range (encloses ~68% of moves)
+    # Divided by 100 to convert from percentage points to decimal
+    weekly["vix_implied_range"] = (weekly["vix_close"] / math.sqrt(52)) / 100
 
     # --- SPX return lags ---
     weekly["spx_return_lag1"] = weekly["spx_return"].shift(1)

@@ -63,6 +63,25 @@ STANDARD_WING_WIDTHS = [15, 20, 25, 30, 40, 50]
 
 MIN_CREDIT_RATIO = 0.25
 
+# Per-ticker configuration — XSP is 1/10th of SPX
+TICKER_CONFIG = {
+    "SPX": {
+        "strike_increment": 5,
+        "wing_widths": [15, 20, 25, 30, 40, 50],
+        "min_spread_width": {"normal": 20, "event_1": 25, "event_2": 30, "fomc_week": 35},
+    },
+    "XSP": {
+        "strike_increment": 1,
+        "wing_widths": [1.5, 2, 2.5, 3, 4, 5],
+        "min_spread_width": {"normal": 2, "event_1": 2.5, "event_2": 3, "fomc_week": 3.5},
+    },
+}
+
+
+def get_ticker_config(ticker: str = "SPX") -> dict:
+    """Get spread configuration for a given ticker."""
+    return TICKER_CONFIG.get(ticker.upper(), TICKER_CONFIG["SPX"])
+
 
 # =============================================================================
 # DATACLASSES
@@ -207,14 +226,14 @@ def round_to_increment(
         return round(price / increment) * increment
 
 
-def round_call_short(price: float) -> float:
+def round_call_short(price: float, increment: float = SPX_STRIKE_INCREMENT) -> float:
     """Round call short strike UP to next increment (more OTM = safer)."""
-    return round_to_increment(price, direction="away")
+    return round_to_increment(price, increment=increment, direction="away")
 
 
-def round_put_short(price: float) -> float:
+def round_put_short(price: float, increment: float = SPX_STRIKE_INCREMENT) -> float:
     """Round put short strike DOWN to next increment (more OTM = safer)."""
-    return round_to_increment(price, direction="toward")
+    return round_to_increment(price, increment=increment, direction="toward")
 
 
 # =============================================================================
@@ -315,15 +334,17 @@ def build_spread_side(
 # MINIMUM WIDTH ENFORCEMENT
 # =============================================================================
 
-def get_min_width(event_count: int, has_fomc: int) -> int:
+def get_min_width(event_count: int, has_fomc: int, ticker: str = "SPX") -> float:
     """Return the minimum permissible wing width for this week's event profile."""
+    cfg = get_ticker_config(ticker)
+    widths = cfg["min_spread_width"]
     if has_fomc:
-        return MIN_SPREAD_WIDTH["fomc_week"]
+        return widths["fomc_week"]
     if event_count >= 2:
-        return MIN_SPREAD_WIDTH["event_2"]
+        return widths["event_2"]
     if event_count >= 1:
-        return MIN_SPREAD_WIDTH["event_1"]
-    return MIN_SPREAD_WIDTH["normal"]
+        return widths["event_1"]
+    return widths["normal"]
 
 
 def get_recommended_width(
@@ -331,18 +352,22 @@ def get_recommended_width(
     spx_ref: float,
     event_count: int,
     has_fomc: int,
-) -> int:
+    ticker: str = "SPX",
+) -> float:
     """Suggest a wing width based on the effective range and event profile."""
+    cfg = get_ticker_config(ticker)
+    standard_widths = cfg["wing_widths"]
+
     half_range_pts = (effective_range_pct / 2) * spx_ref
     proportional   = half_range_pts * 0.40
 
-    snapped = min(STANDARD_WING_WIDTHS, key=lambda w: abs(w - proportional))
+    snapped = min(standard_widths, key=lambda w: abs(w - proportional))
 
-    min_width = get_min_width(event_count, has_fomc)
+    min_width = get_min_width(event_count, has_fomc, ticker=ticker)
     final     = max(snapped, min_width)
-    final = min(final, max(STANDARD_WING_WIDTHS))
+    final = min(final, max(standard_widths))
 
-    return int(final)
+    return final
 
 
 # =============================================================================
@@ -353,14 +378,16 @@ def build_spread_plan(
     forecast: dict,
     feature_row: "pd.Series | dict" = None,
     week_start: str = None,
-    wing_widths: list[int] = None,
+    wing_widths: list = None,
     vix_level: float = None,
     spx_open: float = None,
     dte: int = 5,
+    ticker: str = "SPX",
 ) -> SpreadPlan:
     """Build a complete SpreadPlan from a forecast dict."""
+    cfg = get_ticker_config(ticker)
     if wing_widths is None:
-        wing_widths = STANDARD_WING_WIDTHS
+        wing_widths = cfg["wing_widths"]
 
     spx_ref = spx_open if spx_open else forecast["spx_ref_close"]
 
@@ -402,14 +429,15 @@ def build_spread_plan(
     gex_regime = {1: "positive (suppressive)", 0: "neutral", -1: "negative (amplifying)"}.get(gex_flag, "unknown")
 
     # --- Short strikes ---
-    call_short = round_call_short(effective_upper)
-    put_short  = round_put_short(effective_lower)
+    increment = cfg["strike_increment"]
+    call_short = round_call_short(effective_upper, increment=increment)
+    put_short  = round_put_short(effective_lower, increment=increment)
 
     log.info(f"Effective range: +/-{half_range*100:.2f}%  ->  [{effective_lower:.2f}, {effective_upper:.2f}]")
-    log.info(f"Short strikes  : call={call_short}  put={put_short}")
+    log.info(f"Short strikes  : call={call_short}  put={put_short}  (ticker={ticker})")
 
     # --- Minimum width ---
-    min_width = get_min_width(event_count, has_fomc)
+    min_width = get_min_width(event_count, has_fomc, ticker=ticker)
     viable_widths = [w for w in wing_widths if w >= min_width]
     if not viable_widths:
         viable_widths = [max(wing_widths)]
@@ -419,15 +447,16 @@ def build_spread_plan(
     put_spreads  = build_spread_side("put",  put_short,  viable_widths, spx_ref, vix_level, dte)
 
     # --- Recommended width ---
-    rec_width = get_recommended_width(effective_range, spx_ref, event_count, has_fomc)
+    rec_width = get_recommended_width(effective_range, spx_ref, event_count, has_fomc, ticker=ticker)
 
     # --- Warnings ---
     warnings = []
 
+    min_floor = cfg["min_spread_width"]["fomc_week"]
     if event_count >= 2:
         warnings.append(f"Multiple macro events this week ({event_count}) — consider reducing size or widening wings further")
     if has_fomc:
-        warnings.append("FOMC week — minimum width floor raised to 35 pts; gaps through strikes are possible")
+        warnings.append(f"FOMC week — minimum width floor raised to {min_floor} pts; gaps through strikes are possible")
     if gex_flag == -1:
         warnings.append("Negative GEX regime — dealer hedging amplifies moves; buffer widened")
     if forecast.get("model_vs_vix", 0) > 0.01:
