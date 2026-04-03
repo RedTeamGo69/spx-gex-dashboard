@@ -342,21 +342,30 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
     today_str = run_now.strftime("%Y-%m-%d")
     tomorrow_str = (run_now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Build expiration buckets
-    days_to_fri = (4 - run_now.weekday()) % 7
-    fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
+    # Build non-overlapping expiration buckets
     import calendar as _cal
     last_day = run_now.replace(day=_cal.monthrange(run_now.year, run_now.month)[1]).strftime("%Y-%m-%d")
 
-    # Non-overlapping buckets: 0DTE only today, This Week is rest-of-week
-    # (excluding today), This Month is rest-of-month (excluding this week)
-    dte0_exps = [e for e in avail_exps if e == today_str]
-    week_exps = [e for e in avail_exps if today_str < e <= fri]
-    month_exps = [e for e in avail_exps if e > fri and e <= last_day]
+    # 0DTE = nearest expiration (today, or if none, the very next available)
+    sorted_exps = sorted(avail_exps)
+    dte0_exp = None
+    if today_str in sorted_exps:
+        dte0_exp = today_str
+    else:
+        future = [e for e in sorted_exps if e > today_str]
+        if future:
+            dte0_exp = future[0]
 
-    # If 0DTE has no expirations, check tomorrow (next trading day)
-    if not dte0_exps:
-        dte0_exps = [e for e in avail_exps if e == tomorrow_str]
+    # End of this trading week = next Friday (or this Friday if before it)
+    days_to_fri = (4 - run_now.weekday()) % 7
+    if days_to_fri == 0:
+        # Already Friday (or computed as 0), use NEXT Friday
+        days_to_fri = 7
+    fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
+
+    dte0_exps = [dte0_exp] if dte0_exp else []
+    week_exps = [e for e in sorted_exps if e > (dte0_exp or today_str) and e <= fri]
+    month_exps = [e for e in sorted_exps if e > fri and e <= last_day]
 
     buckets = {
         "0DTE": dte0_exps,
