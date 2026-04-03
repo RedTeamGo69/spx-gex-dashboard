@@ -348,10 +348,20 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
     import calendar as _cal
     last_day = run_now.replace(day=_cal.monthrange(run_now.year, run_now.month)[1]).strftime("%Y-%m-%d")
 
+    # Non-overlapping buckets: 0DTE only today, This Week is rest-of-week
+    # (excluding today), This Month is rest-of-month (excluding this week)
+    dte0_exps = [e for e in avail_exps if e == today_str]
+    week_exps = [e for e in avail_exps if today_str < e <= fri]
+    month_exps = [e for e in avail_exps if e > fri and e <= last_day]
+
+    # If 0DTE has no expirations, check tomorrow (next trading day)
+    if not dte0_exps:
+        dte0_exps = [e for e in avail_exps if e == tomorrow_str]
+
     buckets = {
-        "0DTE": [e for e in avail_exps if e == today_str],
-        "This Week": [e for e in avail_exps if today_str <= e <= fri],
-        "This Month": [e for e in avail_exps if today_str <= e <= last_day],
+        "0DTE": dte0_exps,
+        "This Week": week_exps,
+        "This Month": month_exps,
     }
 
     results = {}
