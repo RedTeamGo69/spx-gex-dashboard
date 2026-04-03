@@ -217,7 +217,7 @@ def get_credentials():
 # ─────────────────────────────────────────────────────────────────────────────
 # Data fetching (cached)
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_resource(ttl=90, show_spinner=False)
 def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run_id: str, ticker: str = "SPX"):
     """
     Run the full GEX engine pipeline. Cached for 90 seconds.
@@ -328,7 +328,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     )
 
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_resource(ttl=90, show_spinner=False)
 def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str, ticker: str = "SPX"):
     """
     Compute GEX for 3 timeframe buckets: 0DTE, This Week, This Month.
@@ -1459,7 +1459,7 @@ def main():
             horizontal=True,
         )
         if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
-            st.cache_data.clear()
+            st.cache_resource.clear()
 
         # ── ES Futures Override (pre-market only) ──
         # We declare these with defaults; they'll be ignored during market hours.
@@ -1798,7 +1798,7 @@ def main():
     if refresh_seconds > 0:
         import time
         time.sleep(refresh_seconds)
-        st.cache_data.clear()
+        st.cache_resource.clear()
         st.rerun()
 
 
