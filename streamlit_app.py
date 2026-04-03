@@ -1551,15 +1551,29 @@ def _get_rf_conn():
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX"):
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
     import sqlite3
+    import yfinance as yf
 
     ticker_cfg = RF_TICKER_CONFIG.get(ticker, RF_TICKER_CONFIG["SPX"])
 
-    # ── Auto-update reference price when ticker changes ──
+    # ── Fetch latest VIX close (cached for the session) ──
+    if "_sf_live_vix" not in st.session_state:
+        try:
+            vix_hist = yf.Ticker("^VIX").history(period="5d")
+            if not vix_hist.empty:
+                st.session_state["_sf_live_vix"] = round(float(vix_hist["Close"].dropna().iloc[-1]), 2)
+            else:
+                st.session_state["_sf_live_vix"] = 18.0
+        except Exception:
+            st.session_state["_sf_live_vix"] = 18.0
+    live_vix = st.session_state["_sf_live_vix"]
+
+    # ── Auto-update reference price and VIX when ticker changes ──
     ref_key = f"sf_ref_price_{ticker}"
+    vix_key = f"sf_vix_level_{ticker}"
     prev_ticker = st.session_state.get("_sf_prev_ticker")
     if prev_ticker != ticker:
-        # Ticker just changed — reset reference price to live spot
         st.session_state[ref_key] = round(spot, 2)
+        st.session_state[vix_key] = live_vix
         st.session_state["_sf_prev_ticker"] = ticker
 
     st.markdown(f"### {ticker} Weekly Credit Spread Finder")
@@ -1583,9 +1597,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     with col_ctrl2:
         vix_input = st.number_input(
             "VIX Level",
-            min_value=5.0, max_value=100.0, value=18.0, step=0.5,
-            help="Current VIX (for credit estimation via BSM)",
-            key=f"sf_vix_level_{ticker}",
+            min_value=5.0, max_value=100.0, value=live_vix, step=0.5,
+            help="Last VIX close (auto-filled; used for credit estimation via BSM)",
+            key=vix_key,
         )
 
     with col_ctrl3:
