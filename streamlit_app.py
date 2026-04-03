@@ -342,30 +342,36 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
     today_str = run_now.strftime("%Y-%m-%d")
     tomorrow_str = (run_now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Build non-overlapping expiration buckets
+    # Build non-overlapping expiration buckets using DTE
+    from datetime import date as _date
     import calendar as _cal
     last_day = run_now.replace(day=_cal.monthrange(run_now.year, run_now.month)[1]).strftime("%Y-%m-%d")
+    ref_date = run_now.date() if hasattr(run_now, 'date') else run_now
 
-    # 0DTE = nearest expiration (today, or if none, the very next available)
-    sorted_exps = sorted(avail_exps)
-    dte0_exp = None
-    if today_str in sorted_exps:
-        dte0_exp = today_str
-    else:
-        future = [e for e in sorted_exps if e > today_str]
-        if future:
-            dte0_exp = future[0]
+    sorted_exps = sorted([e for e in avail_exps if e >= today_str])
 
-    # End of this trading week = next Friday (or this Friday if before it)
-    days_to_fri = (4 - run_now.weekday()) % 7
-    if days_to_fri == 0:
-        # Already Friday (or computed as 0), use NEXT Friday
-        days_to_fri = 7
-    fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
+    # Classify by days-to-expiration from today
+    dte0_exps = []   # nearest single expiration
+    week_exps = []   # 2–7 calendar days out (rest of this week)
+    month_exps = []  # 8+ days out through end of month
 
-    dte0_exps = [dte0_exp] if dte0_exp else []
-    week_exps = [e for e in sorted_exps if e > (dte0_exp or today_str) and e <= fri]
-    month_exps = [e for e in sorted_exps if e > fri and e <= last_day]
+    for exp_str in sorted_exps:
+        exp_date = _date.fromisoformat(exp_str)
+        days_out = (exp_date - ref_date).days
+        if exp_str > last_day:
+            continue
+        if not dte0_exps and days_out <= 1:
+            # Nearest expiration (today or tomorrow = 0DTE)
+            dte0_exps.append(exp_str)
+        elif days_out <= 7:
+            week_exps.append(exp_str)
+        else:
+            month_exps.append(exp_str)
+
+    # If no 0DTE found within 1 day, grab the very first available
+    if not dte0_exps and sorted_exps:
+        dte0_exps.append(sorted_exps[0])
+        week_exps = [e for e in week_exps if e != sorted_exps[0]]
 
     buckets = {
         "0DTE": dte0_exps,
@@ -1457,6 +1463,8 @@ def main():
             selected = [dte1] if dte1 else []
         elif "week" in mode:
             days_to_fri = (4 - run_now.weekday()) % 7
+            if days_to_fri == 0:
+                days_to_fri = 7  # Already Friday/past → use next Friday
             fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
             selected = [e for e in avail if today_str <= e <= fri]
         elif "month" in mode:
