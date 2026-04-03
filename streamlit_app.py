@@ -60,6 +60,8 @@ COLORS = {
     "bar_green": "#00c853",
     "bar_red": "#ff1744",
     "em_level": "#b388ff",
+    "em_weekly": "#ffd740",
+    "em_monthly": "#4dd0e1",
     "profile_line": "#9c88ff",
     "warning": "#ffd600",
     "text_muted": "#888",
@@ -419,7 +421,7 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
 # ─────────────────────────────────────────────────────────────────────────────
 # Chart builders
 # ─────────────────────────────────────────────────────────────────────────────
-def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
+def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, monthly_em=None):
     df = gex_df.copy().sort_values("strike").reset_index(drop=True)
     strikes = df["strike"].values
     net_gex = df["net_gex"].values
@@ -444,7 +446,7 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
                        annotation_font_color=color, annotation_font_size=9,
                        annotation_position="top left")
 
-    # EM levels
+    # EM levels (0DTE — purple dotted)
     em = em_analysis.get("expected_move", {})
     if em.get("upper_level"):
         for val, label in [(em["upper_level"], "EM+"), (em["lower_level"], "EM−")]:
@@ -452,6 +454,24 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
                            annotation_text=f"{label} ${val:.0f}",
                            annotation_font_color=COLORS["em_level"], annotation_font_size=8,
                            annotation_position="bottom right")
+
+    # Weekly EM levels (amber dashed)
+    w_em = weekly_em or {}
+    if w_em.get("upper_level"):
+        for val, label in [(w_em["upper_level"], "wEM+"), (w_em["lower_level"], "wEM−")]:
+            fig.add_hline(y=val, line_color=COLORS["em_weekly"], line_dash="dash", line_width=1,
+                           annotation_text=f"{label} ${val:.0f}",
+                           annotation_font_color=COLORS["em_weekly"], annotation_font_size=7,
+                           annotation_position="top right")
+
+    # Monthly EM levels (cyan longdash)
+    m_em = monthly_em or {}
+    if m_em.get("upper_level"):
+        for val, label in [(m_em["upper_level"], "mEM+"), (m_em["lower_level"], "mEM−")]:
+            fig.add_hline(y=val, line_color=COLORS["em_monthly"], line_dash="longdash", line_width=1,
+                           annotation_text=f"{label} ${val:.0f}",
+                           annotation_font_color=COLORS["em_monthly"], annotation_font_size=7,
+                           annotation_position="top right")
 
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
@@ -465,7 +485,7 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis):
     return fig
 
 
-def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis):
+def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis, weekly_em=None, monthly_em=None):
     if profile_df.empty:
         return go.Figure()
 
@@ -483,13 +503,29 @@ def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis):
                    annotation_text="Zero Γ", annotation_font_color=COLORS["zero_gamma"])
     fig.add_hline(y=0, line_color=COLORS["zeroline"], line_width=1)
 
-    # EM levels
+    # EM levels (0DTE — purple dotted)
     em = em_analysis.get("expected_move", {})
     if em.get("upper_level"):
         for val, label in [(em["upper_level"], "EM+"), (em["lower_level"], "EM−")]:
             fig.add_vline(x=val, line_color=COLORS["em_level"], line_dash="dot", line_width=1.2,
                            annotation_text=label, annotation_font_color=COLORS["em_level"],
                            annotation_font_size=9)
+
+    # Weekly EM levels (amber dashed)
+    w_em = weekly_em or {}
+    if w_em.get("upper_level"):
+        for val, label in [(w_em["upper_level"], "wEM+"), (w_em["lower_level"], "wEM−")]:
+            fig.add_vline(x=val, line_color=COLORS["em_weekly"], line_dash="dash", line_width=1,
+                           annotation_text=label, annotation_font_color=COLORS["em_weekly"],
+                           annotation_font_size=8)
+
+    # Monthly EM levels (cyan longdash)
+    m_em = monthly_em or {}
+    if m_em.get("upper_level"):
+        for val, label in [(m_em["upper_level"], "mEM+"), (m_em["lower_level"], "mEM−")]:
+            fig.add_vline(x=val, line_color=COLORS["em_monthly"], line_dash="longdash", line_width=1,
+                           annotation_text=label, annotation_font_color=COLORS["em_monthly"],
+                           annotation_font_size=8)
 
     # Regime badge
     fig.add_annotation(
@@ -1846,11 +1882,13 @@ def main():
     )
 
     with tab_gex:
-        fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis)
+        w_em_for_chart = weekly_em_snap or weekly_em_live or {}
+        m_em_for_chart = monthly_em_snap or monthly_em_live or {}
+        fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
 
     with tab_profile:
-        fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis)
+        fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
         st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
 
     # ── C3: Multi-timeframe GEX comparison ──
