@@ -42,6 +42,41 @@ from phase1.gex_history import (
     get_weekly_em_date_key, get_monthly_em_date_key,
 )
 
+# ── Range Finder imports ──
+from range_finder.gex_bridge import (
+    GEXContext, extract_gex_context, save_gex_to_range_finder,
+    adjust_spread_with_gex, regime_to_gex_flag,
+)
+from range_finder.data_collector import (
+    DB_PATH as RF_DB_PATH, init_db as rf_init_db,
+    fetch_spx_vix as rf_fetch_spx_vix, save_spx_vix as rf_save_spx_vix,
+    fetch_fred_macro as rf_fetch_fred_macro, save_fred_macro as rf_save_fred_macro,
+    build_event_flags as rf_build_event_flags,
+    get_weekly_spx as rf_get_weekly_spx,
+)
+from range_finder.feature_builder import (
+    init_features_table as rf_init_features_table,
+    create_gex_table as rf_create_gex_table,
+    build_features as rf_build_features,
+    get_features as rf_get_features,
+    get_feature_for_week as rf_get_feature_for_week,
+)
+from range_finder.har_model import (
+    MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
+    time_series_split as rf_time_series_split,
+    fit_model as rf_fit_model, evaluate_oos as rf_evaluate_oos,
+    forecast_next_week as rf_forecast_next_week,
+    save_model as rf_save_model, load_model as rf_load_model,
+)
+from range_finder.spread_levels import (
+    init_spread_log_table as rf_init_spread_log_table,
+    build_spread_plan as rf_build_spread_plan,
+    log_spread_plan as rf_log_spread_plan,
+    update_outcome as rf_update_outcome,
+    STANDARD_WING_WIDTHS as RF_WING_WIDTHS,
+    SpreadPlan,
+)
+
 _logger = logging.getLogger(__name__)
 
 TOOL_VERSION = "v5-web"
@@ -1490,6 +1525,500 @@ def _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Spread Finder Tab — Weekly credit spread placement powered by HAR model + GEX
+# ─────────────────────────────────────────────────────────────────────────────
+
+SF_BG   = "#0e1117"
+SF_BULL = "#26a69a"
+SF_BEAR = "#ef5350"
+SF_NEUT = "#90a4ae"
+SF_WARN = "#ffa726"
+SF_CARD = "#1e2130"
+
+
+@st.cache_resource
+def _get_rf_conn():
+    """Get or create the range finder SQLite connection."""
+    import sqlite3
+    conn = rf_init_db(RF_DB_PATH)
+    rf_init_features_table(conn)
+    rf_create_gex_table(conn)
+    rf_init_spread_log_table(conn)
+    return conn
+
+
+def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
+    """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
+    import sqlite3
+
+    st.markdown("### Weekly Credit Spread Finder")
+    st.caption("HAR regression range forecast + live GEX adjustment for optimal strike placement")
+
+    # ── Extract GEX context from current dashboard data ──
+    gex_ctx = extract_gex_context(levels, spot, regime)
+
+    # ── Sidebar-like controls within the tab ──
+    col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
+
+    with col_ctrl1:
+        spx_close_input = st.number_input(
+            "SPX Reference",
+            min_value=1000.0, max_value=15000.0, value=round(spot, 2), step=5.0,
+            help="Reference price for range calculation (auto-filled from live spot)",
+            key="sf_spx_close",
+        )
+
+    with col_ctrl2:
+        vix_input = st.number_input(
+            "VIX Level",
+            min_value=5.0, max_value=100.0, value=18.0, step=0.5,
+            help="Current VIX (for credit estimation via BSM)",
+            key="sf_vix_level",
+        )
+
+    with col_ctrl3:
+        model_choice = st.selectbox(
+            "Model Spec",
+            options=list(RF_MODEL_SPECS.keys()),
+            index=2,
+            help="M3_extended recommended; M4_full when GEX data is populated",
+            key="sf_model_choice",
+        )
+
+    with col_ctrl4:
+        wing_width = st.select_slider(
+            "Wing Width (pts)",
+            options=RF_WING_WIDTHS,
+            value=25,
+            help="Spread width to highlight",
+            key="sf_wing_width",
+        )
+
+    # Action buttons
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+
+    with col_btn1:
+        do_refresh = st.button("Refresh Market Data", key="sf_refresh", use_container_width=True)
+    with col_btn2:
+        do_rebuild = st.button("Rebuild Features", key="sf_rebuild", use_container_width=True)
+    with col_btn3:
+        do_forecast = st.button("Generate Forecast", key="sf_forecast", type="primary", use_container_width=True)
+    with col_btn4:
+        do_save_gex = st.button("Save GEX to Model", key="sf_save_gex", use_container_width=True)
+
+    conn = _get_rf_conn()
+
+    # ── Handle data refresh ──
+    if do_refresh:
+        with st.spinner("Fetching SPX / VIX / FRED data..."):
+            try:
+                df_spx = rf_fetch_spx_vix(years=5)
+                rf_save_spx_vix(conn, df_spx)
+                df_macro = rf_fetch_fred_macro(years=5)
+                rf_save_fred_macro(conn, df_macro)
+                rf_build_event_flags(conn)
+                st.success("Market data refreshed")
+            except Exception as e:
+                st.error(f"Data refresh failed: {e}")
+
+    if do_rebuild:
+        with st.spinner("Computing feature matrix..."):
+            try:
+                rf_build_features(conn)
+                st.success("Features rebuilt")
+            except Exception as e:
+                st.error(f"Feature rebuild failed: {e}")
+
+    # ── Save live GEX to range finder DB ──
+    if do_save_gex:
+        try:
+            gex_flag = save_gex_to_range_finder(gex_ctx, conn)
+            regime_label = {1: "positive", 0: "neutral", -1: "negative"}.get(gex_flag, "unknown")
+            st.success(f"GEX saved: regime={regime_label}, flag={gex_flag}")
+        except Exception as e:
+            st.error(f"GEX save failed: {e}")
+
+    st.markdown("---")
+
+    # ── Check data availability ──
+    try:
+        df_feat = rf_get_features(conn)
+    except Exception:
+        df_feat = pd.DataFrame()
+
+    if df_feat.empty:
+        st.info(
+            "No feature data found. Click **Refresh Market Data** then **Rebuild Features** "
+            "to initialize the range prediction model (requires FRED API key in environment)."
+        )
+        # Still show GEX context even without model data
+        _render_gex_context_panel(gex_ctx, spot)
+        return
+
+    # ── Fit model or load from cache ──
+    if do_forecast:
+        with st.spinner(f"Fitting {model_choice}..."):
+            try:
+                feat_cols = RF_MODEL_SPECS[model_choice]
+                avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
+
+                X_train, X_test, y_train, y_test = rf_time_series_split(
+                    df_feat, feature_cols=avail_cols
+                )
+                result = rf_fit_model(X_train, y_train, model_name=model_choice)
+                metrics = rf_evaluate_oos(result, X_test, y_test, model_name=model_choice)
+                rf_save_model(result, avail_cols, model_choice, metrics)
+
+                st.session_state["sf_model_result"]   = result
+                st.session_state["sf_model_features"] = avail_cols
+                st.session_state["sf_model_metrics"]  = metrics
+            except Exception as e:
+                st.error(f"Model fitting failed: {e}")
+                return
+        st.success(f"Model fitted | OOS R² = {metrics['oos_r2']:.4f}")
+
+    # Try to load model from session or disk
+    if "sf_model_result" not in st.session_state:
+        try:
+            payload = rf_load_model(model_choice)
+            st.session_state["sf_model_result"]   = payload["result"]
+            st.session_state["sf_model_features"] = payload["feature_cols"]
+            st.session_state["sf_model_metrics"]  = payload["metrics"]
+        except FileNotFoundError:
+            st.info("Click **Generate Forecast** to fit the model for the first time.")
+            _render_gex_context_panel(gex_ctx, spot)
+            return
+        except Exception as e:
+            st.warning(f"Saved model incompatible: {e}. Click **Generate Forecast** to refit.")
+            _render_gex_context_panel(gex_ctx, spot)
+            return
+
+    result    = st.session_state["sf_model_result"]
+    feat_cols = st.session_state["sf_model_features"]
+    metrics   = st.session_state["sf_model_metrics"]
+
+    # ── Determine week start ──
+    from datetime import date as date_type
+    today = datetime.today()
+    days_ahead = (7 - today.weekday()) % 7 or 7
+    next_monday = today + timedelta(days=days_ahead)
+    week_start = next_monday.strftime("%Y-%m-%d")
+
+    # ── Get feature row ──
+    feature_row = rf_get_feature_for_week(conn, week_start)
+    if feature_row is None:
+        feature_row = df_feat.iloc[-1]
+
+    # ── Generate forecast ──
+    forecast = rf_forecast_next_week(
+        result, feature_row, feat_cols,
+        spx_close_input, alpha=RF_PI_ALPHA,
+    )
+
+    # ── Build spread plan ──
+    plan = rf_build_spread_plan(
+        forecast    = forecast,
+        feature_row = feature_row,
+        week_start  = week_start,
+        vix_level   = vix_input,
+    )
+
+    # ── GEX enhancement ──
+    gex_adj = adjust_spread_with_gex(plan, gex_ctx)
+
+    # =========================================================================
+    # METRIC CARDS
+    # =========================================================================
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    c1.metric(
+        "Point Estimate",
+        f"{forecast['point_pct']*100:.2f}%",
+        f"vs VIX: {forecast['model_vs_vix']*100:+.2f}%",
+    )
+    c2.metric(
+        f"{forecast['confidence_level']}% PI Upper",
+        f"{forecast['upper_pct']*100:.2f}%",
+        "used for strike selection",
+    )
+    c3.metric(
+        "Effective Range",
+        f"{plan.effective_range_pct*100:.2f}%",
+        f"buffer: +{plan.buffer_pct*100:.2f}%",
+    )
+    c4.metric(
+        "GEX Regime",
+        gex_ctx.gamma_regime.title(),
+        f"flag: {gex_adj['gex_regime_flag']:+d}",
+    )
+    c5.metric(
+        "OOS R²",
+        f"{metrics['oos_r2']:.4f}",
+        f"MAE: {metrics['mae_pct']*100:.2f}%",
+    )
+
+    st.markdown("---")
+
+    # =========================================================================
+    # RANGE GAUGE + STRIKE MAP (side by side)
+    # =========================================================================
+
+    col_gauge, col_strikes = st.columns([1, 1])
+
+    with col_gauge:
+        st.markdown("**Range Distribution**")
+        _render_sf_range_gauge(forecast, plan, spx_close_input)
+
+    with col_strikes:
+        st.markdown("**Strike Map with GEX Walls**")
+        _render_sf_strike_map(plan, spx_close_input, gex_ctx)
+
+    st.markdown("---")
+
+    # =========================================================================
+    # SPREAD TABLES
+    # =========================================================================
+
+    st.markdown("**Spread Parameters**")
+
+    col_call, col_put = st.columns(2)
+
+    with col_call:
+        st.markdown(f"Call Spreads — short above `{plan.effective_upper_px:,.0f}`")
+        _render_sf_spread_table(plan.call_spreads, plan.recommended_width)
+
+    with col_put:
+        st.markdown(f"Put Spreads — short below `{plan.effective_lower_px:,.0f}`")
+        _render_sf_spread_table(plan.put_spreads, plan.recommended_width)
+
+    # =========================================================================
+    # GEX CONTEXT + WARNINGS
+    # =========================================================================
+
+    st.markdown("---")
+
+    col_gex, col_warn = st.columns([1, 1])
+
+    with col_gex:
+        _render_gex_context_panel(gex_ctx, spot)
+
+    with col_warn:
+        st.markdown("**Warnings & GEX Notes**")
+
+        all_warnings = list(plan.warnings) + gex_adj.get("gex_adjustment_notes", [])
+        if all_warnings:
+            for w in all_warnings:
+                st.warning(w)
+        else:
+            st.success("No warnings for this week.")
+
+        # Event flags
+        events = {"FOMC": plan.has_fomc, "CPI": plan.has_cpi, "NFP": plan.has_nfp, "OPEX": plan.has_opex}
+        active = [k for k, v in events.items() if v]
+        if active:
+            st.markdown(f"**Events this week:** {', '.join(active)}")
+        else:
+            st.caption("No major events this week")
+
+    # =========================================================================
+    # LOG PLAN BUTTON
+    # =========================================================================
+
+    st.markdown("---")
+    if st.button("Save Spread Plan to Database", key="sf_log_plan"):
+        try:
+            rf_log_spread_plan(conn, plan, wing_width_used=wing_width)
+            st.success(f"Plan for {week_start} logged")
+        except Exception as e:
+            st.error(f"Failed to log plan: {e}")
+
+
+def _render_gex_context_panel(gex_ctx: GEXContext, spot: float):
+    """Render the GEX context panel showing live gamma levels."""
+    st.markdown("**Live GEX Context**")
+
+    gex_flag = regime_to_gex_flag(gex_ctx.gamma_regime)
+    regime_color = SF_BULL if gex_flag == 1 else SF_BEAR if gex_flag == -1 else SF_NEUT
+
+    zg_dist = abs(spot - gex_ctx.zero_gamma)
+    zg_pct = zg_dist / spot * 100
+
+    st.markdown(
+        f"<div style='background:{SF_CARD};padding:12px;border-radius:8px;border:1px solid #333;'>"
+        f"<div style='font-size:13px;color:#888;'>Gamma Regime</div>"
+        f"<div style='font-size:20px;font-weight:bold;color:{regime_color};'>{gex_ctx.gamma_regime.title()}</div>"
+        f"<div style='margin-top:8px;font-size:12px;color:#aaa;'>"
+        f"Zero-Gamma: <b>${gex_ctx.zero_gamma:,.0f}</b> ({zg_pct:.2f}% from spot)<br>"
+        f"Call Wall: <b>${gex_ctx.call_wall:,.0f}</b><br>"
+        f"Put Wall: <b>${gex_ctx.put_wall:,.0f}</b><br>"
+        f"Spot: <b>${spot:,.2f}</b>"
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_sf_range_gauge(forecast: dict, plan: SpreadPlan, spx_ref: float):
+    """Bar chart showing point estimate, PI bounds, and effective range."""
+    import plotly.graph_objects as go
+
+    categories = ["Lower PI", "Point Est", "Upper PI", "Effective\n(+buffer)"]
+    values = [
+        forecast["lower_pct"] * 100,
+        forecast["point_pct"] * 100,
+        forecast["upper_pct"] * 100,
+        plan.effective_range_pct * 100,
+    ]
+    colors = [SF_NEUT, SF_BULL, SF_WARN, SF_BEAR]
+
+    fig = go.Figure(go.Bar(
+        x=categories, y=values,
+        marker_color=colors,
+        text=[f"{v:.2f}%" for v in values],
+        textposition="outside",
+    ))
+
+    vix_line = forecast["vix_implied_pct"] * 100
+    fig.add_hline(
+        y=vix_line, line_dash="dash", line_color=SF_NEUT,
+        annotation_text=f"VIX implied: {vix_line:.2f}%",
+        annotation_position="top right",
+    )
+
+    fig.update_layout(
+        plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
+        yaxis_title="Range % (High - Low / Open)",
+        showlegend=False,
+        margin=dict(t=30, b=10, l=10, r=10),
+        height=320,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext):
+    """Price map showing reference, effective range, strikes, AND GEX walls."""
+    import plotly.graph_objects as go
+
+    call_short = plan.call_spreads[0].short_strike if plan.call_spreads else plan.effective_upper_px + 10
+    call_long  = plan.call_spreads[0].long_strike  if plan.call_spreads else call_short + 25
+    put_short  = plan.put_spreads[0].short_strike  if plan.put_spreads  else plan.effective_lower_px - 10
+    put_long   = plan.put_spreads[0].long_strike   if plan.put_spreads  else put_short - 25
+
+    # Use recommended width spreads
+    for s in plan.call_spreads:
+        if s.wing_width == plan.recommended_width:
+            call_short, call_long = s.short_strike, s.long_strike
+    for s in plan.put_spreads:
+        if s.wing_width == plan.recommended_width:
+            put_short, put_long = s.short_strike, s.long_strike
+
+    fig = go.Figure()
+
+    # Effective range band
+    fig.add_shape(type="rect",
+        x0=plan.effective_lower_px, x1=plan.effective_upper_px,
+        y0=0, y1=1, yref="paper",
+        fillcolor=SF_BULL, opacity=0.12, line_width=0,
+    )
+
+    # Call spread zone
+    fig.add_shape(type="rect",
+        x0=call_short, x1=call_long,
+        y0=0, y1=1, yref="paper",
+        fillcolor=SF_BEAR, opacity=0.25, line_width=0,
+    )
+
+    # Put spread zone
+    fig.add_shape(type="rect",
+        x0=put_long, x1=put_short,
+        y0=0, y1=1, yref="paper",
+        fillcolor=SF_BEAR, opacity=0.25, line_width=0,
+    )
+
+    # Key vertical lines including GEX walls
+    lines = [
+        (spx_ref,               "SPX Ref",      COLORS["spot"],       "solid",  14),
+        (plan.effective_upper_px, "Eff Upper",   SF_WARN,              "dot",    11),
+        (plan.effective_lower_px, "Eff Lower",   SF_WARN,              "dot",    11),
+        (call_short,             "Call Short",   SF_BEAR,              "dash",   12),
+        (put_short,              "Put Short",    SF_BEAR,              "dash",   12),
+        (gex_ctx.call_wall,      "Call Wall",    COLORS["call_wall"],  "dashdot", 11),
+        (gex_ctx.put_wall,       "Put Wall",     COLORS["put_wall"],   "dashdot", 11),
+        (gex_ctx.zero_gamma,     "Zero-G",       COLORS["zero_gamma"], "longdash", 11),
+    ]
+
+    for price, label, color, dash, size in lines:
+        fig.add_vline(
+            x=price, line_dash=dash, line_color=color, line_width=1.5,
+            annotation_text=f"{label}<br>{price:,.0f}",
+            annotation_font_size=9,
+            annotation_font_color=color,
+        )
+
+    all_prices = [put_long, put_short, spx_ref, call_short, call_long,
+                  gex_ctx.call_wall, gex_ctx.put_wall, gex_ctx.zero_gamma]
+    margin_px = (max(all_prices) - min(all_prices)) * 0.12
+
+    fig.update_layout(
+        plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
+        xaxis_title="SPX Price Level",
+        xaxis_range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
+        yaxis_visible=False,
+        showlegend=False,
+        margin=dict(t=40, b=30, l=10, r=10),
+        height=320,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _render_sf_spread_table(spreads, recommended_width: int):
+    """Render spread parameters as a styled dataframe."""
+    if not spreads:
+        st.info("No spreads available.")
+        return
+
+    rows = []
+    for s in spreads:
+        rows.append({
+            "Width": f"{int(s.wing_width)}pt",
+            "Short": f"{s.short_strike:,.0f}",
+            "Long": f"{s.long_strike:,.0f}",
+            "Est Credit": f"{s.estimated_credit:.2f}",
+            "Max Loss $": f"${s.max_loss:,.0f}",
+            "Breakeven": f"{s.breakeven:,.0f}",
+            "Ratio": f"{s.credit_ratio:.1%}",
+            "OK": "Y" if s.meets_min_credit else "N",
+            "Rec": s.wing_width == recommended_width,
+        })
+
+    df = pd.DataFrame(rows)
+
+    # BUG FIX: apply styling before dropping the helper column
+    def highlight_rec(row):
+        if row["Rec"]:
+            return ["background-color: #1a3a2a"] * len(row)
+        return [""] * len(row)
+
+    display_df = df.drop(columns=["Rec"])
+    # Apply row highlighting using the original df's Rec column
+    styles = []
+    for _, row in df.iterrows():
+        if row["Rec"]:
+            styles.append(["background-color: #1a3a2a"] * len(display_df.columns))
+        else:
+            styles.append([""] * len(display_df.columns))
+
+    styled = display_df.style.apply(lambda x: styles[x.name], axis=1)
+    styled = styled.map(
+        lambda v: f"color: {SF_BULL}" if v == "Y" else f"color: {SF_BEAR}" if v == "N" else "",
+        subset=["OK"]
+    )
+
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main app
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
@@ -1877,8 +2406,8 @@ def main():
             st.markdown(range_html, unsafe_allow_html=True)
 
     # ── Charts ──
-    tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface = st.tabs(
-        ["📊 Strike GEX", "📈 GEX Profile", "⏱️ Multi-TF", "📅 History", "🎯 EM Tracker", "🌊 IV Surface"]
+    tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface, tab_spread_finder = st.tabs(
+        ["📊 Strike GEX", "📈 GEX Profile", "⏱️ Multi-TF", "📅 History", "🎯 EM Tracker", "🌊 IV Surface", "🎯 Spread Finder"]
     )
 
     with tab_gex:
@@ -1923,6 +2452,10 @@ def main():
     # ── C4: IV surface visualization ──
     with tab_iv_surface:
         _render_iv_surface(data.hm_iv, data.hm_gex, spot)
+
+    # ── C7: Spread Finder — Weekly credit spread placement ──
+    with tab_spread_finder:
+        _render_spread_finder_tab(spot, levels, regime, data)
 
     # ── C2: Level crossing alerts ──
     alerts = _check_level_crossings(spot, levels, em_analysis)

@@ -30,3 +30,7 @@ gex_run_metadata.json
 venv/
 .venv/
 env/
+
+# Range finder generated files
+range_finder/weekly_data.db
+range_finder/models/*.pkl
