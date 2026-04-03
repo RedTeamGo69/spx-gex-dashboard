@@ -1569,7 +1569,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             f"{ticker} Reference",
             min_value=100.0, max_value=15000.0, value=round(spot, 2), step=float(step_size),
             help="Reference price for range calculation (auto-filled from live spot)",
-            key="sf_spx_close",
+            key=f"sf_ref_price_{ticker}",
         )
 
     with col_ctrl2:
@@ -1577,7 +1577,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             "VIX Level",
             min_value=5.0, max_value=100.0, value=18.0, step=0.5,
             help="Current VIX (for credit estimation via BSM)",
-            key="sf_vix_level",
+            key=f"sf_vix_level_{ticker}",
         )
 
     with col_ctrl3:
@@ -1586,7 +1586,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             options=list(RF_MODEL_SPECS.keys()),
             index=2,
             help="M3_extended recommended; M4_full when GEX data is populated",
-            key="sf_model_choice",
+            key=f"sf_model_choice_{ticker}",
         )
 
     with col_ctrl4:
@@ -1597,26 +1597,26 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             options=ticker_widths,
             value=default_width,
             help="Spread width to highlight",
-            key="sf_wing_width",
+            key=f"sf_wing_width_{ticker}",
         )
 
     # Action buttons
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
 
     with col_btn1:
-        do_refresh = st.button("Refresh Market Data", key="sf_refresh", use_container_width=True)
+        do_refresh = st.button("Refresh Market Data", key=f"sf_refresh_{ticker}", use_container_width=True)
     with col_btn2:
-        do_rebuild = st.button("Rebuild Features", key="sf_rebuild", use_container_width=True)
+        do_rebuild = st.button("Rebuild Features", key=f"sf_rebuild_{ticker}", use_container_width=True)
     with col_btn3:
-        do_forecast = st.button("Generate Forecast", key="sf_forecast", type="primary", use_container_width=True)
+        do_forecast = st.button("Generate Forecast", key=f"sf_forecast_{ticker}", type="primary", use_container_width=True)
     with col_btn4:
-        do_save_gex = st.button("Save GEX to Model", key="sf_save_gex", use_container_width=True)
+        do_save_gex = st.button("Save GEX to Model", key=f"sf_save_gex_{ticker}", use_container_width=True)
 
     conn = _get_rf_conn()
 
     # ── Handle data refresh ──
     if do_refresh:
-        with st.spinner("Fetching SPX / VIX / FRED data..."):
+        with st.spinner(f"Fetching {ticker} / VIX / FRED data..."):
             try:
                 df_spx = rf_fetch_spx_vix(years=5)
                 rf_save_spx_vix(conn, df_spx)
@@ -1675,21 +1675,21 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 metrics = rf_evaluate_oos(result, X_test, y_test, model_name=model_choice)
                 rf_save_model(result, avail_cols, model_choice, metrics)
 
-                st.session_state["sf_model_result"]   = result
-                st.session_state["sf_model_features"] = avail_cols
-                st.session_state["sf_model_metrics"]  = metrics
+                st.session_state[f"sf_model_result_{ticker}"]   = result
+                st.session_state[f"sf_model_features_{ticker}"] = avail_cols
+                st.session_state[f"sf_model_metrics_{ticker}"]  = metrics
             except Exception as e:
                 st.error(f"Model fitting failed: {e}")
                 return
         st.success(f"Model fitted | OOS R² = {metrics['oos_r2']:.4f}")
 
     # Try to load model from session or disk
-    if "sf_model_result" not in st.session_state:
+    if f"sf_model_result_{ticker}" not in st.session_state:
         try:
             payload = rf_load_model(model_choice)
-            st.session_state["sf_model_result"]   = payload["result"]
-            st.session_state["sf_model_features"] = payload["feature_cols"]
-            st.session_state["sf_model_metrics"]  = payload["metrics"]
+            st.session_state[f"sf_model_result_{ticker}"]   = payload["result"]
+            st.session_state[f"sf_model_features_{ticker}"] = payload["feature_cols"]
+            st.session_state[f"sf_model_metrics_{ticker}"]  = payload["metrics"]
         except FileNotFoundError:
             st.info("Click **Generate Forecast** to fit the model for the first time.")
             _render_gex_context_panel(gex_ctx, spot)
@@ -1699,9 +1699,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             _render_gex_context_panel(gex_ctx, spot)
             return
 
-    result    = st.session_state["sf_model_result"]
-    feat_cols = st.session_state["sf_model_features"]
-    metrics   = st.session_state["sf_model_metrics"]
+    result    = st.session_state[f"sf_model_result_{ticker}"]
+    feat_cols = st.session_state[f"sf_model_features_{ticker}"]
+    metrics   = st.session_state[f"sf_model_metrics_{ticker}"]
 
     # ── Determine week start ──
     from datetime import date as date_type
@@ -1779,7 +1779,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     with col_strikes:
         st.markdown("**Strike Map with GEX Walls**")
-        _render_sf_strike_map(plan, spx_close_input, gex_ctx, wing_width)
+        _render_sf_strike_map(plan, spx_close_input, gex_ctx, wing_width, ticker=ticker)
 
     st.markdown("---")
 
@@ -1833,7 +1833,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # =========================================================================
 
     st.markdown("---")
-    if st.button("Save Spread Plan to Database", key="sf_log_plan"):
+    if st.button("Save Spread Plan to Database", key=f"sf_log_plan_{ticker}"):
         try:
             rf_log_spread_plan(conn, plan, wing_width_used=wing_width)
             st.success(f"Plan for {week_start} logged")
@@ -1903,7 +1903,7 @@ def _render_sf_range_gauge(forecast: dict, plan: SpreadPlan, spx_ref: float):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext, selected_width: float = 25):
+def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX"):
     """Price map showing reference, effective range, strikes, AND GEX walls."""
     import plotly.graph_objects as go
 
@@ -1945,7 +1945,7 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
 
     # Key vertical lines including GEX walls
     lines = [
-        (spx_ref,               "SPX Ref",      COLORS["spot"],       "solid",  14),
+        (spx_ref,               "Ref",          COLORS["spot"],       "solid",  14),
         (plan.effective_upper_px, "Eff Upper",   SF_WARN,              "dot",    11),
         (plan.effective_lower_px, "Eff Lower",   SF_WARN,              "dot",    11),
         (call_short,             "Call Short",   SF_BEAR,              "dash",   12),
@@ -1969,7 +1969,7 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
 
     fig.update_layout(
         plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
-        xaxis_title="SPX Price Level",
+        xaxis_title=f"{ticker} Price Level",
         xaxis_range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
         yaxis_visible=False,
         showlegend=False,
