@@ -1995,8 +1995,11 @@ def _render_sf_spread_table(spreads, recommended_width: int):
 
     rows = []
     for s in spreads:
+        width_label = f"{int(s.wing_width)}pt" if s.wing_width == int(s.wing_width) else f"{s.wing_width}pt"
+        if getattr(s, "below_min_width", False):
+            width_label += "*"
         rows.append({
-            "Width": f"{int(s.wing_width)}pt",
+            "Width": width_label,
             "Short": f"{s.short_strike:,.0f}",
             "Long": f"{s.long_strike:,.0f}",
             "Est Credit": f"{s.estimated_credit:.2f}",

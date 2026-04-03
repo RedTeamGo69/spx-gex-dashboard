@@ -110,6 +110,7 @@ class SpreadSide:
     credit_ratio:  float
     estimated_credit: float
     meets_min_credit: bool
+    below_min_width:  bool = False
 
 
 @dataclass
@@ -438,13 +439,13 @@ def build_spread_plan(
 
     # --- Minimum width ---
     min_width = get_min_width(event_count, has_fomc, ticker=ticker)
-    viable_widths = [w for w in wing_widths if w >= min_width]
-    if not viable_widths:
-        viable_widths = [max(wing_widths)]
 
-    # --- Build spread sides ---
-    call_spreads = build_spread_side("call", call_short, viable_widths, spx_ref, vix_level, dte)
-    put_spreads  = build_spread_side("put",  put_short,  viable_widths, spx_ref, vix_level, dte)
+    # --- Build spread sides for ALL widths (flag narrow ones) ---
+    call_spreads = build_spread_side("call", call_short, wing_widths, spx_ref, vix_level, dte)
+    put_spreads  = build_spread_side("put",  put_short,  wing_widths, spx_ref, vix_level, dte)
+
+    for s in call_spreads + put_spreads:
+        s.below_min_width = s.wing_width < min_width
 
     # --- Recommended width ---
     rec_width = get_recommended_width(effective_range, spx_ref, event_count, has_fomc, ticker=ticker)
