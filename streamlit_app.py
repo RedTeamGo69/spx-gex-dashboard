@@ -1635,16 +1635,26 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     # ── Handle data refresh ──
     if do_refresh:
-        with st.spinner(f"Fetching {ticker} / VIX / FRED data..."):
+        # Step 1: SPX/VIX from yfinance
+        with st.spinner("Fetching SPX / VIX weekly data from yfinance..."):
             try:
-                df_spx = rf_fetch_spx_vix(years=5)
+                df_spx = rf_fetch_spx_vix(years=3)
                 rf_save_spx_vix(conn, df_spx)
-                df_macro = rf_fetch_fred_macro(years=5)
-                rf_save_fred_macro(conn, df_macro)
-                rf_build_event_flags(conn)
-                st.success("Market data refreshed")
+                st.success(f"SPX/VIX data refreshed — {len(df_spx)} weeks")
             except Exception as e:
-                st.error(f"Data refresh failed: {e}")
+                st.error(f"SPX/VIX fetch failed: {e}")
+
+        # Step 2: FRED macro data (optional — needs FRED_API_KEY)
+        with st.spinner("Fetching FRED macro data..."):
+            try:
+                df_macro = rf_fetch_fred_macro(years=3)
+                rf_save_fred_macro(conn, df_macro)
+                st.success(f"FRED macro data refreshed — {len(df_macro)} rows")
+            except Exception as e:
+                st.warning(f"FRED fetch skipped: {e} (set FRED_API_KEY in secrets to enable)")
+
+        # Step 3: Event flags (fast, no network)
+        rf_build_event_flags(conn)
 
     if do_rebuild:
         with st.spinner("Computing feature matrix..."):

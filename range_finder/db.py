@@ -134,6 +134,9 @@ class PGConnectionWrapper:
     def commit(self):
         self._conn.commit()
 
+    def rollback(self):
+        self._conn.rollback()
+
     def close(self):
         self._conn.close()
 
@@ -160,7 +163,9 @@ def get_connection():
     if _backend == "postgres":
         import psycopg2
         conn = psycopg2.connect(_pg_conn_str, sslmode="require")
-        conn.autocommit = True
+        # Don't use autocommit — bulk inserts batch into one transaction
+        # and commit() sends them all at once (much faster over network)
+        conn.autocommit = False
         wrapped = PGConnectionWrapper(conn)
         log.info("Range finder connected to Postgres")
         return wrapped

@@ -25,8 +25,15 @@ import yfinance as yf
 # CONFIG
 # =============================================================================
 
-# Read FRED key from environment (same pattern as the GEX dashboard uses for Tradier)
-FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
+# Read FRED key from Streamlit secrets or environment
+FRED_API_KEY = ""
+try:
+    import streamlit as st
+    FRED_API_KEY = st.secrets.get("FRED_API_KEY", "")
+except Exception:
+    pass
+if not FRED_API_KEY:
+    FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 
 # Database location — sits in the range_finder directory
 DB_PATH = Path(__file__).parent / "weekly_data.db"
@@ -91,10 +98,13 @@ def fetch_spx_vix(years: int = HISTORY_YEARS) -> pd.DataFrame:
     start = end - timedelta(weeks=years * 52 + 4)   # small buffer for alignment
 
     log.info(f"Fetching SPX weekly OHLC from {start.date()} to {end.date()}")
-    spx_raw = yf.download("^GSPC", start=start, end=end, interval="1wk", progress=False)
+    spx_raw = yf.download("^GSPC", start=start, end=end, interval="1wk", progress=False, timeout=60)
+
+    if spx_raw.empty:
+        raise RuntimeError("yfinance returned empty SPX data — market may be closed or network issue")
 
     log.info(f"Fetching VIX weekly OHLC from {start.date()} to {end.date()}")
-    vix_raw = yf.download("^VIX",  start=start, end=end, interval="1wk", progress=False)
+    vix_raw = yf.download("^VIX", start=start, end=end, interval="1wk", progress=False, timeout=60)
 
     # yfinance sometimes returns a MultiIndex — flatten it
     if isinstance(spx_raw.columns, pd.MultiIndex):
