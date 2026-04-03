@@ -1554,6 +1554,14 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     ticker_cfg = RF_TICKER_CONFIG.get(ticker, RF_TICKER_CONFIG["SPX"])
 
+    # ── Auto-update reference price when ticker changes ──
+    ref_key = f"sf_ref_price_{ticker}"
+    prev_ticker = st.session_state.get("_sf_prev_ticker")
+    if prev_ticker != ticker:
+        # Ticker just changed — reset reference price to live spot
+        st.session_state[ref_key] = round(spot, 2)
+        st.session_state["_sf_prev_ticker"] = ticker
+
     st.markdown(f"### {ticker} Weekly Credit Spread Finder")
     st.caption("HAR regression range forecast + live GEX adjustment for optimal strike placement")
 
@@ -1569,7 +1577,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             f"{ticker} Reference",
             min_value=100.0, max_value=15000.0, value=round(spot, 2), step=float(step_size),
             help="Reference price for range calculation (auto-filled from live spot)",
-            key=f"sf_ref_price_{ticker}",
+            key=ref_key,
         )
 
     with col_ctrl2:
@@ -1987,8 +1995,11 @@ def _render_sf_spread_table(spreads, recommended_width: int):
 
     rows = []
     for s in spreads:
+        width_label = f"{int(s.wing_width)}pt" if s.wing_width == int(s.wing_width) else f"{s.wing_width}pt"
+        if getattr(s, "below_min_width", False):
+            width_label += "*"
         rows.append({
-            "Width": f"{int(s.wing_width)}pt",
+            "Width": width_label,
             "Short": f"{s.short_strike:,.0f}",
             "Long": f"{s.long_strike:,.0f}",
             "Est Credit": f"{s.estimated_credit:.2f}",
