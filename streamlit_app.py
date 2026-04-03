@@ -74,6 +74,7 @@ from range_finder.spread_levels import (
     log_spread_plan as rf_log_spread_plan,
     update_outcome as rf_update_outcome,
     STANDARD_WING_WIDTHS as RF_WING_WIDTHS,
+    TICKER_CONFIG as RF_TICKER_CONFIG,
     SpreadPlan,
 )
 
@@ -1547,11 +1548,13 @@ def _get_rf_conn():
     return conn
 
 
-def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
+def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX"):
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
     import sqlite3
 
-    st.markdown("### Weekly Credit Spread Finder")
+    ticker_cfg = RF_TICKER_CONFIG.get(ticker, RF_TICKER_CONFIG["SPX"])
+
+    st.markdown(f"### {ticker} Weekly Credit Spread Finder")
     st.caption("HAR regression range forecast + live GEX adjustment for optimal strike placement")
 
     # ── Extract GEX context from current dashboard data ──
@@ -1561,9 +1564,10 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
     col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
 
     with col_ctrl1:
+        step_size = ticker_cfg["strike_increment"]
         spx_close_input = st.number_input(
-            "SPX Reference",
-            min_value=1000.0, max_value=15000.0, value=round(spot, 2), step=5.0,
+            f"{ticker} Reference",
+            min_value=100.0, max_value=15000.0, value=round(spot, 2), step=float(step_size),
             help="Reference price for range calculation (auto-filled from live spot)",
             key="sf_spx_close",
         )
@@ -1586,10 +1590,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
         )
 
     with col_ctrl4:
+        ticker_widths = ticker_cfg["wing_widths"]
+        default_width = ticker_widths[1] if len(ticker_widths) > 1 else ticker_widths[0]
         wing_width = st.select_slider(
             "Wing Width (pts)",
-            options=RF_WING_WIDTHS,
-            value=25,
+            options=ticker_widths,
+            value=default_width,
             help="Spread width to highlight",
             key="sf_wing_width",
         )
@@ -1721,6 +1727,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
         feature_row = feature_row,
         week_start  = week_start,
         vix_level   = vix_input,
+        ticker      = ticker,
     )
 
     # ── GEX enhancement ──
@@ -1772,7 +1779,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
 
     with col_strikes:
         st.markdown("**Strike Map with GEX Walls**")
-        _render_sf_strike_map(plan, spx_close_input, gex_ctx)
+        _render_sf_strike_map(plan, spx_close_input, gex_ctx, wing_width)
 
     st.markdown("---")
 
@@ -1786,11 +1793,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data):
 
     with col_call:
         st.markdown(f"Call Spreads — short above `{plan.effective_upper_px:,.0f}`")
-        _render_sf_spread_table(plan.call_spreads, plan.recommended_width)
+        _render_sf_spread_table(plan.call_spreads, wing_width)
 
     with col_put:
         st.markdown(f"Put Spreads — short below `{plan.effective_lower_px:,.0f}`")
-        _render_sf_spread_table(plan.put_spreads, plan.recommended_width)
+        _render_sf_spread_table(plan.put_spreads, wing_width)
 
     # =========================================================================
     # GEX CONTEXT + WARNINGS
@@ -1896,7 +1903,7 @@ def _render_sf_range_gauge(forecast: dict, plan: SpreadPlan, spx_ref: float):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext):
+def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext, selected_width: float = 25):
     """Price map showing reference, effective range, strikes, AND GEX walls."""
     import plotly.graph_objects as go
 
@@ -1905,12 +1912,12 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext)
     put_short  = plan.put_spreads[0].short_strike  if plan.put_spreads  else plan.effective_lower_px - 10
     put_long   = plan.put_spreads[0].long_strike   if plan.put_spreads  else put_short - 25
 
-    # Use recommended width spreads
+    # Use user-selected width spreads
     for s in plan.call_spreads:
-        if s.wing_width == plan.recommended_width:
+        if s.wing_width == selected_width:
             call_short, call_long = s.short_strike, s.long_strike
     for s in plan.put_spreads:
-        if s.wing_width == plan.recommended_width:
+        if s.wing_width == selected_width:
             put_short, put_long = s.short_strike, s.long_strike
 
     fig = go.Figure()
@@ -2455,7 +2462,7 @@ def main():
 
     # ── C7: Spread Finder — Weekly credit spread placement ──
     with tab_spread_finder:
-        _render_spread_finder_tab(spot, levels, regime, data)
+        _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker)
 
     # ── C2: Level crossing alerts ──
     alerts = _check_level_crossings(spot, levels, em_analysis)

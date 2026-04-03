@@ -197,7 +197,7 @@ def adjust_spread_with_gex(
                 f"Call short ({call_short:.0f}) is AT or ABOVE the call wall "
                 f"({gex_ctx.call_wall:.0f}) — dealers may pin here, reducing breach risk"
             )
-        elif dist < 20:
+        elif dist / gex_ctx.spot < 0.004:  # ~0.4% of spot (~20pts SPX, ~2pts XSP)
             notes.append(
                 f"Call short ({call_short:.0f}) is only {dist:.0f} pts below "
                 f"call wall ({gex_ctx.call_wall:.0f}) — consider widening"
@@ -213,7 +213,7 @@ def adjust_spread_with_gex(
                 f"Put short ({put_short:.0f}) is AT or BELOW the put wall "
                 f"({gex_ctx.put_wall:.0f}) — dealers may pin here, reducing breach risk"
             )
-        elif dist < 20:
+        elif dist / gex_ctx.spot < 0.004:  # ~0.4% of spot
             notes.append(
                 f"Put short ({put_short:.0f}) is only {dist:.0f} pts above "
                 f"put wall ({gex_ctx.put_wall:.0f}) — consider widening"

@@ -481,7 +481,7 @@ def update_weekly(conn: sqlite3.Connection) -> None:
 def _safe(row: pd.Series, col: str):
     """Return float or None — SQLite doesn't like numpy scalars or pd.NA."""
     val = row.get(col)
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    if val is None or pd.isna(val):
         return None
     try:
         return float(val)
