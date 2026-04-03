@@ -57,60 +57,19 @@ log = logging.getLogger(__name__)
 # DATABASE SETUP
 # =============================================================================
 
-def init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
+def init_db(db_path: Path = DB_PATH):
     """
-    Create (or connect to) the SQLite database and initialize the schema.
+    Create (or connect to) the database and initialize the schema.
+    Prefers Postgres (via DATABASE_URL) and falls back to SQLite.
 
     Tables:
         weekly_spx  — SPX and VIX weekly OHLC + derived range metrics
         macro_daily — Daily FRED macro series (joined to weekly during feature build)
         event_flags — Manual or scraped FOMC/CPI/NFP week flags
     """
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    cur = conn.cursor()
-
-    cur.executescript("""
-        CREATE TABLE IF NOT EXISTS weekly_spx (
-            week_start      TEXT PRIMARY KEY,   -- Monday ISO date
-            week_end        TEXT,               -- Friday ISO date
-            spx_open        REAL,
-            spx_high        REAL,
-            spx_low         REAL,
-            spx_close       REAL,
-            spx_volume      REAL,
-            vix_open        REAL,
-            vix_high        REAL,
-            vix_low         REAL,
-            vix_close       REAL,               -- Key feature: Friday close of prior week
-            range_pts       REAL,               -- spx_high - spx_low
-            range_pct       REAL,               -- range_pts / spx_open
-            log_range       REAL,               -- log(range_pct) — model target
-            spx_return      REAL,               -- (close - open) / open
-            updated_at      TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS macro_daily (
-            date            TEXT PRIMARY KEY,
-            treasury_10y    REAL,
-            treasury_2y     REAL,
-            yield_spread    REAL,               -- 10y - 2y (curve steepness)
-            fed_funds       REAL,
-            updated_at      TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS event_flags (
-            week_start      TEXT PRIMARY KEY,   -- Monday ISO date
-            has_fomc        INTEGER DEFAULT 0,
-            has_cpi         INTEGER DEFAULT 0,
-            has_nfp         INTEGER DEFAULT 0,
-            has_opex        INTEGER DEFAULT 0,  -- Monthly options expiration
-            event_count     INTEGER DEFAULT 0,  -- Total events that week
-            updated_at      TEXT
-        );
-    """)
-
-    conn.commit()
-    log.info(f"Database initialized at: {db_path}")
+    from range_finder.db import get_connection, init_all_tables
+    conn = get_connection()
+    init_all_tables(conn)
     return conn
 
 

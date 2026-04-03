@@ -504,39 +504,10 @@ def build_spread_plan(
 # PERSISTENCE
 # =============================================================================
 
-def init_spread_log_table(conn: sqlite3.Connection) -> None:
-    """Create spread_log table for tracking plans and actual outcomes."""
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS spread_log (
-            week_start          TEXT PRIMARY KEY,
-            generated_at        TEXT,
-            spx_ref_close       REAL,
-            point_pct           REAL,
-            upper_pct           REAL,
-            effective_range_pct REAL,
-            call_short          REAL,
-            call_long           REAL,
-            put_short           REAL,
-            put_long            REAL,
-            wing_width_used     INTEGER,
-            buffer_pct          REAL,
-            event_count         INTEGER,
-            gex_flag            INTEGER,
-            warnings            TEXT,
-
-            -- Filled in after expiration
-            actual_high         REAL,
-            actual_low          REAL,
-            actual_range_pct    REAL,
-            call_breached       INTEGER,
-            put_breached        INTEGER,
-            outcome             TEXT,
-            pnl_pts             REAL,
-            updated_at          TEXT
-        )
-    """)
-    conn.commit()
-    log.info("spread_log table ready")
+def init_spread_log_table(conn) -> None:
+    """Ensure spread_log table exists.
+    Now handled by db.init_all_tables() — kept for backwards compatibility."""
+    pass  # Tables created in db.init_all_tables()
 
 
 def log_spread_plan(

@@ -6,7 +6,7 @@
 # a clean, model-ready feature matrix saved to the `model_features` table.
 # =============================================================================
 
-import sqlite3
+import sqlite3  # kept for type compatibility
 import logging
 import math
 from datetime import datetime, timedelta, timezone
@@ -40,61 +40,12 @@ log = logging.getLogger(__name__)
 # DATABASE — add model_features table
 # =============================================================================
 
-def init_features_table(conn: sqlite3.Connection) -> None:
+def init_features_table(conn) -> None:
     """
-    Add the model_features table to the existing DB if it doesn't exist.
+    Ensure the model_features table exists.
+    Now handled by db.init_all_tables() — this is kept for backwards compatibility.
     """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS model_features (
-            week_start          TEXT PRIMARY KEY,
-
-            -- TARGET
-            log_range           REAL,
-            range_pct           REAL,
-
-            -- HAR LAGS
-            har_d1              REAL,
-            har_w               REAL,
-            har_m               REAL,
-
-            -- VIX FEATURES
-            vix_close           REAL,
-            vix_implied_range   REAL,
-            vix9d_close         REAL,
-            vix3m_close         REAL,
-            vix_ts_slope        REAL,
-            vix_wk_ratio        REAL,
-
-            -- HISTORICAL VOLATILITY
-            hv5                 REAL,
-            hv10                REAL,
-            hv20                REAL,
-            hv_ratio            REAL,
-
-            -- GEX
-            gex                 REAL,
-            gex_flag            INTEGER,
-
-            -- MACRO
-            yield_spread        REAL,
-            fed_funds           REAL,
-
-            -- DIRECTION / MOMENTUM
-            spx_return_lag1     REAL,
-            abs_return_lag1     REAL,
-
-            -- EVENT FLAGS
-            has_fomc            INTEGER,
-            has_cpi             INTEGER,
-            has_nfp             INTEGER,
-            has_opex            INTEGER,
-            event_count         INTEGER,
-
-            updated_at          TEXT
-        )
-    """)
-    conn.commit()
-    log.info("model_features table ready")
+    pass  # Tables created in db.init_all_tables()
 
 
 # =============================================================================
@@ -245,18 +196,10 @@ def load_gex_inputs(conn: sqlite3.Connection) -> pd.DataFrame:
         return pd.DataFrame(columns=["gex"])
 
 
-def create_gex_table(conn: sqlite3.Connection) -> None:
-    """Create the gex_inputs table for GEX data from the dashboard."""
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS gex_inputs (
-            week_start  TEXT PRIMARY KEY,
-            gex         REAL,
-            notes       TEXT,
-            updated_at  TEXT
-        )
-    """)
-    conn.commit()
-    log.info("gex_inputs table created")
+def create_gex_table(conn) -> None:
+    """Ensure the gex_inputs table exists.
+    Now handled by db.init_all_tables() — kept for backwards compatibility."""
+    pass  # Tables created in db.init_all_tables()
 
 
 def upsert_gex(conn: sqlite3.Connection, week_start: str, gex: float, notes: str = "") -> None:

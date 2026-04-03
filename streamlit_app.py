@@ -48,15 +48,12 @@ from range_finder.gex_bridge import (
     adjust_spread_with_gex, regime_to_gex_flag,
 )
 from range_finder.data_collector import (
-    DB_PATH as RF_DB_PATH, init_db as rf_init_db,
     fetch_spx_vix as rf_fetch_spx_vix, save_spx_vix as rf_save_spx_vix,
     fetch_fred_macro as rf_fetch_fred_macro, save_fred_macro as rf_save_fred_macro,
     build_event_flags as rf_build_event_flags,
     get_weekly_spx as rf_get_weekly_spx,
 )
 from range_finder.feature_builder import (
-    init_features_table as rf_init_features_table,
-    create_gex_table as rf_create_gex_table,
     build_features as rf_build_features,
     get_features as rf_get_features,
     get_feature_for_week as rf_get_feature_for_week,
@@ -69,7 +66,6 @@ from range_finder.har_model import (
     save_model as rf_save_model, load_model as rf_load_model,
 )
 from range_finder.spread_levels import (
-    init_spread_log_table as rf_init_spread_log_table,
     build_spread_plan as rf_build_spread_plan,
     log_spread_plan as rf_log_spread_plan,
     update_outcome as rf_update_outcome,
@@ -1539,12 +1535,10 @@ SF_CARD = "#1e2130"
 
 @st.cache_resource
 def _get_rf_conn():
-    """Get or create the range finder SQLite connection."""
-    import sqlite3
-    conn = rf_init_db(RF_DB_PATH)
-    rf_init_features_table(conn)
-    rf_create_gex_table(conn)
-    rf_init_spread_log_table(conn)
+    """Get or create the range finder database connection (Postgres or SQLite)."""
+    from range_finder.db import get_connection, init_all_tables, get_backend
+    conn = get_connection()
+    init_all_tables(conn)
     return conn
 
 
@@ -1577,7 +1571,10 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         st.session_state["_sf_prev_ticker"] = ticker
 
     st.markdown(f"### {ticker} Weekly Credit Spread Finder")
-    st.caption("HAR regression range forecast + live GEX adjustment for optimal strike placement")
+    from range_finder.db import get_backend as rf_get_backend
+    _rf_be = rf_get_backend()
+    _rf_be_icon = "💾" if _rf_be == "postgres" else "⚡"
+    st.caption(f"HAR regression range forecast + live GEX adjustment for optimal strike placement &nbsp;|&nbsp; {_rf_be_icon} {'Neon Postgres' if _rf_be == 'postgres' else 'Session-only (no DATABASE_URL)'}")
 
     # ── Extract GEX context from current dashboard data ──
     gex_ctx = extract_gex_context(levels, spot, regime)
@@ -1695,7 +1692,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 )
                 result = rf_fit_model(X_train, y_train, model_name=model_choice)
                 metrics = rf_evaluate_oos(result, X_test, y_test, model_name=model_choice)
-                rf_save_model(result, avail_cols, model_choice, metrics)
+                rf_save_model(result, avail_cols, model_choice, metrics, conn=conn)
 
                 st.session_state[f"sf_model_result_{ticker}"]   = result
                 st.session_state[f"sf_model_features_{ticker}"] = avail_cols
@@ -1708,7 +1705,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # Try to load model from session or disk
     if f"sf_model_result_{ticker}" not in st.session_state:
         try:
-            payload = rf_load_model(model_choice)
+            payload = rf_load_model(model_choice, conn=conn)
             st.session_state[f"sf_model_result_{ticker}"]   = payload["result"]
             st.session_state[f"sf_model_features_{ticker}"] = payload["feature_cols"]
             st.session_state[f"sf_model_metrics_{ticker}"]  = payload["metrics"]
