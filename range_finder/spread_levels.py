@@ -61,7 +61,7 @@ MIN_SPREAD_WIDTH = {
 
 STANDARD_WING_WIDTHS = [15, 20, 25, 30, 40, 50]
 
-MIN_CREDIT_RATIO = 0.25
+MIN_CREDIT_RATIO = 0.05   # 5% — realistic for far-OTM weekly credit spreads
 
 # Per-ticker configuration — XSP is 1/10th of SPX
 TICKER_CONFIG = {

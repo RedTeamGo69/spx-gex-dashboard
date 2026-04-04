@@ -1933,7 +1933,7 @@ def _render_sf_range_gauge(forecast: dict, plan: SpreadPlan, spx_ref: float):
 
 
 def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX"):
-    """Price map showing reference, effective range, strikes, AND GEX walls."""
+    """Horizontal price map showing reference, effective range, strikes, and GEX walls."""
     import plotly.graph_objects as go
 
     call_short = plan.call_spreads[0].short_strike if plan.call_spreads else plan.effective_upper_px + 10
@@ -1951,50 +1951,66 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
 
     fig = go.Figure()
 
-    # Effective range band
+    # ── Horizontal layout: each level gets its own Y row ──
+    # Sort all levels and assign Y positions to avoid overlap
+    levels = [
+        (put_long,               "Put Long",    SF_BEAR,              "triangle-left",  8),
+        (put_short,              "Put Short",   SF_BEAR,              "diamond",        10),
+        (plan.effective_lower_px, "Eff Lower",  SF_WARN,              "triangle-up",     9),
+        (gex_ctx.put_wall,       "Put Wall",    COLORS["put_wall"],   "square",          9),
+        (gex_ctx.zero_gamma,     "Zero-G",      COLORS["zero_gamma"], "x",              10),
+        (spx_ref,                f"{ticker} Ref", COLORS["spot"],     "star",           12),
+        (gex_ctx.call_wall,      "Call Wall",   COLORS["call_wall"],  "square",          9),
+        (plan.effective_upper_px, "Eff Upper",  SF_WARN,              "triangle-up",     9),
+        (call_short,             "Call Short",  SF_BEAR,              "diamond",        10),
+        (call_long,              "Call Long",   SF_BEAR,              "triangle-right",  8),
+    ]
+
+    # Sort by price for clean left-to-right layout
+    levels.sort(key=lambda x: x[0])
+
+    # Effective range band (horizontal)
     fig.add_shape(type="rect",
         x0=plan.effective_lower_px, x1=plan.effective_upper_px,
-        y0=0, y1=1, yref="paper",
-        fillcolor=SF_BULL, opacity=0.12, line_width=0,
+        y0=-0.5, y1=len(levels) - 0.5,
+        fillcolor=SF_BULL, opacity=0.10, line_width=0,
     )
 
     # Call spread zone
     fig.add_shape(type="rect",
-        x0=call_short, x1=call_long,
-        y0=0, y1=1, yref="paper",
-        fillcolor=SF_BEAR, opacity=0.25, line_width=0,
+        x0=min(call_short, call_long), x1=max(call_short, call_long),
+        y0=-0.5, y1=len(levels) - 0.5,
+        fillcolor=SF_BEAR, opacity=0.15, line_width=0,
     )
 
     # Put spread zone
     fig.add_shape(type="rect",
-        x0=put_long, x1=put_short,
-        y0=0, y1=1, yref="paper",
-        fillcolor=SF_BEAR, opacity=0.25, line_width=0,
+        x0=min(put_long, put_short), x1=max(put_long, put_short),
+        y0=-0.5, y1=len(levels) - 0.5,
+        fillcolor=SF_BEAR, opacity=0.15, line_width=0,
     )
 
-    # Key vertical lines including GEX walls
-    lines = [
-        (spx_ref,               "Ref",          COLORS["spot"],       "solid",  14),
-        (plan.effective_upper_px, "Eff Upper",   SF_WARN,              "dot",    11),
-        (plan.effective_lower_px, "Eff Lower",   SF_WARN,              "dot",    11),
-        (call_short,             "Call Short",   SF_BEAR,              "dash",   12),
-        (put_short,              "Put Short",    SF_BEAR,              "dash",   12),
-        (gex_ctx.call_wall,      "Call Wall",    COLORS["call_wall"],  "dashdot", 11),
-        (gex_ctx.put_wall,       "Put Wall",     COLORS["put_wall"],   "dashdot", 11),
-        (gex_ctx.zero_gamma,     "Zero-G",       COLORS["zero_gamma"], "longdash", 11),
-    ]
+    # Plot each level as a scatter point on its own row
+    for i, (price, label, color, symbol, size) in enumerate(levels):
+        fig.add_trace(go.Scatter(
+            x=[price], y=[i],
+            mode="markers+text",
+            marker=dict(color=color, size=size, symbol=symbol, line=dict(width=1, color="#fff")),
+            text=[f"{label}  {price:,.0f}"],
+            textposition="middle right" if price <= spx_ref else "middle left",
+            textfont=dict(size=11, color=color),
+            showlegend=False,
+            hovertemplate=f"{label}: {price:,.0f}<extra></extra>",
+        ))
 
-    for price, label, color, dash, size in lines:
-        fig.add_vline(
-            x=price, line_dash=dash, line_color=color, line_width=1.5,
-            annotation_text=f"{label}<br>{price:,.0f}",
-            annotation_font_size=9,
-            annotation_font_color=color,
-        )
+    # Reference price vertical line
+    fig.add_vline(
+        x=spx_ref, line_dash="solid", line_color=COLORS["spot"],
+        line_width=2, opacity=0.4,
+    )
 
-    all_prices = [put_long, put_short, spx_ref, call_short, call_long,
-                  gex_ctx.call_wall, gex_ctx.put_wall, gex_ctx.zero_gamma]
-    margin_px = (max(all_prices) - min(all_prices)) * 0.12
+    all_prices = [l[0] for l in levels]
+    margin_px = (max(all_prices) - min(all_prices)) * 0.15
 
     fig.update_layout(
         plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
@@ -2002,8 +2018,8 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
         xaxis_range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
         yaxis_visible=False,
         showlegend=False,
-        margin=dict(t=40, b=30, l=10, r=10),
-        height=320,
+        margin=dict(t=10, b=30, l=10, r=10),
+        height=380,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
