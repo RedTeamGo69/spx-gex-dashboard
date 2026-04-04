@@ -463,9 +463,11 @@ def get_weekly_spx(conn: sqlite3.Connection, limit: int = None) -> pd.DataFrame:
     Convenience reader — returns weekly_spx as a DataFrame sorted by week_start.
     """
     query = "SELECT * FROM weekly_spx ORDER BY week_start ASC"
+    params = None
     if limit:
-        query += f" LIMIT {limit}"
-    df = pd.read_sql_query(query, conn, parse_dates=["week_start", "week_end"])
+        query += " LIMIT ?"
+        params = (int(limit),)
+    df = pd.read_sql_query(query, conn, params=params, parse_dates=["week_start", "week_end"])
     df.set_index("week_start", inplace=True)
     return df
 

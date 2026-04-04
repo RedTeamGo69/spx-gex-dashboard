@@ -277,11 +277,22 @@ def forecast_next_week(
     """
     Generate a point forecast + prediction interval for the upcoming week.
     """
-    # Build feature vector
+    # Build feature vector, using training-data means for missing values
+    # (0.0 would be wrong for log-transformed features like har_d1/har_w/har_m)
+    train_means = {}
+    try:
+        exog_df = pd.DataFrame(result.model.exog, columns=result.model.exog_names)
+        train_means = exog_df.mean().to_dict()
+    except Exception:
+        pass
+
     vals = {}
     for col in feature_cols:
         v = feature_row.get(col)
-        vals[col] = float(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else 0.0
+        if v is not None and not (isinstance(v, float) and math.isnan(v)):
+            vals[col] = float(v)
+        else:
+            vals[col] = float(train_means.get(col, 0.0))
 
     X_new = pd.DataFrame([vals], columns=feature_cols)
     X_new = sm.add_constant(X_new, has_constant="add")

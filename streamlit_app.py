@@ -2168,8 +2168,7 @@ def main():
             selected = [dte1] if dte1 else []
         elif "week" in mode:
             days_to_fri = (4 - run_now.weekday()) % 7
-            if days_to_fri == 0:
-                days_to_fri = 7  # Already Friday/past → use next Friday
+            # days_to_fri == 0 on Friday itself, which is correct (include today)
             fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
             selected = [e for e in avail if today_str <= e <= fri]
         elif "month" in mode:
@@ -2595,9 +2594,19 @@ This chart shows the **total dealer gamma exposure** at each price level, summed
         render_data_quality(data.stats, data.staleness_info)
 
     # ── Auto-refresh ──
+    # Uses st.rerun with a placeholder countdown so the app remains
+    # responsive to user interaction during the wait.
     if refresh_seconds > 0:
-        import time
-        time.sleep(refresh_seconds)
+        import time as _time
+        _refresh_placeholder = st.empty()
+        _elapsed = 0
+        _tick = 5  # check every 5 seconds
+        while _elapsed < refresh_seconds:
+            remaining = refresh_seconds - _elapsed
+            _refresh_placeholder.caption(f"Auto-refresh in {remaining}s")
+            _time.sleep(min(_tick, remaining))
+            _elapsed += _tick
+        _refresh_placeholder.empty()
         st.cache_resource.clear()
         st.rerun()
 
