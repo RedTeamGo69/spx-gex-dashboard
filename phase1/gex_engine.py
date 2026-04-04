@@ -138,6 +138,9 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     zero_oi_filtered_count = 0
     synthetic_fit_rel_errors = []
 
+    # Volume-weighted GEX tracking (supplement for 0DTE where OI is stale)
+    volume_gex_by_strike = {}  # strike -> volume-weighted GEX (all exps)
+
     client.prefetch_chains(ticker, all_exps)
 
     for i, exp in enumerate(all_exps):
@@ -182,7 +185,13 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
 
             model_iv = norm_opt["iv"]
             gamma_now = norm_opt["gamma_now"]
-            gex = sign * oi * gamma_now * 100.0
+            gex = sign * oi * gamma_now * 100.0 * spot * spot
+
+            # Volume-weighted GEX: uses intraday volume instead of EOD OI
+            volume = raw_opt.get("volume", 0.0) or 0.0
+            if volume > 0:
+                vol_gex = sign * volume * gamma_now * 100.0 * spot * spot
+                volume_gex_by_strike[K] = volume_gex_by_strike.get(K, 0.0) + vol_gex
 
             exp_gex[K] = exp_gex.get(K, 0.0) + gex
             exp_iv.setdefault(K, []).append(model_iv)
@@ -208,7 +217,7 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
                     if exp == target_exps[0]:
                         first_exp_put_ivs.append(model_iv)
 
-                all_options.append((K, oi, model_iv, sign, T))
+                all_options.append((K, oi, model_iv, sign, T, exp))
                 used_option_count += 1
                 bid = raw_opt.get("bid", 0.0) or 0.0
                 ask = raw_opt.get("ask", 0.0) or 0.0
@@ -323,6 +332,7 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
         "failed_exp_count": len(failed_expirations),
         "coverage_ratio": coverage_ratio,
         "hybrid_iv_mode": HYBRID_IV_MODE,
+        "volume_gex_by_strike": volume_gex_by_strike,
     }
 
     strike_support_df = build_strike_support_df(support_records, selected_exp_count=len(target_exps))
@@ -366,7 +376,7 @@ def _sweep_gex_at_prices(all_options, test_prices, r):
 
     gamma_matrix = bs_gamma_vec(test_prices, K_arr, T_arr, r, iv_arr)
     weights = sign_arr * oi_arr * 100.0
-    total_gex = (gamma_matrix * weights).sum(axis=1)
+    total_gex = (gamma_matrix * weights).sum(axis=1) * (test_prices ** 2)
 
     return total_gex
 
@@ -594,6 +604,97 @@ def _estimate_atm_iv(all_options, spot):
     return float(np.mean(ivs)) if ivs else None
 
 
+def _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp=None):
+    """
+    Compute zero-gamma separately for the nearest expiry (typically 0DTE) and
+    the remaining expirations. This reveals whether intraday gamma is dominated
+    by 0DTE flow vs. multi-day positions.
+
+    Returns dict with 'nearest_exp_zero_gamma' and 'other_exp_zero_gamma', or
+    None values if insufficient data.
+    """
+    if not all_options or nearest_exp is None:
+        return {
+            "nearest_exp": nearest_exp,
+            "nearest_exp_zero_gamma": None,
+            "nearest_exp_option_count": 0,
+            "other_exp_zero_gamma": None,
+            "other_exp_option_count": 0,
+        }
+
+    nearest_opts = [o for o in all_options if len(o) > 5 and o[5] == nearest_exp]
+    other_opts = [o for o in all_options if len(o) > 5 and o[5] != nearest_exp]
+
+    result = {
+        "nearest_exp": nearest_exp,
+        "nearest_exp_zero_gamma": None,
+        "nearest_exp_option_count": len(nearest_opts),
+        "other_exp_zero_gamma": None,
+        "other_exp_option_count": len(other_opts),
+    }
+
+    if len(nearest_opts) >= 4:
+        atm_iv = _estimate_atm_iv(nearest_opts, spot)
+        zg = zero_gamma_sweep(nearest_opts, spot, r=r, atm_iv=atm_iv)
+        result["nearest_exp_zero_gamma"] = round(float(zg), 2)
+
+    if len(other_opts) >= 4:
+        atm_iv = _estimate_atm_iv(other_opts, spot)
+        zg = zero_gamma_sweep(other_opts, spot, r=r, atm_iv=atm_iv)
+        result["other_exp_zero_gamma"] = round(float(zg), 2)
+
+    return result
+
+
+def _find_wall_cluster(df_subset, sort_col, ascending, cluster_radius=25, top_n=5):
+    """
+    Find a wall zone by clustering the top N strikes by GEX magnitude.
+
+    Instead of just picking the single highest-GEX strike, we find the top N
+    strikes, identify which ones cluster within `cluster_radius` points of the
+    peak, and return a GEX-weighted centroid of that cluster.
+
+    Returns dict with centroid, peak strike, cluster strikes, and total GEX.
+    """
+    if df_subset.empty:
+        return None
+
+    sorted_df = df_subset.sort_values(sort_col, ascending=ascending)
+    top = sorted_df.head(top_n)
+
+    peak_strike = float(top.iloc[0]["strike"])
+    peak_gex = float(top.iloc[0]["net_gex"])
+
+    # Find strikes that cluster near the peak
+    cluster_mask = (top["strike"] - peak_strike).abs() <= cluster_radius
+    cluster = top[cluster_mask]
+
+    if len(cluster) <= 1:
+        return {
+            "strike": peak_strike,
+            "gex": peak_gex,
+            "centroid": peak_strike,
+            "cluster_strikes": [peak_strike],
+            "cluster_gex_total": peak_gex,
+            "is_cluster": False,
+        }
+
+    # GEX-weighted centroid
+    weights = cluster["net_gex"].abs().values
+    strikes = cluster["strike"].values.astype(float)
+    w_sum = weights.sum()
+    centroid = float(np.average(strikes, weights=weights)) if w_sum > 0 else peak_strike
+
+    return {
+        "strike": peak_strike,
+        "gex": peak_gex,
+        "centroid": round(centroid, 2),
+        "cluster_strikes": sorted(strikes.tolist()),
+        "cluster_gex_total": float(cluster["net_gex"].sum()),
+        "is_cluster": True,
+    }
+
+
 def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
     if gex_df.empty:
         return {
@@ -606,6 +707,10 @@ def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
 
     pos = gex_df[gex_df["net_gex"] > 0]
     neg = gex_df[gex_df["net_gex"] < 0]
+
+    # Cluster-based wall identification
+    cw_cluster = _find_wall_cluster(pos if not pos.empty else gex_df, "net_gex", ascending=False)
+    pw_cluster = _find_wall_cluster(neg if not neg.empty else gex_df, "net_gex", ascending=True)
 
     if not pos.empty:
         cw = pos.loc[pos["net_gex"].idxmax()]
@@ -648,16 +753,38 @@ def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
         }
         print(f"  Zero gamma (cumulative fallback): ${zg:.2f}")
 
+    # Per-expiry zero-gamma (0DTE vs rest)
+    nearest_exp = None
+    if all_options:
+        exps_in_options = set(o[5] for o in all_options if len(o) > 5)
+        if exps_in_options:
+            nearest_exp = min(exps_in_options)
+    per_exp_zg = _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp)
+
+    if per_exp_zg["nearest_exp_zero_gamma"] is not None:
+        print(
+            f"  Zero gamma (0DTE {nearest_exp}): ${per_exp_zg['nearest_exp_zero_gamma']:.2f} "
+            f"({per_exp_zg['nearest_exp_option_count']} opts)"
+        )
+    if per_exp_zg["other_exp_zero_gamma"] is not None:
+        print(
+            f"  Zero gamma (other exps): ${per_exp_zg['other_exp_zero_gamma']:.2f} "
+            f"({per_exp_zg['other_exp_option_count']} opts)"
+        )
+
     return {
         "call_wall": float(cw["strike"]),
         "call_wall_gex": float(cw["net_gex"]),
+        "call_wall_cluster": cw_cluster,
         "put_wall": float(pw["strike"]),
         "put_wall_gex": float(pw["net_gex"]),
+        "put_wall_cluster": pw_cluster,
         "zero_gamma": round(float(zg_details['zero_gamma']), 2),
         "zero_gamma_is_true_crossing": bool(zg_details["is_true_crossing"]),
         "zero_gamma_type": zg_details["zero_gamma_type"],
         "zero_gamma_method": zg_details["method"],
         "zero_gamma_abs_gex": zg_details["final_abs_gex"],
+        "per_exp_zero_gamma": per_exp_zg,
     }
 
 def compute_strike_gex_from_all_options(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
@@ -666,16 +793,17 @@ def compute_strike_gex_from_all_options(all_options, spot, r=DEFAULT_RISK_FREE_R
     normalized option universe stored in all_options.
 
     all_options entries are:
-        (strike, oi, iv, sign, T)
+        (strike, oi, iv, sign, T[, exp])
     """
     if not all_options:
         return pd.DataFrame(columns=["strike", "call_gex", "put_gex", "net_gex"])
 
     agg = {}
 
-    for K, oi, iv, sign, T in all_options:
+    for opt in all_options:
+        K, oi, iv, sign, T = opt[0], opt[1], opt[2], opt[3], opt[4]
         gamma_now = bs_gamma(float(spot), float(K), float(T), float(r), float(iv))
-        gex = float(sign) * float(oi) * float(gamma_now) * 100.0
+        gex = float(sign) * float(oi) * float(gamma_now) * 100.0 * float(spot) * float(spot)
 
         if K not in agg:
             agg[K] = {"call_gex": 0.0, "put_gex": 0.0}

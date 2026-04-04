@@ -52,6 +52,10 @@ GEX_BUFFER_ADJUSTMENTS = {
     None:  0.000,
 }
 
+# Continuous GEX buffer: scale buffer proportionally to normalized GEX magnitude
+# gex_normalized > 0 means positive gamma (tighten), < 0 means negative (widen)
+GEX_CONTINUOUS_SCALE = 0.002  # buffer adjustment per unit of gex_normalized
+
 MIN_SPREAD_WIDTH = {
     "normal":     20,
     "event_1":    25,
@@ -191,16 +195,32 @@ def compute_buffer(
         buffer *= top_mult
         reasons.append(f"{top_event}_mult={top_mult}x")
 
-    gex_flag = None
+    # Prefer continuous GEX feature if available; fall back to binary flag
+    gex_adj = 0.0
+    gex_normalized = None
     if feature_row is not None:
-        raw_gex = feature_row.get("gex_flag")
-        if raw_gex is not None and not (isinstance(raw_gex, float) and math.isnan(raw_gex)):
-            gex_flag = int(raw_gex)
+        raw_norm = feature_row.get("gex_normalized")
+        if raw_norm is not None and not (isinstance(raw_norm, float) and math.isnan(raw_norm)):
+            gex_normalized = float(raw_norm)
 
-    gex_adj = GEX_BUFFER_ADJUSTMENTS.get(gex_flag, 0.0)
-    if gex_adj != 0:
-        buffer += gex_adj
-        reasons.append(f"gex_flag={gex_flag}({gex_adj*100:+.2f}%)")
+    if gex_normalized is not None:
+        # Continuous: negative gex_normalized widens buffer, positive tightens
+        gex_adj = -gex_normalized * GEX_CONTINUOUS_SCALE
+        gex_adj = max(-0.002, min(0.005, gex_adj))  # clamp to reasonable range
+        if abs(gex_adj) > 0.0001:
+            buffer += gex_adj
+            reasons.append(f"gex_norm={gex_normalized:.2f}({gex_adj*100:+.3f}%)")
+    else:
+        gex_flag = None
+        if feature_row is not None:
+            raw_gex = feature_row.get("gex_flag")
+            if raw_gex is not None and not (isinstance(raw_gex, float) and math.isnan(raw_gex)):
+                gex_flag = int(raw_gex)
+
+        gex_adj = GEX_BUFFER_ADJUSTMENTS.get(gex_flag, 0.0)
+        if gex_adj != 0:
+            buffer += gex_adj
+            reasons.append(f"gex_flag={gex_flag}({gex_adj*100:+.2f}%)")
 
     buffer = max(buffer, 0.001)
     reason_str = " | ".join(reasons)

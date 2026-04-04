@@ -123,8 +123,11 @@ def test_zero_gamma_sweep_details_flags_fallback_when_no_crossing():
 
 
 def test_zero_gamma_sweep_details_detects_true_crossing(monkeypatch):
+    import numpy as np
+
     def fake_sweep(_all_options, prices, _r):
-        return [float(p - 100.0) for p in prices]
+        # _sweep_gex_at_prices returns total GEX (already Spot²-scaled)
+        return np.array([float(p - 100.0) for p in prices])
 
     monkeypatch.setattr(gex_engine, "_sweep_gex_at_prices", fake_sweep)
 

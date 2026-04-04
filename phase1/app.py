@@ -316,7 +316,8 @@ def run_app(
 
     sensitivity_df = gex_engine.compute_zero_gamma_sensitivity(all_options, spot, r=rfr)
     scenarios_df = run_scenario_engine(all_options, base_spot=spot, base_r=rfr)
-    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats)
+    has_0dte = any(e == today_str for e in target_exps)
+    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
     wall_credibility_info = build_wall_credibility(
         levels=levels,
@@ -419,7 +420,25 @@ def run_app(
     if stats.get("strike_support_avg") is not None:
         print(f"  Strike support:    {stats['strike_support_avg']:.1f} avg  |  Fragile: {stats['fragile_strike_count']}")
     if stats.get("expiration_support_avg") is not None:
-        print(f"  Exp support:       {stats['expiration_support_avg']:.1f} avg")        
+        print(f"  Exp support:       {stats['expiration_support_avg']:.1f} avg")
+
+    # Per-expiry zero-gamma
+    per_exp_zg = levels.get("per_exp_zero_gamma") or {}
+    if per_exp_zg.get("nearest_exp_zero_gamma") is not None:
+        print(f"  ZG (0DTE):         ${per_exp_zg['nearest_exp_zero_gamma']:.2f}  ({per_exp_zg['nearest_exp_option_count']} opts)")
+    if per_exp_zg.get("other_exp_zero_gamma") is not None:
+        print(f"  ZG (other):        ${per_exp_zg['other_exp_zero_gamma']:.2f}  ({per_exp_zg['other_exp_option_count']} opts)")
+
+    # Call/put wall clusters
+    for wall_name, cluster_key in [("CW", "call_wall_cluster"), ("PW", "put_wall_cluster")]:
+        cluster = levels.get(cluster_key)
+        if cluster and cluster.get("is_cluster"):
+            print(f"  {wall_name} cluster:       centroid ${cluster['centroid']:.0f}  strikes={cluster['cluster_strikes']}")
+
+    print(f"{'─' * 58}")
+    print(f"  NOTE: GEX assumes dealers are net short all options")
+    print(f"  (standard convention). Actual positioning varies by")
+    print(f"  strike. OI is EOD data — intraday flow not captured.")
     print(f"{'─' * 58}\n")
 
     run_metadata = build_run_metadata(

@@ -291,9 +291,13 @@ def build_features(conn: sqlite3.Connection) -> pd.DataFrame:
     if not gex_df.empty:
         df = df.join(gex_df[["gex"]], how="left")
         df["gex_flag"] = df["gex"].apply(_gex_flag)
+        # Continuous GEX feature: normalized net GEX (divide by a reference scale
+        # so it's comparable across time; 1e9 is a reasonable scale for SPX GEX)
+        df["gex_normalized"] = df["gex"] / 1e9
     else:
-        df["gex"]      = np.nan
-        df["gex_flag"] = np.nan
+        df["gex"]            = np.nan
+        df["gex_flag"]       = np.nan
+        df["gex_normalized"] = np.nan
 
     # Join event flags
     df = df.join(
