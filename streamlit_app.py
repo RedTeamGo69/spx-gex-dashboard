@@ -83,7 +83,7 @@ COLORS = {
     "bg_primary": "#1a1a2e",
     "bg_sidebar": "#16213e",
     "bg_card": "#1a1a3e",
-    "spot": "#ffd600",
+    "spot": "#ffffff",
     "zero_gamma": "#00e5ff",
     "call_wall": "#69f0ae",
     "put_wall": "#ff8a80",
@@ -512,7 +512,7 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, month
         title="Strike-by-Strike Net GEX Proxy",
         xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
-        showlegend=False, height=700,
+        showlegend=False, height=700, dragmode=False,
     )
     return fig
 
@@ -575,7 +575,7 @@ def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis, week
         title="GEX Profile Curve",
         xaxis=dict(title="Underlying Price", gridcolor=COLORS["grid_major"]),
         yaxis=dict(title="Total GEX proxy", gridcolor=COLORS["grid_minor"], zerolinecolor=COLORS["zeroline"]),
-        showlegend=False, height=500,
+        showlegend=False, height=500, dragmode=False,
     )
     return fig
 
@@ -1015,9 +1015,9 @@ def _render_history_tab(current_spot, ticker="SPX"):
                 xaxis=dict(gridcolor=COLORS["grid_major"]),
                 yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                height=400,
+                height=400, dragmode=False,
             )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
         return
 
     # ── Daily Summary view ──
@@ -1107,9 +1107,9 @@ def _render_history_tab(current_spot, ticker="SPX"):
         xaxis=dict(gridcolor=COLORS["grid_major"]),
         yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=500,
+        height=500, dragmode=False,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     # Summary table — show open and close side by side
     with st.expander("📋 Daily Summary"):
@@ -1256,9 +1256,9 @@ def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, 
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
         barmode="overlay",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=700,
+        height=700, dragmode=False,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     # Summary metrics
     st.markdown("##### Timeframe Summary")
@@ -1321,9 +1321,9 @@ def _render_iv_surface(hm_iv, hm_gex, spot):
         title=title,
         xaxis=dict(title="Expiration", tickangle=45),
         yaxis=dict(title="Strike"),
-        height=600,
+        height=600, dragmode=False,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 
 def _render_pin_detection(stats, gex_df, spot):
@@ -1927,9 +1927,9 @@ def _render_sf_range_gauge(forecast: dict, plan: SpreadPlan, spx_ref: float):
         yaxis_title="Range % (High - Low / Open)",
         showlegend=False,
         margin=dict(t=30, b=10, l=10, r=10),
-        height=320,
+        height=320, dragmode=False,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 
 def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX"):
@@ -2019,9 +2019,9 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
         yaxis_visible=False,
         showlegend=False,
         margin=dict(t=10, b=30, l=10, r=10),
-        height=380,
+        height=380, dragmode=False,
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
 
 def _render_sf_spread_table(spreads, recommended_width: int):
@@ -2469,11 +2469,11 @@ def main():
         w_em_for_chart = weekly_em_snap or weekly_em_live or {}
         m_em_for_chart = monthly_em_snap or monthly_em_live or {}
         fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
-        st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     with tab_profile:
         fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
-        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     # ── C3: Multi-timeframe GEX comparison ──
     with tab_multi:
