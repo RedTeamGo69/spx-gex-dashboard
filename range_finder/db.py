@@ -113,13 +113,40 @@ class PGConnectionWrapper:
     Key differences handled:
     - ? → %s placeholder translation
     - executescript → split-and-execute
+    - Auto-reconnect when Neon serverless drops idle connections
     - pd.read_sql_query works natively with psycopg2 connections
     """
 
-    def __init__(self, conn):
-        self._conn = conn
+    def __init__(self, conn_str: str):
+        self._conn_str = conn_str
+        self._conn = None
+        self._connect()
+
+    def _connect(self):
+        """Establish a fresh Postgres connection."""
+        import psycopg2
+        self._conn = psycopg2.connect(self._conn_str, sslmode="require")
+        self._conn.autocommit = False
+
+    def _ensure_alive(self):
+        """Reconnect if the underlying connection has been closed or dropped."""
+        try:
+            if self._conn is None or self._conn.closed:
+                log.info("Postgres connection lost — reconnecting...")
+                self._connect()
+                return
+            # Lightweight check — will raise if connection is dead
+            self._conn.cursor().execute("SELECT 1")
+        except Exception:
+            log.info("Postgres connection stale — reconnecting...")
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._connect()
 
     def cursor(self):
+        self._ensure_alive()
         return PGCursor(self._conn.cursor())
 
     def execute(self, sql, params=None):
@@ -161,12 +188,9 @@ def get_connection():
     existing GEX dashboard tables.
     """
     if _backend == "postgres":
-        import psycopg2
-        conn = psycopg2.connect(_pg_conn_str, sslmode="require")
-        # Don't use autocommit — bulk inserts batch into one transaction
-        # and commit() sends them all at once (much faster over network)
-        conn.autocommit = False
-        wrapped = PGConnectionWrapper(conn)
+        # PGConnectionWrapper handles connection lifecycle including
+        # auto-reconnect when Neon serverless drops idle connections
+        wrapped = PGConnectionWrapper(_pg_conn_str)
         log.info("Range finder connected to Postgres")
         return wrapped
     else:
