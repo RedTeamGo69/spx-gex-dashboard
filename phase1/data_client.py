@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _logger = logging.getLogger(__name__)
 
+import threading
+
 from phase1.config import (
     MAX_WORKERS,
     CHAIN_RETRIES,
@@ -15,13 +17,15 @@ from phase1.config import (
 
 
 _safe_float_coercion_count = 0
+_coercion_lock = threading.Lock()
 
 def safe_float(x, default=0.0):
     global _safe_float_coercion_count
     try:
         return float(x)
     except (TypeError, ValueError):
-        _safe_float_coercion_count += 1
+        with _coercion_lock:
+            _safe_float_coercion_count += 1
         return default
 
 def get_coercion_count():
@@ -29,7 +33,8 @@ def get_coercion_count():
 
 def reset_coercion_count():
     global _safe_float_coercion_count
-    _safe_float_coercion_count = 0
+    with _coercion_lock:
+        _safe_float_coercion_count = 0
 
 
 class TradierDataClient:

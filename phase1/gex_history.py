@@ -290,7 +290,7 @@ def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info
         "ticker": ticker,
         "spot": _to_float(spot),
         "zero_gamma": _to_float(levels.get("zero_gamma", 0)),
-        "is_true_crossing": bool(levels.get("is_true_crossing", True)),
+        "is_true_crossing": bool(levels.get("zero_gamma_is_true_crossing", True)),
         "call_wall": _to_float(levels.get("call_wall")),
         "put_wall": _to_float(levels.get("put_wall")),
         "regime": str(regime_info.get("regime")) if regime_info.get("regime") else None,
