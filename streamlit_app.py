@@ -298,7 +298,8 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     profile_df = gex_engine.compute_gex_profile_curve(all_options, spot, r=rfr)
     sensitivity_df = gex_engine.compute_zero_gamma_sensitivity(all_options, spot, r=rfr)
     scenarios_df = run_scenario_engine(all_options, base_spot=spot, base_r=rfr)
-    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats)
+    has_0dte = any(e == today_str for e in target_exps)
+    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
     wall_cred = build_wall_credibility(
         levels=levels,
@@ -731,6 +732,14 @@ def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info
 
     if not levels.get("is_true_crossing", True):
         st.warning("⚠️ Zero gamma is a fallback estimate — no true sign-change crossing was found in the sweep range. Use this level with caution.")
+
+    st.caption(
+        "**Dealer positioning assumption:** GEX models assume dealers are net short calls and net short puts "
+        "(the standard retail convention). In reality, dealer positioning varies by strike — institutional "
+        "overlays (collars, risk reversals) and retail put-selling can invert the sign at specific strikes. "
+        "Open interest updates once daily (EOD), so intraday flow is not reflected. "
+        "Treat GEX levels as probabilistic zones, not hard barriers."
+    )
 
 
 def _fmt_delta(val, base_val):
@@ -2528,6 +2537,10 @@ This chart shows the **total dealer gamma exposure** at each price level, summed
 - **Curve near zero or negative around spot** = Weak support. Price can move freely. Be cautious with tight spreads.
 - **Steep slope near spot** = Small price moves cause large changes in dealer hedging. Expect choppy, range-bound action.
 - **Flat curve** = Dealers have little gamma exposure. Price moves are driven by order flow, not hedging.
+
+**Important caveat:** This model assumes dealers are uniformly net short all options (the standard convention). \
+Actual dealer positioning varies by strike due to institutional overlays, collar programs, and retail put-selling. \
+OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels as probabilistic guides, not certainties.
 """)
         fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
         st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})

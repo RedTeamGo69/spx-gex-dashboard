@@ -77,8 +77,8 @@ def regime_to_gex_flag(regime: str) -> int:
     Map the dashboard's gamma regime string to the range finder's gex_flag integer.
 
     Dashboard regime values:
-        "positive"   → dealers short gamma above zero-gamma, suppress moves → flag = +1
-        "negative"   → dealers long gamma below zero-gamma, amplify moves  → flag = -1
+        "positive"   → dealers long gamma above zero-gamma, suppress moves → flag = +1
+        "negative"   → dealers short gamma below zero-gamma, amplify moves → flag = -1
         "transition" → near zero-gamma, regime unclear                     → flag =  0
     """
     regime_lower = regime.lower().strip()
@@ -87,6 +87,37 @@ def regime_to_gex_flag(regime: str) -> int:
     elif "negative" in regime_lower:
         return -1
     return 0
+
+
+def compute_continuous_gex_features(gex_ctx: GEXContext) -> dict:
+    """
+    Compute continuous GEX features for the HAR model, replacing the binary
+    gex_flag with richer quantitative signals.
+
+    Returns:
+        gex_zg_distance_pct: (spot - zero_gamma) / spot — positive = positive gamma
+        gex_wall_width_pct:  (call_wall - put_wall) / spot — wider = more room
+        gex_net_normalized:  net_gex / spot² — normalized for cross-time comparison
+    """
+    spot = gex_ctx.spot
+    if spot <= 0:
+        return {
+            "gex_zg_distance_pct": 0.0,
+            "gex_wall_width_pct": 0.0,
+            "gex_net_normalized": 0.0,
+        }
+
+    zg_distance = (spot - gex_ctx.zero_gamma) / spot
+    wall_width = (gex_ctx.call_wall - gex_ctx.put_wall) / spot
+    net_gex = gex_ctx.net_gex if gex_ctx.net_gex is not None else 0.0
+    # Normalize by spot² to make comparable across time periods
+    net_normalized = net_gex / (spot * spot) if spot > 0 else 0.0
+
+    return {
+        "gex_zg_distance_pct": round(float(zg_distance), 6),
+        "gex_wall_width_pct": round(float(wall_width), 6),
+        "gex_net_normalized": round(float(net_normalized), 6),
+    }
 
 
 def regime_to_gex_dollars(gex_ctx: GEXContext) -> float:
@@ -132,13 +163,16 @@ def save_gex_to_range_finder(
 
     gex_dollars = regime_to_gex_dollars(gex_ctx)
     gex_flag = regime_to_gex_flag(gex_ctx.gamma_regime)
+    continuous = compute_continuous_gex_features(gex_ctx)
 
     notes = (
         f"regime={gex_ctx.gamma_regime} | "
         f"zero_gamma={gex_ctx.zero_gamma:.0f} | "
         f"call_wall={gex_ctx.call_wall:.0f} | "
         f"put_wall={gex_ctx.put_wall:.0f} | "
-        f"spot={gex_ctx.spot:.2f}"
+        f"spot={gex_ctx.spot:.2f} | "
+        f"zg_dist={continuous['gex_zg_distance_pct']:.4f} | "
+        f"wall_w={continuous['gex_wall_width_pct']:.4f}"
     )
 
     upsert_gex(conn, week_start, gex_dollars, notes=notes)

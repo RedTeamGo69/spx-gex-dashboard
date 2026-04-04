@@ -25,7 +25,7 @@ def _label_from_score(score):
     return "Low"
 
 
-def build_staleness_info(calendar_snapshot: dict, spot_info: dict, stats: dict) -> dict:
+def build_staleness_info(calendar_snapshot: dict, spot_info: dict, stats: dict, has_0dte: bool = False) -> dict:
     """
     Build a market-data freshness / stale-risk assessment using observable signals.
 
@@ -114,6 +114,16 @@ def build_staleness_info(calendar_snapshot: dict, spot_info: dict, stats: dict) 
         score -= 6
         reasons.append(f"There are {fragile_strike_count} fragile strikes in the selected range.")
         defenses_triggered.append("many_fragile_strikes")
+
+    # 0DTE OI staleness: OI updates once daily (EOD), so intraday 0DTE positioning
+    # can diverge significantly from what the OI field reflects.
+    if has_0dte and market_open:
+        score -= 10
+        reasons.append(
+            "0DTE OI is end-of-day data — intraday opening/closing flow is not reflected. "
+            "Actual gamma positioning may differ substantially from what EOD OI shows."
+        )
+        defenses_triggered.append("0dte_oi_staleness")
 
     score = max(0.0, min(100.0, round(score, 1)))
     label = _label_from_score(score)

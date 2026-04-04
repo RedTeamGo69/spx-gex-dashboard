@@ -212,6 +212,7 @@ class TradierDataClient:
             bid = safe_float(o.get("bid", 0), 0.0)
             ask = safe_float(o.get("ask", 0), 0.0)
             oi = safe_float(o.get("open_interest", 0), 0.0)
+            volume = safe_float(o.get("volume", 0), 0.0)
             greeks = o.get("greeks") or {}
             if not isinstance(greeks, dict):
                 greeks = {}
@@ -221,6 +222,7 @@ class TradierDataClient:
             row = {
                 "strike": strike,
                 "openInterest": oi,
+                "volume": volume,
                 "impliedVolatility": iv,
                 "vendorGamma": vendor_gamma,
                 "bid": bid,

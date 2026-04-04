@@ -118,7 +118,8 @@ def capture_snapshot():
 
     levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
     regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
-    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats)
+    has_0dte = any(e == today_str for e in target_exps)
+    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
 
     _logger.info(f"Zero Gamma: {levels['zero_gamma']:.2f} | Call Wall: {levels.get('call_wall')} | "
