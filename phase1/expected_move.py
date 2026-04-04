@@ -274,10 +274,10 @@ _DAY_CLASSIFICATIONS = {
 }
 
 # Thresholds for move ratio classification.
-# These can be refined by running: python -m range_finder.session_backtest
-# The backtest grid-searches over threshold pairs using historical SPX + VIX data.
-MOVE_RATIO_LOW_THRESHOLD = 0.35   # below 35% of EM = "low" overnight move
-MOVE_RATIO_HIGH_THRESHOLD = 0.65  # above 65% of EM = "high" overnight move
+# Calibrated via: python -m range_finder.session_backtest (1022 days, 4 years)
+# Best combined_score=0.2498, accuracy_low=55%, accuracy_high=73%
+MOVE_RATIO_LOW_THRESHOLD = 0.30   # below 30% of EM = "low" overnight move  (63% of days)
+MOVE_RATIO_HIGH_THRESHOLD = 0.85  # above 85% of EM = "high" overnight move (4% of days)
 
 
 def classify_session(

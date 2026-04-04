@@ -100,7 +100,7 @@ def test_classify_session_trend_day():
 def test_classify_session_exhaustion_day():
     result = classify_session(
         expected_move_pts=46.0,
-        overnight_move_pts=38.0,  # 38/46 ≈ 83%, above 70%
+        overnight_move_pts=42.0,  # 42/46 ≈ 91%, above 85%
         gamma_regime="Positive Gamma",
     )
     assert result["classification"] == "Exhaustion Day"
@@ -110,7 +110,7 @@ def test_classify_session_exhaustion_day():
 def test_classify_session_extension_day():
     result = classify_session(
         expected_move_pts=46.0,
-        overnight_move_pts=-40.0,  # abs(40)/46 ≈ 87%, above 70%
+        overnight_move_pts=-42.0,  # abs(42)/46 ≈ 91%, above 85%
         gamma_regime="Negative Gamma",
     )
     assert result["classification"] == "Extension Day"
@@ -120,7 +120,7 @@ def test_classify_session_extension_day():
 def test_classify_session_moderate_ratio():
     result = classify_session(
         expected_move_pts=46.0,
-        overnight_move_pts=25.0,  # 25/46 ≈ 54%, between 40-70%
+        overnight_move_pts=25.0,  # 25/46 ≈ 54%, between 30-85%
         gamma_regime="Positive Gamma",
     )
     assert result["move_ratio_label"] == "moderate"
