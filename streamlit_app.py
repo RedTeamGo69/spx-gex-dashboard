@@ -1685,8 +1685,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         with st.spinner("Fetching SPX / VIX weekly data from yfinance..."):
             try:
                 df_spx = rf_fetch_spx_vix(years=3)
-                rf_save_spx_vix(conn, df_spx)
-                st.success(f"SPX/VIX data refreshed — {len(df_spx)} weeks")
+                rows_written = rf_save_spx_vix(conn, df_spx)
+                if len(df_spx) == 0:
+                    st.success("SPX/VIX data already up to date")
+                else:
+                    st.success(f"SPX/VIX data refreshed — {len(df_spx)} weeks fetched, {rows_written} new")
             except Exception as e:
                 st.error(f"SPX/VIX fetch failed: {e}")
 
