@@ -115,7 +115,9 @@ def get_expiration_close_dt(expiration_str: str, calendar_name: str = OPTIONS_CA
     """
     Return the scheduled market close in New York time for a given expiration date.
 
-    Falls back to 4:00 PM NY time if the calendar has no session for that date.
+    If the expiration date falls on a holiday (schedule is empty), we look backward
+    to find the previous trading day's close — that's the actual last trading time
+    for options expiring on the holiday. This correctly handles Good Friday, etc.
     """
     sched = get_schedule(calendar_name, expiration_str, expiration_str)
 
@@ -124,7 +126,19 @@ def get_expiration_close_dt(expiration_str: str, calendar_name: str = OPTIONS_CA
         close_dt = close_ts.to_pydatetime() if hasattr(close_ts, "to_pydatetime") else close_ts
         return _ensure_ny(close_dt)
 
-    # Fallback if schedule is unavailable for that date
+    # Expiration falls on a holiday — find the previous trading day's close.
+    # Options expiring on Good Friday, for example, effectively expire at
+    # Thursday's market close.
+    exp_date = datetime.strptime(expiration_str, "%Y-%m-%d").date()
+    lookback_start = (exp_date - timedelta(days=7)).isoformat()
+    lookback_sched = get_schedule(calendar_name, lookback_start, expiration_str)
+
+    if not lookback_sched.empty:
+        close_ts = lookback_sched.iloc[-1]["market_close"]
+        close_dt = close_ts.to_pydatetime() if hasattr(close_ts, "to_pydatetime") else close_ts
+        return _ensure_ny(close_dt)
+
+    # Ultimate fallback if no trading days found in lookback window
     return datetime.strptime(expiration_str, "%Y-%m-%d").replace(
         tzinfo=NY_TZ,
         hour=16,

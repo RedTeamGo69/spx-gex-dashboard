@@ -389,8 +389,8 @@ def run_app(
         if cl["classification"]:
             print(f"  Session Type:      {cl['classification']}")
             print(f"  Bias:              {cl['bias']}")
-            if cl["favored_strategies"]:
-                print(f"  Favored:           {', '.join(cl['favored_strategies'])}")
+            if cl.get("historical_tendencies"):
+                print(f"  Tendency:          {cl['historical_tendencies'][0]}")
         if em_analysis.get("spy_proxy"):
             sp = em_analysis["spy_proxy"]
             print(f"  SPY Proxy Move:    {sp['spy_move_pct']:+.2f}% → ~{sp['implied_spx_move_pts']:+.1f} SPX pts")

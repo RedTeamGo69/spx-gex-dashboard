@@ -319,13 +319,20 @@ def build_features(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def _gex_flag(gex_val) -> int | None:
-    """Classify GEX into regime: +1 positive, 0 neutral, -1 negative."""
+    """
+    Classify GEX into regime: +1 positive, 0 neutral, -1 negative.
+
+    DEPRECATED: This binary flag is superseded by the continuous gex_normalized
+    feature. Kept only for backward compatibility with existing DB rows.
+    New code should use gex_normalized directly.
+    """
     if gex_val is None or (isinstance(gex_val, float) and math.isnan(gex_val)):
         return None
-    threshold = 500_000_000
-    if gex_val > threshold:
+    # Note: this threshold is approximate and not calibrated to Spot²-scaled GEX.
+    # It exists only for legacy rows. The HAR model uses gex_normalized instead.
+    if gex_val > 0:
         return 1
-    elif gex_val < -threshold:
+    elif gex_val < 0:
         return -1
     return 0
 

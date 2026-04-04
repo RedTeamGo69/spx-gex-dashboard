@@ -655,8 +655,10 @@ def _render_classification(classification, level_ctx):
         st.markdown(f"### {cls_icon} {classification['classification']}")
         if classification.get("description"):
             st.caption(classification["description"])
-        if classification.get("favored_strategies"):
-            st.markdown(f"**Favored:** {', '.join(classification['favored_strategies'])}")
+        if classification.get("historical_tendencies"):
+            st.markdown(f"**Tendencies:** {classification['historical_tendencies'][0]}")
+        if classification.get("confidence_note"):
+            st.caption(classification["confidence_note"])
 
     if level_ctx and level_ctx.get("zero_gamma_within_em") is not None:
         inside = "✅ inside" if level_ctx["zero_gamma_within_em"] else "⚠️ outside"

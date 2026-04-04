@@ -8,6 +8,7 @@ from scipy.stats import norm
 
 from phase1.config import (
     STRIKE_RANGE_PCT,
+    COMPUTATION_RANGE_PCT,
     HEATMAP_STRIKES,
     T_FLOOR,
     ZG_SWEEP_RANGE_PCT,
@@ -102,8 +103,12 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     Returns:
         gex_df, heatmap_gex, heatmap_iv, stats, all_options
     """
-    lower = spot * (1 - STRIKE_RANGE_PCT)
-    upper = spot * (1 + STRIKE_RANGE_PCT)
+    # Wider range for all_options (used in sweep/profile/scenarios)
+    lower = spot * (1 - COMPUTATION_RANGE_PCT)
+    upper = spot * (1 + COMPUTATION_RANGE_PCT)
+    # Narrower range for bar chart display
+    display_lower = spot * (1 - STRIKE_RANGE_PCT)
+    display_upper = spot * (1 + STRIKE_RANGE_PCT)
 
     now = now or datetime.now(NY_TZ)
     now_ny = now.astimezone(NY_TZ) if now.tzinfo is not None else now.replace(tzinfo=NY_TZ)
@@ -197,26 +202,32 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
             exp_iv.setdefault(K, []).append(model_iv)
 
             if exp in target_exps:
-                if K not in agg:
-                    agg[K] = {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0.0, "put_oi": 0.0}
+                # Bar chart agg uses narrower display range
+                in_display = display_lower <= K <= display_upper
+                if in_display:
+                    if K not in agg:
+                        agg[K] = {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0.0, "put_oi": 0.0}
 
                 if sign == +1:
-                    agg[K]["call_gex"] += gex
-                    agg[K]["call_oi"] += oi
+                    if in_display:
+                        agg[K]["call_gex"] += gex
+                        agg[K]["call_oi"] += oi
                     total_call_oi += oi
                     if oi > max_call_oi_strike[0]:
                         max_call_oi_strike = (oi, K)
                     if exp == target_exps[0]:
                         first_exp_call_ivs.append(model_iv)
                 else:
-                    agg[K]["put_gex"] += gex
-                    agg[K]["put_oi"] += oi
+                    if in_display:
+                        agg[K]["put_gex"] += gex
+                        agg[K]["put_oi"] += oi
                     total_put_oi += oi
                     if oi > max_put_oi_strike[0]:
                         max_put_oi_strike = (oi, K)
                     if exp == target_exps[0]:
                         first_exp_put_ivs.append(model_iv)
 
+                # all_options gets the full wider range for sweep/profile/scenarios
                 all_options.append((K, oi, model_iv, sign, T, exp))
                 used_option_count += 1
                 bid = raw_opt.get("bid", 0.0) or 0.0
@@ -281,7 +292,7 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     hm_gex_data = {}
     hm_iv_data = {}
     for exp_str in sorted(per_exp_gex):
-        col = datetime.strptime(exp_str, "%Y-%m-%d").strftime("%m/%d")
+        col = datetime.strptime(exp_str, "%Y-%m-%d").strftime("%b %d")
         hm_gex_data[col] = [per_exp_gex[exp_str].get(K, 0.0) for K in hm_strikes]
         hm_iv_data[col] = [per_exp_iv.get(exp_str, {}).get(K, 0.0) for K in hm_strikes]
 
@@ -596,12 +607,23 @@ def get_gamma_regime_text(spot, zero_gamma):
 
 
 def _estimate_atm_iv(all_options, spot):
-    """Estimate ATM IV from nearest options to spot."""
+    """
+    Estimate ATM IV from nearest options to spot using inverse-distance weighting.
+
+    Uses the 4 nearest options (by strike) with valid IV, weighted by
+    proximity to spot so that truly ATM options dominate the estimate.
+    """
     if not all_options:
         return None
-    nearest = sorted(all_options, key=lambda o: abs(o[0] - spot))[:10]
-    ivs = [o[2] for o in nearest if o[2] > 0]
-    return float(np.mean(ivs)) if ivs else None
+    nearest = sorted(all_options, key=lambda o: abs(o[0] - spot))[:4]
+    valid = [(o[0], o[2]) for o in nearest if o[2] > 0]
+    if not valid:
+        return None
+    strikes, ivs = zip(*valid)
+    distances = [max(abs(k - spot), 0.01) for k in strikes]
+    weights = [1.0 / d for d in distances]
+    w_sum = sum(weights)
+    return float(sum(iv * w / w_sum for iv, w in zip(ivs, weights)))
 
 
 def _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp=None):
