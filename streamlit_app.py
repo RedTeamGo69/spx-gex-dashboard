@@ -1281,6 +1281,41 @@ def _render_iv_surface(hm_iv, hm_gex, spot):
         return
 
     view = st.radio("View", ["IV Surface", "GEX Heatmap"], horizontal=True, key="iv_view")
+
+    with st.expander("How to read this chart"):
+        if view == "IV Surface":
+            st.markdown("""
+**IV Surface — Implied Volatility across strikes and expirations**
+
+- **X-axis** = Expiration date (left = near-term, right = further out)
+- **Y-axis** = Strike price (white dashed line = current spot)
+- **Color** = Implied volatility at that strike/expiration
+  - **Dark/purple** = low IV (cheap options)
+  - **Bright/yellow** = high IV (expensive options)
+
+**What to look for:**
+- **Volatility smile/skew:** OTM puts (below spot) typically have higher IV than OTM calls — this shows as brighter colors below the spot line. A steep skew means the market is pricing in more downside risk.
+- **Term structure:** Compare left to right. If near-term IV is higher than far-term (brighter on the left), the market expects a move soon (event-driven). If far-term is higher, the market is calm short-term.
+- **Hot spots:** Bright patches at specific strikes/expirations can indicate unusual activity or event pricing (e.g., FOMC, earnings).
+""")
+        else:
+            st.markdown("""
+**GEX Heatmap — Gamma Exposure across strikes and expirations**
+
+- **X-axis** = Expiration date
+- **Y-axis** = Strike price (white dashed line = current spot)
+- **Color** = Net gamma exposure at that strike/expiration
+  - **Green** = positive gamma (dealers are long gamma — they buy dips, sell rips, suppressing moves)
+  - **Red** = negative gamma (dealers are short gamma — they sell dips, buy rips, amplifying moves)
+  - **Yellow** = neutral / near zero
+
+**What to look for:**
+- **Green cluster around spot:** Dealers are positioned to suppress volatility. Price tends to stay range-bound. Good for selling credit spreads.
+- **Red zone around spot:** Dealers amplify moves. Expect larger swings. Widen your spreads or reduce size.
+- **Bright green at a specific strike:** That strike acts as a "magnet" — price may pin there near expiration as dealer hedging creates support/resistance.
+- **Comparison across expirations:** GEX from near-term expirations has the strongest effect on price action (gamma decays as expiration approaches).
+""")
+
     hm_data = hm_iv if view == "IV Surface" else hm_gex
 
     if hm_data.empty:
