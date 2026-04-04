@@ -152,7 +152,7 @@ def compute_har_features(weekly_df: pd.DataFrame) -> pd.DataFrame:
     Compute the three HAR components from the range_pct series.
 
     har_d1  — prior week range_pct (lag 1)
-    har_w   — mean of lags 2..5  (the 'weekly' component)
+    har_w   — mean of lags 2..6  (the 'weekly' component, 5 values per HAR literature)
     har_m   — mean of lags 2..21 (the 'monthly' component)
     """
     df = weekly_df[["range_pct"]].copy()
@@ -162,7 +162,7 @@ def compute_har_features(weekly_df: pd.DataFrame) -> pd.DataFrame:
     df["har_w"] = (
         df["range_pct"]
         .shift(2)
-        .rolling(4, min_periods=2)
+        .rolling(5, min_periods=3)
         .mean()
     )
 
