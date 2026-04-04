@@ -454,19 +454,14 @@ def run_full_pipeline(
     log.info(f"Loaded {len(df)} feature rows for modeling")
 
     # --- Determine if GEX is available ---
-    # Use continuous gex_normalized instead of binary gex_flag for richer signal
+    # Use continuous gex_normalized for richer signal than the deprecated binary gex_flag
     # BUG FIX: use a local copy of the feature list instead of mutating the global
-    gex_continuous_available = "gex_normalized" in df.columns and df["gex_normalized"].notna().sum() > 20
-    gex_flag_available = df["gex_flag"].notna().sum() > 20
+    gex_available = "gex_normalized" in df.columns and df["gex_normalized"].notna().sum() > 20
     local_specs = {k: list(v) for k, v in MODEL_SPECS.items()}
-    if gex_continuous_available:
+    if gex_available:
         log.info("GEX data available — adding gex_normalized (continuous) to M4_full")
         if "gex_normalized" not in local_specs["M4_full"]:
             local_specs["M4_full"].append("gex_normalized")
-    elif gex_flag_available:
-        log.info("GEX continuous data sparse — falling back to binary gex_flag for M4_full")
-        if "gex_flag" not in local_specs["M4_full"]:
-            local_specs["M4_full"].append("gex_flag")
     else:
         log.info("GEX data sparse — GEX features excluded from M4_full")
 

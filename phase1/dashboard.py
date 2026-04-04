@@ -833,11 +833,11 @@ def build_expected_move_html(em_info):
                 f"<div class='status-line' style='color:#bbb;font-size:9px;line-height:1.4;margin:2px 0 4px 0;'>"
                 f"{cl['description']}</div>"
             )
-        if cl.get("favored_strategies"):
-            strats = ", ".join(cl["favored_strategies"])
+        if cl.get("historical_tendencies"):
+            tendency = cl["historical_tendencies"][0]
             parts.append(
-                f"<div class='status-line'><b>Favored:</b> "
-                f"<span style='color:#cfd3ff;'>{strats}</span></div>"
+                f"<div class='status-line'><b>Tendency:</b> "
+                f"<span style='color:#cfd3ff;'>{tendency}</span></div>"
             )
 
     # Zero gamma context

@@ -51,3 +51,20 @@ def test_compute_time_to_expiry_zero_after_close_without_floor():
 
     assert close_dt.tzinfo is not None
     assert y == 0.0
+
+
+def test_good_friday_expiration_uses_thursday_close():
+    """Good Friday 2026-04-03: market closed. Expiration should use Thursday's close."""
+    # From Thursday 2 PM, expiring Good Friday
+    ts = datetime(2026, 4, 2, 14, 0, tzinfo=NY)
+    close_dt = get_expiration_close_dt("2026-04-03")
+
+    # Close should be on Thursday, not Friday
+    assert close_dt.weekday() == 3  # Thursday
+    assert close_dt.day == 2  # April 2
+
+    # T should be small (only remaining Thursday trading hours)
+    T, _ = compute_time_to_expiry_years("2026-04-03", ts=ts, floor=0.0)
+    # Should be ~2.25 hours / (252*6.5 hours/year) ≈ 0.00137 years
+    assert T < 0.005  # less than ~1.8 days
+    assert T > 0.0    # still positive (before close)

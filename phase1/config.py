@@ -6,8 +6,12 @@ NY_TZ = ZoneInfo("America/New_York")
 CASH_CALENDAR = "NYSE"
 OPTIONS_CALENDAR = "CBOE_Index_Options"
 
-# Main strike filter around spot
+# Main strike filter for GEX bar chart display
 STRIKE_RANGE_PCT = 0.05
+
+# Wider range for computation (all_options used in sweep/profile/scenarios)
+# Captures deep OTM put gamma relevant during tail events
+COMPUTATION_RANGE_PCT = 0.08
 
 # Heatmap config
 HEATMAP_EXPS = 7
@@ -24,8 +28,8 @@ ZG_SWEEP_MIN_RANGE_PCT = 0.03
 ZG_SWEEP_MAX_RANGE_PCT = 0.12
 ZG_SWEEP_IV_SCALE = 1.5
 
-# Profile curve config
-PROFILE_RANGE_PCT = 0.05
+# Profile curve config (widest range — shows full gamma landscape)
+PROFILE_RANGE_PCT = 0.10
 PROFILE_STEP = 1.0
 
 # Time floor: 1 minute in years
@@ -102,6 +106,7 @@ def build_config_snapshot() -> dict:
         "cash_calendar": CASH_CALENDAR,
         "options_calendar": OPTIONS_CALENDAR,
         "strike_range_pct": STRIKE_RANGE_PCT,
+        "computation_range_pct": COMPUTATION_RANGE_PCT,
         "heatmap_exps": HEATMAP_EXPS,
         "heatmap_strikes": HEATMAP_STRIKES,
         "zg_sweep_range_pct": ZG_SWEEP_RANGE_PCT,

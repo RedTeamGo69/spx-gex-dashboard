@@ -216,44 +216,68 @@ _DAY_CLASSIFICATIONS = {
     ("low", "positive"):  {
         "label": "Pin Day",
         "description": (
-            "Small overnight move + positive gamma. Dealers hedge against movement. "
-            "Price tends to oscillate around major strikes. Volatility sellers often do well."
+            "Small overnight move + positive gamma. Dealer hedging tends to suppress volatility. "
+            "Historically correlated with tighter intraday ranges and mean-reverting price action near major strikes."
         ),
         "bias": "range-bound",
-        "favored_strategies": ["premium selling", "iron condors", "iron butterflies"],
+        "historical_tendencies": [
+            "historically correlated with range-bound, mean-reverting price action",
+            "dealer hedging tends to create support/resistance at GEX walls",
+            "lower realized vol relative to implied",
+        ],
+        "confidence_note": "This is a probabilistic tendency, not a guarantee. Confirm with price action at the open.",
     },
     ("low", "negative"):  {
         "label": "Trend Day",
         "description": (
-            "Small overnight move + negative gamma. Volatility budget is intact and dealer "
-            "hedging reinforces directional moves. Higher probability of sustained trend."
+            "Small overnight move + negative gamma. Most of the expected move budget remains available "
+            "and dealer hedging can reinforce directional moves. Historically correlated with wider intraday ranges."
         ),
         "bias": "directional",
-        "favored_strategies": ["directional spreads", "trend following", "debit spreads"],
+        "historical_tendencies": [
+            "historically correlated with wider intraday ranges and sustained moves",
+            "dealer hedging may amplify directional flow",
+            "breakouts from the open tend to have more follow-through",
+        ],
+        "confidence_note": "Trend days are identified probabilistically. The direction is unknown — watch the first 30 min.",
     },
     ("high", "positive"): {
         "label": "Exhaustion Day",
         "description": (
-            "Large overnight move + positive gamma. Most of the volatility budget is used. "
-            "Dealer hedging dampens further moves. Often produces tight ranges or pinning after the open."
+            "Large overnight move + positive gamma. A significant portion of the expected move "
+            "has already occurred. Dealer hedging tends to dampen further moves. "
+            "Historically correlated with tighter ranges after the open."
         ),
         "bias": "mean-revert",
-        "favored_strategies": ["premium selling", "fade extremes", "short strangles"],
+        "historical_tendencies": [
+            "historically correlated with fading of the overnight move",
+            "reduced intraday range as volatility budget is consumed",
+            "price may consolidate near the open or drift back toward prior close",
+        ],
+        "confidence_note": "Large overnight gaps can extend further on news catalysts. This classification reflects typical behavior, not certainty.",
     },
     ("high", "negative"): {
         "label": "Extension Day",
         "description": (
-            "Large overnight move + negative gamma. Despite spending much of the volatility budget, "
-            "dealer hedging amplifies movement. The session can still trend further, but manage risk carefully."
+            "Large overnight move + negative gamma. Despite consuming much of the expected move, "
+            "dealer hedging can amplify further movement. Historically the most volatile session type. "
+            "Exercise caution with position sizing."
         ),
         "bias": "continued-trend",
-        "favored_strategies": ["directional with tight stops", "protect existing positions"],
+        "historical_tendencies": [
+            "historically associated with the widest intraday ranges",
+            "dealer hedging may add fuel to directional moves",
+            "risk management is critical — stops and position sizing matter most",
+        ],
+        "confidence_note": "This is the highest-risk session type. Protect capital first.",
     },
 }
 
-# Thresholds for move ratio classification
-MOVE_RATIO_LOW_THRESHOLD = 0.40   # below 40% of EM = "low" overnight move
-MOVE_RATIO_HIGH_THRESHOLD = 0.70  # above 70% of EM = "high" overnight move
+# Thresholds for move ratio classification.
+# These can be refined by running: python -m range_finder.session_backtest
+# The backtest grid-searches over threshold pairs using historical SPX + VIX data.
+MOVE_RATIO_LOW_THRESHOLD = 0.35   # below 35% of EM = "low" overnight move
+MOVE_RATIO_HIGH_THRESHOLD = 0.65  # above 65% of EM = "high" overnight move
 
 
 def classify_session(
@@ -276,7 +300,8 @@ def classify_session(
             "gamma_bucket": None,
             "description": "Insufficient data to classify the session.",
             "bias": None,
-            "favored_strategies": [],
+            "historical_tendencies": [],
+            "confidence_note": "",
         }
 
     move_ratio = abs(overnight_move_pts) / expected_move_pts
@@ -313,7 +338,8 @@ def classify_session(
                 f"action near gamma levels to confirm direction."
             ),
             "bias": "uncertain",
-            "favored_strategies": ["wait for confirmation", "smaller position sizes"],
+            "historical_tendencies": ["no clear historical edge — wait for confirmation", "reduce position sizes"],
+            "confidence_note": "Moderate move ratios have the least predictive value. Let the first 30 minutes resolve ambiguity.",
         }
 
     key = (ratio_label, gamma_bucket)
@@ -326,7 +352,8 @@ def classify_session(
         "gamma_bucket": gamma_bucket,
         "description": info.get("description", ""),
         "bias": info.get("bias"),
-        "favored_strategies": info.get("favored_strategies", []),
+        "historical_tendencies": info.get("historical_tendencies", []),
+        "confidence_note": info.get("confidence_note", ""),
     }
 
 

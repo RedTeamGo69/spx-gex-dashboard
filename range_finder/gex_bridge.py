@@ -257,12 +257,12 @@ def adjust_spread_with_gex(
     if gex_ctx.gamma_regime.lower() == "positive":
         notes.append(
             "Positive GEX — dealer hedging suppresses moves. "
-            "Model buffer reduced by 0.1%. Range likely to stay contained."
+            "Spread buffer tightened proportionally to GEX magnitude."
         )
     elif gex_ctx.gamma_regime.lower() == "negative":
         notes.append(
             "Negative GEX — dealer hedging amplifies moves. "
-            "Model buffer widened by 0.3%. Exercise caution on position sizing."
+            "Spread buffer widened proportionally to GEX magnitude. Exercise caution on position sizing."
         )
 
     # Zero-gamma proximity warning
