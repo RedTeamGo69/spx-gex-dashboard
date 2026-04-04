@@ -103,12 +103,10 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     Returns:
         gex_df, heatmap_gex, heatmap_iv, stats, all_options
     """
-    # Wider range for all_options (used in sweep/profile/scenarios)
+    # Both bar chart and all_options use the same ±8% computation range
+    # so the chart shows the full gamma landscape including deep OTM tails
     lower = spot * (1 - COMPUTATION_RANGE_PCT)
     upper = spot * (1 + COMPUTATION_RANGE_PCT)
-    # Narrower range for bar chart display
-    display_lower = spot * (1 - STRIKE_RANGE_PCT)
-    display_upper = spot * (1 + STRIKE_RANGE_PCT)
 
     now = now or datetime.now(NY_TZ)
     now_ny = now.astimezone(NY_TZ) if now.tzinfo is not None else now.replace(tzinfo=NY_TZ)
@@ -202,25 +200,20 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
             exp_iv.setdefault(K, []).append(model_iv)
 
             if exp in target_exps:
-                # Bar chart agg uses narrower display range
-                in_display = display_lower <= K <= display_upper
-                if in_display:
-                    if K not in agg:
-                        agg[K] = {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0.0, "put_oi": 0.0}
+                if K not in agg:
+                    agg[K] = {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0.0, "put_oi": 0.0}
 
                 if sign == +1:
-                    if in_display:
-                        agg[K]["call_gex"] += gex
-                        agg[K]["call_oi"] += oi
+                    agg[K]["call_gex"] += gex
+                    agg[K]["call_oi"] += oi
                     total_call_oi += oi
                     if oi > max_call_oi_strike[0]:
                         max_call_oi_strike = (oi, K)
                     if exp == target_exps[0]:
                         first_exp_call_ivs.append(model_iv)
                 else:
-                    if in_display:
-                        agg[K]["put_gex"] += gex
-                        agg[K]["put_oi"] += oi
+                    agg[K]["put_gex"] += gex
+                    agg[K]["put_oi"] += oi
                     total_put_oi += oi
                     if oi > max_put_oi_strike[0]:
                         max_put_oi_strike = (oi, K)
