@@ -2507,6 +2507,29 @@ def main():
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     with tab_profile:
+        with st.expander("How to read this chart"):
+            st.markdown("""
+**GEX Profile Curve — Total Gamma Exposure vs. Price**
+
+This chart shows the **total dealer gamma exposure** at each price level, summed across all strikes and expirations.
+
+- **X-axis** = Underlying price (SPX/XSP level)
+- **Y-axis** = Total net GEX proxy (sum of dealer gamma at that price)
+- **White dashed line** = Current spot price
+
+**Key levels marked on the chart:**
+- **Zero-Gamma (Zero-G)** — Where the curve crosses zero. This is the most important level:
+  - **Above Zero-G:** Dealers are long gamma (positive GEX). They hedge by buying dips and selling rips, which *suppresses* volatility. Price tends to mean-revert.
+  - **Below Zero-G:** Dealers are short gamma (negative GEX). They hedge by selling dips and buying rips, which *amplifies* moves. Price trends harder.
+- **Call Wall** — Strike with the largest positive call gamma. Acts as a resistance/ceiling — dealer hedging pushes price back down as it approaches.
+- **Put Wall** — Strike with the largest positive put gamma. Acts as a support/floor — dealer hedging pushes price back up as it approaches.
+
+**How to use it:**
+- **Tall positive peak near spot** = Strong mean-reversion zone. Good for selling credit spreads — price is "sticky" here.
+- **Curve near zero or negative around spot** = Weak support. Price can move freely. Be cautious with tight spreads.
+- **Steep slope near spot** = Small price moves cause large changes in dealer hedging. Expect choppy, range-bound action.
+- **Flat curve** = Dealers have little gamma exposure. Price moves are driven by order flow, not hedging.
+""")
         fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
         st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
