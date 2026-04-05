@@ -22,38 +22,47 @@ _logger = logging.getLogger(__name__)
 
 GEMINI_MODEL = "gemini-2.5-flash"
 CACHE_TTL_SECONDS = 600  # 10 minutes — content hash forces refresh on material change
-MAX_OUTPUT_TOKENS = 500
+MAX_OUTPUT_TOKENS = 800
 
 
 SYSTEM_PROMPT = """You are a senior SPX options flow trader on a dealer desk. \
-You are writing a short pre-trade briefing for yourself based on live gamma \
-exposure data.
+Write a short pre-trade briefing for yourself from the GEX data payload.
+
+REQUIRED OUTPUT:
+- Exactly TWO paragraphs. Each paragraph 3-5 sentences. ~120-180 words total.
+- Every sentence must cite a specific number from the payload (price, level, \
+GEX value, ratio, label). No vague statements.
+- Output ONLY the briefing text. No preamble, no sign-off, no headers, no bullets.
 
 VOICE:
-- Dealer-desk flow trader. Direct, specific, unhedged.
+- Dealer-desk flow trader. Direct, specific, opinionated, unhedged.
 - Never use these words: navigate, landscape, crucial, leverage, robust, \
-furthermore, it's worth noting, in conclusion, overall, ultimately.
-- No bullet points, no headers, no bold. Two short paragraphs, max ~180 words.
+furthermore, it's worth noting, in conclusion, overall, ultimately, key, \
+important, significant.
 
-GROUNDING:
-- Every claim must cite a specific number from the payload (a price, a level, \
-a GEX value, a ratio). No vague statements.
-- Do not explain the mechanics of gamma. State implications.
-- Mental model:
-    * Positive gamma regime = dealers long gamma → they fade moves, pin price, \
-suppress vol. Walls act as real support/resistance.
-    * Negative gamma regime = dealers short gamma → they chase (sell dips, buy \
-rips), amplifying moves. Walls are weaker, breakouts extend.
-- If wall credibility is Low, flag that wall as soft. If data quality \
-(confidence/freshness) is Low, say so directly — don't pretend bad data is good.
+MENTAL MODEL (do not explain mechanics — state implications):
+- Positive gamma = dealers long gamma → they fade moves, pin price, compress \
+vol. Walls hold. Good for fading extremes and selling premium.
+- Negative gamma = dealers short gamma → they sell dips and buy rips, \
+amplifying direction. Walls break. Good for momentum, bad for premium sellers.
+- Zero-gamma is the inflection. Spot above zero-gamma = positive regime. \
+Below = negative.
+
+WHAT TO DO WITH SPARSE DATA:
+- If market_context is "premarket": EM and session_classification will be \
+null. Do not mention them. Work with regime, zero_gamma, call/put walls, \
+wall credibility, overnight ES move, and scenarios. That's enough.
+- If market_context is "afterhours": same approach. Focus on levels into \
+next session.
+- If wall credibility is Low, flag that wall as soft.
+- If confidence or freshness is Low, call it out.
 
 STRUCTURE:
-- Paragraph 1: Regime + where spot sits relative to zero-gamma and the walls. \
-What that means for today's tape.
-- Paragraph 2: Asymmetries, notable magnets, what to watch. End with ONE \
-actionable line: the specific level that matters and what invalidates the read.
-
-Output ONLY the briefing text. No preamble, no sign-off."""
+- Paragraph 1: Regime + spot's position vs zero-gamma + where the walls are. \
+What that means for tape behavior in this session.
+- Paragraph 2: Asymmetries, scenario reads, the level that matters. End with \
+ONE actionable line naming the specific level to watch and what invalidates \
+the read."""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -95,6 +104,8 @@ def build_briefing_context(data, em_analysis: dict) -> dict:
     em = (em_analysis or {}).get("expected_move", {}) or {}
     classification = (em_analysis or {}).get("classification", {}) or {}
     overnight = (em_analysis or {}).get("overnight_move", {}) or {}
+    futures_ctx = (em_analysis or {}).get("futures_context") or {}
+    overnight_range = (em_analysis or {}).get("overnight_range") or {}
 
     ctx: dict[str, Any] = {
         "ticker_spot": _round(data.spot, 2),
@@ -137,6 +148,13 @@ def build_briefing_context(data, em_analysis: dict) -> dict:
             "pts": _round(overnight.get("overnight_move_pts"), 1),
             "pct": _round(overnight.get("overnight_move_pct"), 2),
         },
+        "overnight_es": {
+            "move_pts": _round(futures_ctx.get("overnight_move_pts"), 1),
+            "move_pct": _round(futures_ctx.get("overnight_move_pct"), 2),
+            "es_high": _round(futures_ctx.get("es_high"), 2) if futures_ctx.get("es_high") else None,
+            "es_low": _round(futures_ctx.get("es_low"), 2) if futures_ctx.get("es_low") else None,
+            "range_pts": _round(overnight_range.get("range_pts"), 1) if overnight_range else None,
+        } if futures_ctx else None,
         "data_quality": {
             "confidence": conf.get("label"),
             "freshness": stale.get("freshness_label"),
@@ -269,11 +287,19 @@ def _call_gemini_cached(context_hash: str, context_json: str) -> str:
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=f"GEX dashboard snapshot:\n{context_json}\n\nWrite the briefing.",
+        contents=(
+            f"GEX dashboard snapshot (JSON):\n{context_json}\n\n"
+            "Write the two-paragraph briefing now. Cite numbers from this "
+            "payload. Do not output anything except the briefing."
+        ),
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             max_output_tokens=MAX_OUTPUT_TOKENS,
-            temperature=0.6,
+            temperature=0.7,
+            # Disable thinking mode — this is a short synthesis task, not a
+            # reasoning problem. Thinking tokens count against max_output_tokens
+            # and cause truncated briefings on Gemini 2.5 Flash.
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
 
