@@ -1593,9 +1593,10 @@ def _get_rf_conn():
 def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> dict:
     """Build a strike→{call_bid, call_ask, put_bid, put_ask} lookup from cached chain data.
 
-    Uses the nearest weekly expiration (typically the next Friday) from the
-    chain cache so the spread finder can use actual market bid/ask prices
-    instead of theoretical BSM estimates.
+    Selects the cached expiration closest to ~5 trading days out (the next
+    weekly expiration the spread finder targets), so bid/ask prices reflect
+    the correct time-to-expiry.  Falls back to nearer expirations if the
+    weekly isn't cached.
     """
     if not data.chain_cache:
         return {}
@@ -1607,13 +1608,27 @@ def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> dict:
     if not cached_exps:
         return {}
 
-    # Pick the nearest expiration that is >= today (next weekly)
-    from datetime import date as date_cls
-    today_str = date_cls.today().isoformat()
+    # Target: expiration closest to 5 calendar days from now (next weekly Friday)
+    from datetime import date as date_cls, timedelta
+    today = date_cls.today()
+    today_str = today.isoformat()
     future_exps = [e for e in cached_exps if e >= today_str]
-    # For spread finder we want a weekly expiration ~5 DTE.
-    # Pick the first future expiration, or the last available if all are past (market closed)
-    target_exp = future_exps[0] if future_exps else cached_exps[-1]
+
+    if not future_exps:
+        # All expirations are in the past (e.g. after market close on Friday)
+        # Use the most recent one
+        target_exp = cached_exps[-1]
+    else:
+        # Find the expiration closest to ~5-7 calendar days out
+        # This targets the next weekly Friday, skipping 0DTE/1DTE
+        target_date = today + timedelta(days=7)
+        target_exp = min(future_exps, key=lambda e: abs((date_cls.fromisoformat(e) - target_date).days))
+
+        # If the best match is still 0DTE (only one expiration cached),
+        # use it rather than returning empty
+        if target_exp == today_str and len(future_exps) > 1:
+            # Prefer the next future expiration over 0DTE
+            target_exp = future_exps[1]
 
     entry = data.chain_cache.get((ticker, target_exp))
     if not entry or entry.get("status") != "ok":
@@ -1741,7 +1756,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 else:
                     st.success(f"SPX/VIX data refreshed — {len(df_spx)} weeks fetched, {rows_written} new")
             except Exception as e:
-                st.error(f"SPX/VIX fetch failed: {e}")
+                # yfinance often returns empty on weekends/holidays — downgrade to warning
+                if "empty" in str(e).lower() and datetime.today().weekday() >= 4:
+                    st.warning(f"SPX/VIX fetch returned empty data (expected on weekends/holidays). Existing data is still valid.")
+                else:
+                    st.error(f"SPX/VIX fetch failed: {e}")
 
         # Step 2: FRED macro data (optional — needs FRED_API_KEY)
         with st.spinner("Fetching FRED macro data..."):
