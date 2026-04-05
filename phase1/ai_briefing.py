@@ -269,11 +269,15 @@ def _template_briefing(context: dict) -> str:
 # Gemini API call (cached)
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
-def _call_gemini_cached(context_hash: str, context_json: str) -> str:
+def _call_gemini_cached(context_hash: str, _context_json: str) -> str:
     """
-    Cached Gemini call. context_hash is the cache key; context_json is the
-    actual payload sent to the model. API key is read from env/secrets
-    inside the function so it doesn't participate in cache hashing.
+    Cached Gemini call. context_hash is the ONLY cache key. _context_json is
+    the actual payload sent to the model — the leading underscore tells
+    Streamlit to skip it when computing the cache key, so minor jitter in
+    non-hash fields (GEX values, credibility scores, scenario prices) does
+    NOT invalidate the cache. Only the 10 material fields in context_hash
+    trigger a new API call. API key is read from env inside the function
+    so it doesn't participate in cache hashing either.
     """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -288,7 +292,7 @@ def _call_gemini_cached(context_hash: str, context_json: str) -> str:
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=(
-            f"GEX dashboard snapshot (JSON):\n{context_json}\n\n"
+            f"GEX dashboard snapshot (JSON):\n{_context_json}\n\n"
             "Write the two-paragraph briefing now. Cite numbers from this "
             "payload. Do not output anything except the briefing."
         ),
