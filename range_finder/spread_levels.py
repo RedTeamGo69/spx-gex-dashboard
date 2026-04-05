@@ -602,6 +602,85 @@ def build_spread_plan(
 
 
 # =============================================================================
+# RISK TIER BUILDER
+# =============================================================================
+
+@dataclass
+class SpreadTier:
+    """One risk tier of spreads (e.g. 'Effective Range', 'PI Upper', 'Point Est')."""
+    label:        str
+    risk_level:   str    # "conservative", "moderate", "aggressive"
+    range_pct:    float  # the range % this tier is based on
+    call_short:   float
+    put_short:    float
+    call_spreads: list[SpreadSide] = field(default_factory=list)
+    put_spreads:  list[SpreadSide] = field(default_factory=list)
+
+
+def build_spread_tiers(
+    forecast: dict,
+    plan: SpreadPlan,
+    spx_ref: float,
+    vix_level: float,
+    chain_quotes: dict = None,
+    wing_widths: list = None,
+    dte: int = 5,
+    ticker: str = "SPX",
+) -> list[SpreadTier]:
+    """Build spread tiers at multiple risk levels from the forecast.
+
+    Returns tiers from most aggressive (Point Estimate) to most conservative
+    (Effective Range + buffer), each with their own short strikes and spreads.
+    """
+    cfg = get_ticker_config(ticker)
+    if wing_widths is None:
+        wing_widths = cfg["wing_widths"]
+    increment = cfg["strike_increment"]
+
+    tiers_config = [
+        ("Point Estimate",   "aggressive",  forecast["point_pct"]),
+        ("Lower PI",         "aggressive",  forecast["lower_pct"]),
+        (f"{forecast['confidence_level']}% PI Upper", "moderate", forecast["upper_pct"]),
+        ("Effective (+buffer)", "conservative", plan.effective_range_pct),
+    ]
+
+    tiers = []
+    for label, risk, range_pct in tiers_config:
+        half = range_pct / 2
+        raw_call = spx_ref * (1 + half)
+        raw_put  = spx_ref * (1 - half)
+
+        call_short = round_call_short(raw_call, increment=increment)
+        put_short  = round_put_short(raw_put, increment=increment)
+
+        if chain_quotes:
+            call_short = _snap_to_chain_strike(call_short, chain_quotes, "call", direction="up")
+            put_short  = _snap_to_chain_strike(put_short, chain_quotes, "put", direction="down")
+
+        if chain_quotes:
+            cw = _available_wing_widths(call_short, chain_quotes, "call", wing_widths)
+            pw = _available_wing_widths(put_short, chain_quotes, "put", wing_widths)
+        else:
+            cw = wing_widths
+            pw = wing_widths
+
+        call_spreads = build_spread_side("call", call_short, cw, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+        put_spreads  = build_spread_side("put",  put_short,  pw, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+
+        tiers.append(SpreadTier(
+            label       = label,
+            risk_level  = risk,
+            range_pct   = range_pct,
+            call_short  = call_short,
+            put_short   = put_short,
+            call_spreads= call_spreads,
+            put_spreads = put_spreads,
+        ))
+
+    return tiers
+
+
+# =============================================================================
 # PERSISTENCE
 # =============================================================================
 

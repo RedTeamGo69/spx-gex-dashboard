@@ -67,11 +67,13 @@ from range_finder.har_model import (
 )
 from range_finder.spread_levels import (
     build_spread_plan as rf_build_spread_plan,
+    build_spread_tiers as rf_build_spread_tiers,
     log_spread_plan as rf_log_spread_plan,
     update_outcome as rf_update_outcome,
     STANDARD_WING_WIDTHS as RF_WING_WIDTHS,
     TICKER_CONFIG as RF_TICKER_CONFIG,
     SpreadPlan,
+    SpreadTier,
 )
 
 _logger = logging.getLogger(__name__)
@@ -1890,6 +1892,16 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         chain_quotes= chain_quotes,
     )
 
+    # ── Build risk tiers ──
+    spread_tiers = rf_build_spread_tiers(
+        forecast     = forecast,
+        plan         = plan,
+        spx_ref      = spx_close_input,
+        vix_level    = vix_input,
+        chain_quotes = chain_quotes,
+        ticker       = ticker,
+    )
+
     # ── GEX enhancement ──
     gex_adj = adjust_spread_with_gex(plan, gex_ctx)
 
@@ -1944,25 +1956,42 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     st.markdown("---")
 
     # =========================================================================
-    # SPREAD TABLES
+    # SPREAD TABLES — RISK TIERS
     # =========================================================================
 
-    st.markdown("**Spread Parameters**")
+    st.markdown("**Spread Parameters by Risk Tier**")
 
-    col_call, col_put = st.columns(2)
+    _TIER_COLORS = {
+        "aggressive":   "#ff4b4b",   # red
+        "moderate":     "#ffa726",   # orange
+        "conservative": "#66bb6a",   # green
+    }
 
-    with col_call:
-        st.markdown(f"Call Spreads — short above `{plan.effective_upper_px:,.0f}`")
-        _render_sf_spread_table(plan.call_spreads, wing_width)
+    tier_tabs = st.tabs([t.label for t in spread_tiers])
 
-    with col_put:
-        st.markdown(f"Put Spreads — short below `{plan.effective_lower_px:,.0f}`")
-        _render_sf_spread_table(plan.put_spreads, wing_width)
+    for tab, tier in zip(tier_tabs, spread_tiers):
+        with tab:
+            tier_color = _TIER_COLORS.get(tier.risk_level, "#888")
+            st.markdown(
+                f"<span style='color:{tier_color};font-weight:bold;'>{tier.risk_level.upper()}</span>"
+                f" &nbsp;—&nbsp; Range: {tier.range_pct*100:.2f}%",
+                unsafe_allow_html=True,
+            )
+
+            col_call, col_put = st.columns(2)
+
+            with col_call:
+                st.markdown(f"Call Spreads — short above `{tier.call_short:,.0f}`")
+                _render_sf_spread_table(tier.call_spreads, wing_width)
+
+            with col_put:
+                st.markdown(f"Put Spreads — short below `{tier.put_short:,.0f}`")
+                _render_sf_spread_table(tier.put_spreads, wing_width)
 
     # Show credit source note with chain expiration
-    all_spreads = plan.call_spreads + plan.put_spreads
-    has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_spreads)
-    has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_spreads)
+    all_tier_spreads = [s for t in spread_tiers for s in t.call_spreads + t.put_spreads]
+    has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_tier_spreads)
+    has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_tier_spreads)
     exp_note = f" Chain: {chain_exp}" if chain_exp else ""
     if has_market and has_bsm:
         st.caption(f"Credits from Friday chain bid/ask.{exp_note} &nbsp;|&nbsp; * = BSM estimate (strike not in chain).")
