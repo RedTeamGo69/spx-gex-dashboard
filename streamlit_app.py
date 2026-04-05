@@ -35,6 +35,7 @@ from phase1.expected_move import (
     find_weekly_expiration, find_monthly_expiration,
 )
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
+from phase1.ai_briefing import build_briefing_context, generate_briefing
 from phase1.gex_history import (
     save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history,
     get_backend as get_history_backend, check_db_connection,
@@ -238,11 +239,13 @@ def get_credentials():
     """Pull API keys from Streamlit secrets, env vars, or sidebar input."""
     tradier_token = ""
     fred_key = ""
+    gemini_key = ""
 
     # Try st.secrets first (for Streamlit Cloud deployment)
     try:
         tradier_token = st.secrets.get("TRADIER_TOKEN", "")
         fred_key = st.secrets.get("FRED_API_KEY", "")
+        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
         pass
 
@@ -251,8 +254,15 @@ def get_credentials():
         tradier_token = os.environ.get("TRADIER_TOKEN", "")
     if not fred_key:
         fred_key = os.environ.get("FRED_API_KEY", "")
+    if not gemini_key:
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
-    return tradier_token, fred_key
+    # Push Gemini key into env so the cached briefing function can read it
+    # without the key participating in cache hashing.
+    if gemini_key:
+        os.environ["GEMINI_API_KEY"] = gemini_key
+
+    return tradier_token, fred_key, gemini_key
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2460,7 +2470,7 @@ def main():
     st.title("📊 Gamma Exposure Dashboard")
     st.caption(f"GEX Calculator {TOOL_VERSION} — Implied spot | Zero gamma sweep | Expected move | Hybrid IV")
 
-    tradier_token, fred_key = get_credentials()
+    tradier_token, fred_key, gemini_key = get_credentials()
 
     # ── Sidebar controls ──
     with st.sidebar:
@@ -2838,6 +2848,30 @@ def main():
                 '</div>'
             )
             st.markdown(range_html, unsafe_allow_html=True)
+
+    # ── AI Trading Briefing ──
+    with st.expander("🧠 AI Briefing", expanded=True):
+        if not gemini_key:
+            st.caption(
+                "Set `GEMINI_API_KEY` in Streamlit secrets or env var to enable "
+                "the AI briefing. Falls back to a templated briefing without a key."
+            )
+        try:
+            _brief_ctx = build_briefing_context(data, em_analysis)
+            _brief_text, _brief_source = generate_briefing(_brief_ctx)
+            st.markdown(_brief_text)
+            _src_color = COLORS["text_muted"] if _brief_source == "gemini" else COLORS["warning"]
+            st.markdown(
+                f"<div style='font-size:10px;color:{_src_color};margin-top:6px;'>"
+                f"source: {_brief_source} · model: gemini-2.5-flash"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        except Exception as _brief_err:
+            st.caption(f"Briefing unavailable: {_brief_err}")
+        if st.button("🔄 Regenerate briefing", key="regen_briefing"):
+            st.cache_data.clear()
+            st.rerun()
 
     # ── Charts ──
     tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface, tab_spread_finder = st.tabs(
