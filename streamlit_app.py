@@ -2621,7 +2621,18 @@ def main():
 
     futures_ctx = None
     if es_last and es_last > 0 and prev_close > 0:
-        futures_ctx = build_futures_context(es_last, es_high, es_low, prev_close, source=es_source)
+        # XSP trades at 1/10 the scale of SPX. ES futures track SPX, so
+        # scale ES down by 10 when the dashboard is set to XSP — otherwise
+        # the overnight move math compares apples to oranges.
+        if ticker == "XSP":
+            es_last_scaled = es_last / 10.0
+            es_high_scaled = (es_high / 10.0) if es_high else None
+            es_low_scaled = (es_low / 10.0) if es_low else None
+            futures_ctx = build_futures_context(
+                es_last_scaled, es_high_scaled, es_low_scaled, prev_close, source=es_source
+            )
+        else:
+            futures_ctx = build_futures_context(es_last, es_high, es_low, prev_close, source=es_source)
 
     # ── Build EM analysis (fresh each render, not cached) ──
     em_analysis = build_expected_move_analysis(
