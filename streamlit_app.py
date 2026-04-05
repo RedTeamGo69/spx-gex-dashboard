@@ -1668,6 +1668,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
     import sqlite3
     import yfinance as yf
+    from phase1.market_clock import now_ny
 
     ticker_cfg = RF_TICKER_CONFIG.get(ticker, RF_TICKER_CONFIG["SPX"])
 
@@ -1683,14 +1684,68 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             st.session_state["_sf_live_vix"] = 18.0
     live_vix = st.session_state["_sf_live_vix"]
 
+    # ── Monday open freeze logic ──
+    # On the weekly freeze day (Monday or Tue after holiday) at market open,
+    # capture spot as the weekly reference. Rest of the week uses that frozen value.
+    # Before Monday open (weekends), use the live spot (Friday close).
+    run_now = now_ny()
+    is_freeze_day = _is_weekly_freeze_day(run_now)
+    is_market_open = data.market_open
+
+    mon_open_key = f"sf_monday_open_{ticker}"
+    mon_open_week_key = f"sf_monday_open_week_{ticker}"
+
+    # Determine which week we're in (use ISO week number)
+    current_week = run_now.isocalendar()[1]
+
+    # Freeze Monday's open on the freeze day when market is open
+    if is_freeze_day and is_market_open:
+        stored_week = st.session_state.get(mon_open_week_key)
+        if stored_week != current_week:
+            # First market-hours refresh on the freeze day — lock the open price
+            st.session_state[mon_open_key] = round(spot, 2)
+            st.session_state[mon_open_week_key] = current_week
+
+    # Determine the reference price and its source label
+    frozen_open = st.session_state.get(mon_open_key)
+    frozen_week = st.session_state.get(mon_open_week_key)
+
+    if frozen_week == current_week and frozen_open:
+        default_ref = frozen_open
+        ref_source = "Mon open (frozen)"
+    else:
+        # Try to restore Monday open from the weekly EM snapshot in Postgres
+        restored_open = None
+        if run_now.weekday() < 5:  # weekday — might have a saved Monday open
+            try:
+                weekly_date_key = get_weekly_em_date_key(run_now)
+                db_em = get_em_snapshot(weekly_date_key, ticker=ticker, em_type="weekly")
+                if db_em and db_em.get("anchor_spot"):
+                    restored_open = db_em["anchor_spot"]
+                    st.session_state[mon_open_key] = restored_open
+                    st.session_state[mon_open_week_key] = current_week
+            except Exception:
+                pass
+
+        if restored_open:
+            default_ref = restored_open
+            ref_source = "Mon open (from DB)"
+        else:
+            default_ref = round(spot, 2)
+            ref_source = "Fri close" if run_now.weekday() >= 5 else "live spot"
+
     # ── Auto-update reference price and VIX when ticker changes ──
     ref_key = f"sf_ref_price_{ticker}"
     vix_key = f"sf_vix_level_{ticker}"
     prev_ticker = st.session_state.get("_sf_prev_ticker")
     if prev_ticker != ticker:
-        st.session_state[ref_key] = round(spot, 2)
+        st.session_state[ref_key] = default_ref
         st.session_state[vix_key] = live_vix
         st.session_state["_sf_prev_ticker"] = ticker
+
+    # Also update the default on first render if not yet set
+    if ref_key not in st.session_state:
+        st.session_state[ref_key] = default_ref
 
     st.markdown(f"### {ticker} Weekly Credit Spread Finder")
     from range_finder.db import get_backend as rf_get_backend
@@ -1707,9 +1762,10 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     with col_ctrl1:
         step_size = ticker_cfg["strike_increment"]
         spx_close_input = st.number_input(
-            f"{ticker} Reference",
-            min_value=100.0, max_value=15000.0, value=round(spot, 2), step=float(step_size),
-            help="Reference price for range calculation (auto-filled from live spot)",
+            f"{ticker} Reference ({ref_source})",
+            min_value=100.0, max_value=15000.0, value=default_ref, step=float(step_size),
+            help=f"Reference price for range calculation. Source: {ref_source}. "
+                 "Frozen at Monday's open on the first market-hours refresh of the week.",
             key=ref_key,
         )
 
