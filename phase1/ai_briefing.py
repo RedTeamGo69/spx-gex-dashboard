@@ -309,10 +309,61 @@ def _call_gemini_cached(context_hash: str, context_json: str) -> str:
     return text
 
 
+def _classify_error(exc: Exception) -> str:
+    """
+    Translate an exception into a short, human-useful label for the
+    briefing source tag. Returns something like "rate limit — retry in
+    ~60s" or "quota exhausted" instead of raw exception type names.
+    """
+    name = type(exc).__name__
+    msg = str(exc).lower()
+
+    # Missing key (we raise RuntimeError for this)
+    if name == "RuntimeError" and "gemini_api_key" in msg:
+        return "no API key — set GEMINI_API_KEY"
+    if name == "RuntimeError" and "empty response" in msg:
+        return "empty response — try Regenerate"
+
+    # google-genai SDK errors carry HTTP status in the message or .code
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    code_str = str(code) if code is not None else ""
+
+    # 429 — rate limit / quota
+    if "429" in msg or "429" in code_str or "resource_exhausted" in msg or "rate" in msg:
+        # Distinguish daily quota vs per-minute rate limit when we can
+        if "daily" in msg or "per day" in msg or "rpd" in msg:
+            return "daily quota hit — resets at midnight PT"
+        if "quota" in msg and "exceeded" in msg:
+            return "quota hit — retry in ~60s"
+        return "rate limit — retry in ~60s"
+
+    # 400 — bad request
+    if "400" in msg or "400" in code_str or "invalid_argument" in msg:
+        return "bad request — check payload"
+
+    # 401 / 403 — auth
+    if "401" in msg or "403" in msg or "unauthenticated" in msg or "permission_denied" in msg:
+        return "auth error — check API key"
+
+    # 404 — model not found
+    if "404" in msg or "not_found" in msg:
+        return "model not found"
+
+    # 500 / 503 — server side
+    if "500" in msg or "503" in msg or "unavailable" in msg or "internal" in msg:
+        return "Gemini server error — retry soon"
+
+    # Network / timeout
+    if "timeout" in msg or "timed out" in msg or "connection" in msg:
+        return "network error — check connection"
+
+    return f"api error ({name})"
+
+
 def generate_briefing(context: dict) -> tuple[str, str]:
     """
     Produce a briefing. Returns (briefing_text, source) where source is
-    one of: "gemini", "template", "template (api_error)".
+    one of: "gemini", a classified error label, or "error".
     """
     try:
         ctx_hash = compute_context_hash(context)
@@ -320,9 +371,10 @@ def generate_briefing(context: dict) -> tuple[str, str]:
         text = _call_gemini_cached(ctx_hash, ctx_json)
         return text, "gemini"
     except Exception as e:
-        _logger.warning(f"Gemini briefing failed, falling back to template: {e}")
+        label = _classify_error(e)
+        _logger.warning(f"Gemini briefing failed ({label}): {e}")
         try:
-            return _template_briefing(context), f"template ({type(e).__name__})"
+            return _template_briefing(context), f"template — {label}"
         except Exception as e2:
             _logger.error(f"Template briefing failed: {e2}")
             return "Briefing unavailable.", "error"
