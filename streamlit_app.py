@@ -2013,7 +2013,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     st.markdown("---")
 
     # =========================================================================
-    # RISK TIER SELECTOR + RANGE GAUGE
+    # RISK TIER SELECTOR (full width above charts)
     # =========================================================================
 
     _TIER_COLORS = {
@@ -2022,45 +2022,37 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         "conservative": "#66bb6a",
     }
 
-    col_gauge, col_tier_select = st.columns([1, 1])
+    tier_labels = [t.label for t in spread_tiers]
+    default_idx = len(tier_labels) - 1
+    selected_tier_idx = st.radio(
+        "Risk Tier",
+        range(len(tier_labels)),
+        format_func=lambda i: f"{tier_labels[i]}  ({spread_tiers[i].range_pct*100:.1f}%)",
+        index=default_idx,
+        key=f"sf_risk_tier_{ticker}",
+        horizontal=True,
+    )
+
+    selected_tier = spread_tiers[selected_tier_idx]
+    tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
+    st.markdown(
+        f"<span style='color:{tier_color};font-size:18px;font-weight:bold;'>"
+        f"{selected_tier.risk_level.upper()}</span>"
+        f" &nbsp;—&nbsp; Range: {selected_tier.range_pct*100:.2f}%"
+        f" &nbsp;|&nbsp; Calls above `{selected_tier.call_short:,.0f}`"
+        f" &nbsp;|&nbsp; Puts below `{selected_tier.put_short:,.0f}`",
+        unsafe_allow_html=True,
+    )
+
+    # =========================================================================
+    # RANGE GAUGE + STRIKE MAP (side by side)
+    # =========================================================================
+
+    col_gauge, col_strikes = st.columns([1, 1])
 
     with col_gauge:
         st.markdown("**Range Distribution**")
         _render_sf_range_gauge(forecast, plan, spx_close_input)
-
-    with col_tier_select:
-        st.markdown("**Risk Tier**")
-        tier_labels = [t.label for t in spread_tiers]
-        # Default to the conservative tier (last one)
-        default_idx = len(tier_labels) - 1
-        selected_tier_idx = st.radio(
-            "Select risk level",
-            range(len(tier_labels)),
-            format_func=lambda i: f"{tier_labels[i]}  ({spread_tiers[i].range_pct*100:.1f}%)",
-            index=default_idx,
-            key=f"sf_risk_tier_{ticker}",
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-
-        selected_tier = spread_tiers[selected_tier_idx]
-        tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
-        st.markdown(
-            f"<span style='color:{tier_color};font-size:18px;font-weight:bold;'>"
-            f"{selected_tier.risk_level.upper()}</span>"
-            f" &nbsp;—&nbsp; Range: {selected_tier.range_pct*100:.2f}%"
-            f" &nbsp;|&nbsp; Calls above `{selected_tier.call_short:,.0f}`"
-            f" &nbsp;|&nbsp; Puts below `{selected_tier.put_short:,.0f}`",
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
-
-    # =========================================================================
-    # STRIKE MAP + SPREAD TABLES (for selected tier)
-    # =========================================================================
-
-    col_strikes, col_spacer = st.columns([1, 1])
 
     with col_strikes:
         st.markdown("**Strike Map with GEX Walls**")
