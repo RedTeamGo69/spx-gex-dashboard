@@ -136,6 +136,7 @@ class GEXData:
     dte0_puts: list
     market_open: bool
     yahoo_es: dict | None
+    chain_cache: dict | None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,6 +365,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         dte0_puts=dte0_puts,
         market_open=bool(spot_info.get("market_open")),
         yahoo_es=yahoo_es,
+        chain_cache=dict(client.chain_cache),
     )
 
 
@@ -1588,6 +1590,54 @@ def _get_rf_conn():
     return conn
 
 
+def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> dict:
+    """Build a strike→{call_bid, call_ask, put_bid, put_ask} lookup from cached chain data.
+
+    Uses the nearest weekly expiration (typically the next Friday) from the
+    chain cache so the spread finder can use actual market bid/ask prices
+    instead of theoretical BSM estimates.
+    """
+    if not data.chain_cache:
+        return {}
+
+    # Find all cached expirations for this ticker, sorted by date
+    cached_exps = sorted(
+        exp for (t, exp) in data.chain_cache if t == ticker
+    )
+    if not cached_exps:
+        return {}
+
+    # Pick the nearest expiration that is >= today (next weekly)
+    from datetime import date as date_cls
+    today_str = date_cls.today().isoformat()
+    future_exps = [e for e in cached_exps if e >= today_str]
+    # For spread finder we want a weekly expiration ~5 DTE.
+    # Pick the first future expiration, or the last available if all are past (market closed)
+    target_exp = future_exps[0] if future_exps else cached_exps[-1]
+
+    entry = data.chain_cache.get((ticker, target_exp))
+    if not entry or entry.get("status") != "ok":
+        return {}
+
+    quotes = {}  # strike -> {call_bid, call_ask, put_bid, put_ask}
+
+    for opt in entry.get("calls", []):
+        K = opt["strike"]
+        if K not in quotes:
+            quotes[K] = {}
+        quotes[K]["call_bid"] = opt.get("bid", 0.0) or 0.0
+        quotes[K]["call_ask"] = opt.get("ask", 0.0) or 0.0
+
+    for opt in entry.get("puts", []):
+        K = opt["strike"]
+        if K not in quotes:
+            quotes[K] = {}
+        quotes[K]["put_bid"] = opt.get("bid", 0.0) or 0.0
+        quotes[K]["put_ask"] = opt.get("ask", 0.0) or 0.0
+
+    return quotes
+
+
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX"):
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
     import sqlite3
@@ -1799,6 +1849,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         spx_close_input, alpha=RF_PI_ALPHA,
     )
 
+    # ── Extract chain quotes for market-based credit estimation ──
+    chain_quotes = _build_chain_quotes_for_spreads(data, ticker)
+
     # ── Build spread plan ──
     plan = rf_build_spread_plan(
         forecast    = forecast,
@@ -1806,6 +1859,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         week_start  = week_start,
         vix_level   = vix_input,
         ticker      = ticker,
+        chain_quotes= chain_quotes,
     )
 
     # ── GEX enhancement ──
@@ -1876,6 +1930,17 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     with col_put:
         st.markdown(f"Put Spreads — short below `{plan.effective_lower_px:,.0f}`")
         _render_sf_spread_table(plan.put_spreads, wing_width)
+
+    # Show credit source note
+    all_spreads = plan.call_spreads + plan.put_spreads
+    has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_spreads)
+    has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_spreads)
+    if has_market and has_bsm:
+        st.caption("Credits from live chain bid/ask. * = BSM estimate (strike not in chain).")
+    elif has_market:
+        st.caption("Credits from live chain bid/ask (short bid − long ask).")
+    else:
+        st.caption("Credits are BSM estimates (no chain data available). Verify with broker before trading.")
 
     # =========================================================================
     # GEX CONTEXT + WARNINGS
@@ -2088,7 +2153,7 @@ def _render_sf_spread_table(spreads, recommended_width: int):
             "Width": width_label,
             "Short": f"{s.short_strike:,.0f}",
             "Long": f"{s.long_strike:,.0f}",
-            "Est Credit": f"{s.estimated_credit:.2f}",
+            "Est Credit": f"{s.estimated_credit:.2f}" + (" *" if getattr(s, "credit_source", "bsm") == "bsm" else ""),
             "Max Loss $": f"${s.max_loss:,.0f}",
             "Breakeven": f"{s.breakeven:,.0f}",
             "Ratio": f"{s.credit_ratio:.1%}",

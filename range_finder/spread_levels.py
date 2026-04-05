@@ -108,6 +108,7 @@ class SpreadSide:
     estimated_credit: float
     meets_min_credit: bool
     below_min_width:  bool = False
+    credit_source:    str  = "bsm"   # "market" if from actual bid/ask, "bsm" if theoretical
 
 
 @dataclass
@@ -281,6 +282,21 @@ def estimate_credit(
 # SPREAD SIDE BUILDER
 # =============================================================================
 
+def _lookup_chain_price(chain_quotes: dict, strike: float, side: str, field: str) -> float | None:
+    """Look up bid/ask for a specific strike from chain data.
+
+    chain_quotes: {strike: {"call_bid": .., "call_ask": .., "put_bid": .., "put_ask": ..}}
+    Returns None if not found or zero.
+    """
+    if not chain_quotes:
+        return None
+    row = chain_quotes.get(strike)
+    if not row:
+        return None
+    val = row.get(f"{side}_{field}", 0.0)
+    return val if val and val > 0 else None
+
+
 def build_spread_side(
     side: str,
     short_strike: float,
@@ -288,8 +304,14 @@ def build_spread_side(
     spx_ref: float,
     vix: float,
     dte: int = 5,
+    chain_quotes: dict = None,
 ) -> list[SpreadSide]:
-    """Build SpreadSide objects for each offered wing width."""
+    """Build SpreadSide objects for each offered wing width.
+
+    If chain_quotes is provided, uses actual market bid/ask (natural prices:
+    short leg bid, long leg ask) for credit estimation. Falls back to BSM
+    when chain data is missing.
+    """
     results = []
 
     for width in wing_widths:
@@ -298,9 +320,22 @@ def build_spread_side(
         else:
             long_strike = short_strike - width
 
-        est_credit = estimate_credit(
-            short_strike, spx_ref, width, vix, dte, side
-        )
+        # Try to use actual market prices first
+        market_credit = None
+        if chain_quotes:
+            short_bid = _lookup_chain_price(chain_quotes, short_strike, side, "bid")
+            long_ask = _lookup_chain_price(chain_quotes, long_strike, side, "ask")
+            if short_bid is not None and long_ask is not None:
+                market_credit = round(max(0.0, short_bid - long_ask), 2)
+
+        if market_credit is not None:
+            est_credit = market_credit
+            source = "market"
+        else:
+            est_credit = estimate_credit(
+                short_strike, spx_ref, width, vix, dte, side
+            )
+            source = "bsm"
 
         max_profit  = round(est_credit * 100, 2)
         max_loss    = round((width - est_credit) * 100, 2)
@@ -327,6 +362,7 @@ def build_spread_side(
             credit_ratio    = round(credit_ratio, 4),
             estimated_credit= est_credit,
             meets_min_credit= meets_minimum,
+            credit_source   = source,
         ))
 
     return results
@@ -385,6 +421,7 @@ def build_spread_plan(
     spx_open: float = None,
     dte: int = 5,
     ticker: str = "SPX",
+    chain_quotes: dict = None,
 ) -> SpreadPlan:
     """Build a complete SpreadPlan from a forecast dict."""
     cfg = get_ticker_config(ticker)
@@ -442,8 +479,8 @@ def build_spread_plan(
     min_width = get_min_width(event_count, has_fomc, ticker=ticker)
 
     # --- Build spread sides for ALL widths (flag narrow ones) ---
-    call_spreads = build_spread_side("call", call_short, wing_widths, spx_ref, vix_level, dte)
-    put_spreads  = build_spread_side("put",  put_short,  wing_widths, spx_ref, vix_level, dte)
+    call_spreads = build_spread_side("call", call_short, wing_widths, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+    put_spreads  = build_spread_side("put",  put_short,  wing_widths, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
 
     for s in call_spreads + put_spreads:
         s.below_min_width = s.wing_width < min_width
