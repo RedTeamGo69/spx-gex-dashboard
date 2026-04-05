@@ -1718,22 +1718,35 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         default_vix = frozen_vix or live_vix
         ref_source = "Mon open (frozen)"
     else:
-        # Try to restore Monday open from the weekly EM snapshot in Postgres
+        # Try to restore Monday open + VIX from weekly_setup table
         restored_open = None
+        restored_vix = None
         if run_now.weekday() < 5:  # weekday — might have a saved Monday open
             try:
-                weekly_date_key = get_weekly_em_date_key(run_now)
-                db_em = get_em_snapshot(weekly_date_key, ticker=ticker, em_type="weekly")
-                if db_em and db_em.get("anchor_spot"):
-                    restored_open = db_em["anchor_spot"]
+                from datetime import timedelta as _td
+                days_since_monday = run_now.weekday()
+                monday = run_now - _td(days=days_since_monday)
+                week_start_str = monday.strftime("%Y-%m-%d")
+                rf_conn = _get_rf_conn()
+                cur = rf_conn.cursor()
+                cur.execute(
+                    "SELECT monday_open, monday_vix FROM weekly_setup WHERE week_start = ? AND ticker = ?",
+                    (week_start_str, ticker),
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    restored_open = row[0]
+                    restored_vix = row[1]
                     st.session_state[mon_open_key] = restored_open
+                    if restored_vix:
+                        st.session_state[mon_vix_key] = restored_vix
                     st.session_state[mon_open_week_key] = current_week
             except Exception:
                 pass
 
         if restored_open:
             default_ref = restored_open
-            default_vix = live_vix  # VIX not saved in DB yet, use latest
+            default_vix = restored_vix or live_vix
             ref_source = "Mon open (from DB)"
         else:
             default_ref = round(spot, 2)
