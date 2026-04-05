@@ -1224,7 +1224,7 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", 
 
 def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr, ticker="SPX"):
     """C3: Multi-timeframe GEX comparison — 0DTE vs Weekly vs Monthly."""
-    tradier_token, _ = get_credentials()
+    tradier_token, _, _ = get_credentials()
     if not tradier_token:
         st.info("API token required for multi-timeframe analysis.")
         return
