@@ -1797,23 +1797,29 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         )
 
     # Action buttons
-    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+    col_btn_main, col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1.3, 1, 1, 1, 1])
 
+    with col_btn_main:
+        do_weekly = st.button("Weekly Setup", key=f"sf_weekly_{ticker}", type="primary", use_container_width=True,
+                              help="Run all steps: Refresh → Rebuild → Save GEX → Forecast")
     with col_btn1:
-        do_refresh = st.button("Refresh Market Data", key=f"sf_refresh_{ticker}", use_container_width=True)
+        do_refresh = st.button("Refresh Data", key=f"sf_refresh_{ticker}", use_container_width=True)
     with col_btn2:
         do_rebuild = st.button("Rebuild Features", key=f"sf_rebuild_{ticker}", use_container_width=True)
     with col_btn3:
-        do_forecast = st.button("Generate Forecast", key=f"sf_forecast_{ticker}", type="primary", use_container_width=True)
+        do_save_gex = st.button("Save GEX", key=f"sf_save_gex_{ticker}", use_container_width=True)
     with col_btn4:
-        do_save_gex = st.button("Save GEX to Model", key=f"sf_save_gex_{ticker}", use_container_width=True)
+        do_forecast = st.button("Forecast", key=f"sf_forecast_{ticker}", use_container_width=True)
+
+    # Weekly Setup runs all four steps in sequence
+    if do_weekly:
+        do_refresh = do_rebuild = do_save_gex = do_forecast = True
 
     conn = _get_rf_conn()
 
-    # ── Handle data refresh ──
+    # ── Step 1: Refresh market data ──
     if do_refresh:
-        # Step 1: SPX/VIX from yfinance
-        with st.spinner("Fetching SPX / VIX weekly data from yfinance..."):
+        with st.spinner("1/4 — Fetching SPX / VIX weekly data..."):
             try:
                 df_spx = rf_fetch_spx_vix(years=3)
                 rows_written = rf_save_spx_vix(conn, df_spx)
@@ -1822,14 +1828,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 else:
                     st.success(f"SPX/VIX data refreshed — {len(df_spx)} weeks fetched, {rows_written} new")
             except Exception as e:
-                # yfinance often returns empty on weekends/holidays — downgrade to warning
                 if "empty" in str(e).lower() and datetime.today().weekday() >= 4:
                     st.warning(f"SPX/VIX fetch returned empty data (expected on weekends/holidays). Existing data is still valid.")
                 else:
                     st.error(f"SPX/VIX fetch failed: {e}")
 
-        # Step 2: FRED macro data (optional — needs FRED_API_KEY)
-        with st.spinner("Fetching FRED macro data..."):
+        with st.spinner("1/4 — Fetching FRED macro data..."):
             try:
                 df_macro = rf_fetch_fred_macro(years=3)
                 rf_save_fred_macro(conn, df_macro)
@@ -1837,18 +1841,18 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             except Exception as e:
                 st.warning(f"FRED fetch skipped: {e} (set FRED_API_KEY in secrets to enable)")
 
-        # Step 3: Event flags (fast, no network)
         rf_build_event_flags(conn)
 
+    # ── Step 2: Rebuild features ──
     if do_rebuild:
-        with st.spinner("Computing feature matrix..."):
+        with st.spinner("2/4 — Computing feature matrix..."):
             try:
                 rf_build_features(conn)
                 st.success("Features rebuilt")
             except Exception as e:
                 st.error(f"Feature rebuild failed: {e}")
 
-    # ── Save live GEX to range finder DB ──
+    # ── Step 3: Save live GEX ──
     if do_save_gex:
         try:
             gex_flag = save_gex_to_range_finder(gex_ctx, conn)
@@ -1859,7 +1863,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     st.markdown("---")
 
-    # ── Check data availability ──
+    # ── Check data availability (reload after rebuild if needed) ──
     try:
         df_feat = rf_get_features(conn)
     except Exception:
@@ -1875,8 +1879,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         return
 
     # ── Fit model or load from cache ──
+    # ── Step 4: Fit model and forecast ──
     if do_forecast:
-        with st.spinner(f"Fitting {model_choice}..."):
+        with st.spinner(f"4/4 — Fitting {model_choice}..."):
             try:
                 feat_cols = RF_MODEL_SPECS[model_choice]
                 avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
