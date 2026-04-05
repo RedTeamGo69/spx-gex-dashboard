@@ -1664,7 +1664,7 @@ def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> tuple[dict, s
     return quotes, target_exp
 
 
-def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX"):
+def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX", weekly_em: dict = None):
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
     import sqlite3
     import yfinance as yf
@@ -1983,7 +1983,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         _render_sf_strike_map_tier(
             selected_tier, plan, spx_close_input, gex_ctx,
             plan.recommended_width, ticker=ticker,
-            vix_implied_pct=forecast.get("vix_implied_pct", 0),
+            weekly_em=weekly_em,
         )
 
     st.markdown("---")
@@ -2211,7 +2211,7 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
 def _render_sf_strike_map_tier(
     tier: SpreadTier, plan: SpreadPlan, spx_ref: float,
     gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX",
-    vix_implied_pct: float = 0.0,
+    weekly_em: dict = None,
 ):
     """Strike map that updates based on the selected risk tier."""
     import plotly.graph_objects as go
@@ -2239,10 +2239,10 @@ def _render_sf_strike_map_tier(
         if s.wing_width == selected_width:
             put_long = s.long_strike
 
-    # Weekly expected move from VIX
-    em_half = vix_implied_pct / 2
-    em_upper = round(spx_ref * (1 + em_half), 0)
-    em_lower = round(spx_ref * (1 - em_half), 0)
+    # Weekly expected move from Friday straddle (already computed by GEX engine)
+    em_upper = (weekly_em or {}).get("upper_level", 0)
+    em_lower = (weekly_em or {}).get("lower_level", 0)
+    has_em = em_upper > 0 and em_lower > 0
 
     fig = go.Figure()
 
@@ -2258,16 +2258,16 @@ def _render_sf_strike_map_tier(
         (call_long,  "Call Long",  SF_BEAR,   "triangle-right",  8),
     ]
 
-    # Add EM levels if VIX data is available
+    # Add EM levels if weekly straddle data is available
     em_color = "#29b6f6"  # light blue
-    if vix_implied_pct > 0:
+    if has_em:
         levels.append((em_upper, "EM Upper", em_color, "line-ew", 9))
         levels.append((em_lower, "EM Lower", em_color, "line-ew", 9))
 
     levels.sort(key=lambda x: x[0])
 
     # Weekly expected move band
-    if vix_implied_pct > 0:
+    if has_em:
         fig.add_shape(type="rect",
             x0=em_lower, x1=em_upper,
             y0=-0.5, y1=len(levels) - 0.5,
@@ -2840,7 +2840,8 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
 
     # ── C7: Spread Finder — Weekly credit spread placement ──
     with tab_spread_finder:
-        _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker)
+        _sf_weekly_em = weekly_em_snap or weekly_em_live or {}
+        _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker, weekly_em=_sf_weekly_em)
 
     # ── C2: Level crossing alerts ──
     alerts = _check_level_crossings(spot, levels, em_analysis)
