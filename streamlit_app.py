@@ -612,10 +612,12 @@ def _render_move_display(overnight, classification, futures_ctx, market_ctx):
     elif "es_futures" in move_source and futures_ctx:
         arrow = "🟢 ▲" if futures_ctx["overnight_move_pts"] >= 0 else "🔴 ▼"
         st.markdown(
-            f"**Overnight (ES):** {arrow} **{futures_ctx['overnight_move_pts']:+.1f} pts** ({futures_ctx['overnight_move_pct']:+.2f}%)"
+            f"**Overnight ({'ES÷10' if ticker == 'XSP' else 'ES'}):** {arrow} **{futures_ctx['overnight_move_pts']:+.1f} pts** ({futures_ctx['overnight_move_pct']:+.2f}%)"
         )
         src_label = "manual" if futures_ctx["source"] == "manual" else "Yahoo ~10m delayed"
-        st.caption(f"ES: \\${futures_ctx['es_last']:.2f} vs SPX prevclose \\${futures_ctx['spx_prevclose']:.2f} ({src_label})")
+        _es_label = "ES÷10" if ticker == "XSP" else "ES"
+        _prev_label = f"{ticker} prevclose"
+        st.caption(f"{_es_label}: \\${futures_ctx['es_last']:.2f} vs {_prev_label} \\${futures_ctx['spx_prevclose']:.2f} ({src_label})")
     else:
         on_pts = overnight.get("overnight_move_pts")
         if on_pts is not None:
@@ -682,7 +684,7 @@ def _render_classification(classification, level_ctx):
         )
 
 
-def render_expected_move_panel(em_analysis):
+def render_expected_move_panel(em_analysis, ticker="SPX"):
     em_data = em_analysis.get("expected_move", {})
     overnight = em_analysis.get("overnight_move", {})
     classification = em_analysis.get("classification", {})
@@ -2749,7 +2751,7 @@ def main():
 
             premarket_html = (
                 '<div class="em-bar">'
-                f'<div class="em-item"><div class="lbl">Overnight Move (ES)</div>'
+                f'<div class="em-item"><div class="lbl">Overnight Move ({"ES÷10" if ticker == "XSP" else "ES"})</div>'
                 f'<div class="val" style="color:{on_color};">{on_arrow} {futures_ctx_display["overnight_move_pts"]:+.1f} pts</div>'
                 f'<div class="lbl" style="color:{on_color};">{futures_ctx_display["overnight_move_pct"]:+.2f}%</div></div>'
             )
@@ -2794,7 +2796,7 @@ def main():
         elif "es_futures" in move_source and futures_ctx_display:
             display_pts = futures_ctx_display["overnight_move_pts"]
             display_pct = futures_ctx_display["overnight_move_pct"]
-            on_label = "Overnight (ES)"
+            on_label = "Overnight (ES÷10)" if ticker == "XSP" else "Overnight (ES)"
         elif move_source == "spy_proxy" and spy:
             display_pts = spy["implied_spx_move_pts"]
             display_pct = spy["spy_move_pct"]
@@ -2979,7 +2981,7 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
         render_gex_stream(data.stats, levels, spot)
         st.divider()
         if market_ctx != "premarket":
-            render_expected_move_panel(em_analysis)
+            render_expected_move_panel(em_analysis, ticker=ticker)
         render_key_levels(levels, spot, regime, data.confidence_info, data.staleness_info)
         st.divider()
         render_wall_credibility(data.wall_cred)
