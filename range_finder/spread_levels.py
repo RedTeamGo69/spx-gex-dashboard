@@ -282,6 +282,46 @@ def estimate_credit(
 # SPREAD SIDE BUILDER
 # =============================================================================
 
+def _available_wing_widths(
+    short_strike: float,
+    chain_quotes: dict,
+    side: str,
+    target_widths: list,
+) -> list:
+    """Return wing widths where the long strike actually exists in the chain.
+
+    For each target width, checks if the resulting long strike has quote data.
+    Keeps the original target list order but filters to real strikes only.
+    """
+    side_key = f"{side}_ask"  # long leg needs an ask price
+    available = []
+    for w in target_widths:
+        long_strike = short_strike + w if side == "call" else short_strike - w
+        if long_strike in chain_quotes and side_key in chain_quotes[long_strike]:
+            available.append(w)
+    return available if available else target_widths  # fallback to all if chain has nothing
+
+
+def _snap_to_chain_strike(target: float, chain_quotes: dict, side: str, direction: str = "up") -> float:
+    """Snap a target strike to the nearest actual chain strike.
+
+    direction="up"   → for calls, pick the nearest strike >= target (more OTM)
+    direction="down" → for puts, pick the nearest strike <= target (more OTM)
+    Returns the original target if the chain has no strikes for this side.
+    """
+    side_key = f"{side}_bid"
+    available = sorted(k for k, v in chain_quotes.items() if side_key in v)
+    if not available:
+        return target
+
+    if direction == "up":
+        candidates = [k for k in available if k >= target]
+        return candidates[0] if candidates else available[-1]
+    else:
+        candidates = [k for k in available if k <= target]
+        return candidates[-1] if candidates else available[0]
+
+
 def _lookup_chain_price(chain_quotes: dict, strike: float, side: str, field: str) -> float | None:
     """Look up bid/ask for a specific strike from chain data.
 
@@ -323,7 +363,14 @@ def build_spread_side(
         else:
             long_strike = short_strike - width
 
-        # Try to use actual market prices first
+        # Skip widths where either strike doesn't exist in the chain
+        if chain_quotes:
+            short_in_chain = short_strike in chain_quotes and f"{side}_bid" in chain_quotes[short_strike]
+            long_in_chain = long_strike in chain_quotes and f"{side}_ask" in chain_quotes[long_strike]
+            if not short_in_chain or not long_in_chain:
+                continue  # strike doesn't exist for this expiration
+
+        # Use actual market prices
         market_credit = None
         if chain_quotes:
             short_bid = _lookup_chain_price(chain_quotes, short_strike, side, "bid")
@@ -475,15 +522,28 @@ def build_spread_plan(
     call_short = round_call_short(effective_upper, increment=increment)
     put_short  = round_put_short(effective_lower, increment=increment)
 
+    # Snap short strikes to actual chain strikes if they don't exist
+    if chain_quotes:
+        call_short = _snap_to_chain_strike(call_short, chain_quotes, "call", direction="up")
+        put_short  = _snap_to_chain_strike(put_short, chain_quotes, "put", direction="down")
+
     log.info(f"Effective range: +/-{half_range*100:.2f}%  ->  [{effective_lower:.2f}, {effective_upper:.2f}]")
     log.info(f"Short strikes  : call={call_short}  put={put_short}  (ticker={ticker})")
 
     # --- Minimum width ---
     min_width = get_min_width(event_count, has_fomc, ticker=ticker)
 
-    # --- Build spread sides for ALL widths (flag narrow ones) ---
-    call_spreads = build_spread_side("call", call_short, wing_widths, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
-    put_spreads  = build_spread_side("put",  put_short,  wing_widths, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+    # --- Derive available wing widths from chain strikes ---
+    if chain_quotes:
+        call_widths = _available_wing_widths(call_short, chain_quotes, "call", wing_widths)
+        put_widths  = _available_wing_widths(put_short, chain_quotes, "put", wing_widths)
+    else:
+        call_widths = wing_widths
+        put_widths  = wing_widths
+
+    # --- Build spread sides for available widths (flag narrow ones) ---
+    call_spreads = build_spread_side("call", call_short, call_widths, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+    put_spreads  = build_spread_side("put",  put_short,  put_widths,  spx_ref, vix_level, dte, chain_quotes=chain_quotes)
 
     for s in call_spreads + put_spreads:
         s.below_min_width = s.wing_width < min_width
