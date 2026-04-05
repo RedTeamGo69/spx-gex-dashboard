@@ -1590,49 +1590,58 @@ def _get_rf_conn():
     return conn
 
 
-def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> dict:
+def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> tuple[dict, str | None]:
     """Build a strike→{call_bid, call_ask, put_bid, put_ask} lookup from cached chain data.
 
-    Selects the cached expiration closest to ~5 trading days out (the next
-    weekly expiration the spread finder targets), so bid/ask prices reflect
-    the correct time-to-expiry.  Falls back to nearer expirations if the
-    weekly isn't cached.
+    Targets the next Friday expiration specifically, since the spread finder
+    builds weekly credit spreads that expire on Fridays.
+
+    Returns (quotes_dict, selected_expiration_str_or_None).
     """
     if not data.chain_cache:
-        return {}
+        return {}, None
+
+    from datetime import date as date_cls, timedelta
 
     # Find all cached expirations for this ticker, sorted by date
     cached_exps = sorted(
         exp for (t, exp) in data.chain_cache if t == ticker
     )
     if not cached_exps:
-        return {}
+        return {}, None
 
-    # Target: expiration closest to 5 calendar days from now (next weekly Friday)
-    from datetime import date as date_cls, timedelta
     today = date_cls.today()
     today_str = today.isoformat()
     future_exps = [e for e in cached_exps if e >= today_str]
 
-    if not future_exps:
-        # All expirations are in the past (e.g. after market close on Friday)
-        # Use the most recent one
-        target_exp = cached_exps[-1]
-    else:
-        # Find the expiration closest to ~5-7 calendar days out
-        # This targets the next weekly Friday, skipping 0DTE/1DTE
-        target_date = today + timedelta(days=7)
-        target_exp = min(future_exps, key=lambda e: abs((date_cls.fromisoformat(e) - target_date).days))
+    # Find the next Friday from today
+    days_until_friday = (4 - today.weekday()) % 7
+    if days_until_friday == 0 and today.weekday() == 4:
+        # Today is Friday — target next Friday for new trades
+        days_until_friday = 7
+    next_friday = today + timedelta(days=days_until_friday or 7)
 
-        # If the best match is still 0DTE (only one expiration cached),
-        # use it rather than returning empty
-        if target_exp == today_str and len(future_exps) > 1:
-            # Prefer the next future expiration over 0DTE
-            target_exp = future_exps[1]
+    # Look for a Friday expiration in the cached chains
+    target_exp = None
+    friday_exps = [
+        e for e in future_exps
+        if date_cls.fromisoformat(e).weekday() == 4  # Friday
+    ]
+    if friday_exps:
+        # Pick the nearest Friday (usually this coming Friday)
+        target_exp = min(friday_exps, key=lambda e: abs((date_cls.fromisoformat(e) - next_friday).days))
+
+    # Fallback: if no Friday expiration is cached, pick the closest to next Friday
+    if target_exp is None and future_exps:
+        target_exp = min(friday_exps if friday_exps else future_exps,
+                         key=lambda e: abs((date_cls.fromisoformat(e) - next_friday).days))
+
+    if target_exp is None:
+        return {}, None
 
     entry = data.chain_cache.get((ticker, target_exp))
     if not entry or entry.get("status") != "ok":
-        return {}
+        return {}, None
 
     quotes = {}  # strike -> {call_bid, call_ask, put_bid, put_ask}
 
@@ -1650,7 +1659,7 @@ def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> dict:
         quotes[K]["put_bid"] = opt.get("bid", 0.0) or 0.0
         quotes[K]["put_ask"] = opt.get("ask", 0.0) or 0.0
 
-    return quotes
+    return quotes, target_exp
 
 
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX"):
@@ -1869,7 +1878,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     )
 
     # ── Extract chain quotes for market-based credit estimation ──
-    chain_quotes = _build_chain_quotes_for_spreads(data, ticker)
+    chain_quotes, chain_exp = _build_chain_quotes_for_spreads(data, ticker)
 
     # ── Build spread plan ──
     plan = rf_build_spread_plan(
@@ -1950,16 +1959,17 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         st.markdown(f"Put Spreads — short below `{plan.effective_lower_px:,.0f}`")
         _render_sf_spread_table(plan.put_spreads, wing_width)
 
-    # Show credit source note
+    # Show credit source note with chain expiration
     all_spreads = plan.call_spreads + plan.put_spreads
     has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_spreads)
     has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_spreads)
+    exp_note = f" Chain: {chain_exp}" if chain_exp else ""
     if has_market and has_bsm:
-        st.caption("Credits from live chain bid/ask. * = BSM estimate (strike not in chain).")
+        st.caption(f"Credits from Friday chain bid/ask.{exp_note} &nbsp;|&nbsp; * = BSM estimate (strike not in chain).")
     elif has_market:
-        st.caption("Credits from live chain bid/ask (short bid − long ask).")
+        st.caption(f"Credits from Friday chain bid/ask (short bid - long ask).{exp_note}")
     else:
-        st.caption("Credits are BSM estimates (no chain data available). Verify with broker before trading.")
+        st.caption("Credits are BSM estimates (no Friday chain data available). Verify with broker before trading.")
 
     # =========================================================================
     # GEX CONTEXT + WARNINGS
