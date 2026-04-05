@@ -638,8 +638,8 @@ def build_spread_tiers(
     increment = cfg["strike_increment"]
 
     tiers_config = [
-        ("Point Estimate",   "aggressive",  forecast["point_pct"]),
         ("Lower PI",         "aggressive",  forecast["lower_pct"]),
+        ("Point Estimate",   "aggressive",  forecast["point_pct"]),
         (f"{forecast['confidence_level']}% PI Upper", "moderate", forecast["upper_pct"]),
         ("Effective (+buffer)", "conservative", plan.effective_range_pct),
     ]

@@ -1940,56 +1940,75 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     st.markdown("---")
 
     # =========================================================================
-    # RANGE GAUGE + STRIKE MAP (side by side)
+    # RISK TIER SELECTOR + RANGE GAUGE
     # =========================================================================
 
-    col_gauge, col_strikes = st.columns([1, 1])
+    _TIER_COLORS = {
+        "aggressive":   "#ff4b4b",
+        "moderate":     "#ffa726",
+        "conservative": "#66bb6a",
+    }
+
+    col_gauge, col_tier_select = st.columns([1, 1])
 
     with col_gauge:
         st.markdown("**Range Distribution**")
         _render_sf_range_gauge(forecast, plan, spx_close_input)
 
-    with col_strikes:
-        st.markdown("**Strike Map with GEX Walls**")
-        _render_sf_strike_map(plan, spx_close_input, gex_ctx, wing_width, ticker=ticker)
+    with col_tier_select:
+        st.markdown("**Risk Tier**")
+        tier_labels = [t.label for t in spread_tiers]
+        # Default to the conservative tier (last one)
+        default_idx = len(tier_labels) - 1
+        selected_tier_idx = st.radio(
+            "Select risk level",
+            range(len(tier_labels)),
+            format_func=lambda i: f"{tier_labels[i]}  ({spread_tiers[i].range_pct*100:.1f}%)",
+            index=default_idx,
+            key=f"sf_risk_tier_{ticker}",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+        selected_tier = spread_tiers[selected_tier_idx]
+        tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
+        st.markdown(
+            f"<span style='color:{tier_color};font-size:18px;font-weight:bold;'>"
+            f"{selected_tier.risk_level.upper()}</span>"
+            f" &nbsp;—&nbsp; Range: {selected_tier.range_pct*100:.2f}%"
+            f" &nbsp;|&nbsp; Calls above `{selected_tier.call_short:,.0f}`"
+            f" &nbsp;|&nbsp; Puts below `{selected_tier.put_short:,.0f}`",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("---")
 
     # =========================================================================
-    # SPREAD TABLES — RISK TIERS
+    # STRIKE MAP + SPREAD TABLES (for selected tier)
     # =========================================================================
 
-    st.markdown("**Spread Parameters by Risk Tier**")
+    col_strikes, col_spacer = st.columns([1, 1])
 
-    _TIER_COLORS = {
-        "aggressive":   "#ff4b4b",   # red
-        "moderate":     "#ffa726",   # orange
-        "conservative": "#66bb6a",   # green
-    }
+    with col_strikes:
+        st.markdown("**Strike Map with GEX Walls**")
+        _render_sf_strike_map_tier(selected_tier, plan, spx_close_input, gex_ctx, wing_width, ticker=ticker)
 
-    tier_tabs = st.tabs([t.label for t in spread_tiers])
+    st.markdown("---")
 
-    for tab, tier in zip(tier_tabs, spread_tiers):
-        with tab:
-            tier_color = _TIER_COLORS.get(tier.risk_level, "#888")
-            st.markdown(
-                f"<span style='color:{tier_color};font-weight:bold;'>{tier.risk_level.upper()}</span>"
-                f" &nbsp;—&nbsp; Range: {tier.range_pct*100:.2f}%",
-                unsafe_allow_html=True,
-            )
+    st.markdown(f"**Spread Parameters — {selected_tier.label}**")
 
-            col_call, col_put = st.columns(2)
+    col_call, col_put = st.columns(2)
 
-            with col_call:
-                st.markdown(f"Call Spreads — short above `{tier.call_short:,.0f}`")
-                _render_sf_spread_table(tier.call_spreads, wing_width)
+    with col_call:
+        st.markdown(f"Call Spreads — short above `{selected_tier.call_short:,.0f}`")
+        _render_sf_spread_table(selected_tier.call_spreads, wing_width)
 
-            with col_put:
-                st.markdown(f"Put Spreads — short below `{tier.put_short:,.0f}`")
-                _render_sf_spread_table(tier.put_spreads, wing_width)
+    with col_put:
+        st.markdown(f"Put Spreads — short below `{selected_tier.put_short:,.0f}`")
+        _render_sf_spread_table(selected_tier.put_spreads, wing_width)
 
     # Show credit source note with chain expiration
-    all_tier_spreads = [s for t in spread_tiers for s in t.call_spreads + t.put_spreads]
+    all_tier_spreads = selected_tier.call_spreads + selected_tier.put_spreads
     has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_tier_spreads)
     has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_tier_spreads)
     exp_note = f" Chain: {chain_exp}" if chain_exp else ""
@@ -2190,6 +2209,105 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
         xaxis_range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
         yaxis_visible=False,
         showlegend=False,
+        margin=dict(t=10, b=30, l=10, r=10),
+        height=380, dragmode=False,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+
+def _render_sf_strike_map_tier(
+    tier: SpreadTier, plan: SpreadPlan, spx_ref: float,
+    gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX",
+):
+    """Strike map that updates based on the selected risk tier."""
+    import plotly.graph_objects as go
+
+    _TIER_COLORS = {
+        "aggressive":   "#ff4b4b",
+        "moderate":     "#ffa726",
+        "conservative": "#66bb6a",
+    }
+    tier_color = _TIER_COLORS.get(tier.risk_level, "#888")
+
+    # Get strikes from the selected tier
+    call_short = tier.call_short
+    put_short  = tier.put_short
+
+    # Default long strikes from first spread
+    call_long = tier.call_spreads[0].long_strike if tier.call_spreads else call_short + 25
+    put_long  = tier.put_spreads[0].long_strike  if tier.put_spreads  else put_short - 25
+
+    # Use user-selected wing width if available
+    for s in tier.call_spreads:
+        if s.wing_width == selected_width:
+            call_long = s.long_strike
+    for s in tier.put_spreads:
+        if s.wing_width == selected_width:
+            put_long = s.long_strike
+
+    fig = go.Figure()
+
+    # Build level markers
+    levels = [
+        (put_long,   "Put Long",   SF_BEAR,   "triangle-left",  8),
+        (put_short,  "Put Short",  tier_color, "diamond",       10),
+        (gex_ctx.put_wall,   "Put Wall",  COLORS["put_wall"],  "square",  9),
+        (gex_ctx.zero_gamma, "Zero-G",    COLORS["zero_gamma"], "x",     10),
+        (spx_ref,    f"{ticker} Ref", COLORS["spot"], "star",           12),
+        (gex_ctx.call_wall,  "Call Wall", COLORS["call_wall"],  "square",  9),
+        (call_short, "Call Short", tier_color, "diamond",       10),
+        (call_long,  "Call Long",  SF_BEAR,   "triangle-right",  8),
+    ]
+
+    levels.sort(key=lambda x: x[0])
+
+    # Tier range band
+    half = tier.range_pct / 2
+    tier_lower = spx_ref * (1 - half)
+    tier_upper = spx_ref * (1 + half)
+    fig.add_shape(type="rect",
+        x0=tier_lower, x1=tier_upper,
+        y0=-0.5, y1=len(levels) - 0.5,
+        fillcolor=tier_color, opacity=0.08, line_width=1,
+        line_color=tier_color, line_dash="dot",
+    )
+
+    # Call spread zone
+    fig.add_shape(type="rect",
+        x0=min(call_short, call_long), x1=max(call_short, call_long),
+        y0=-0.5, y1=len(levels) - 0.5,
+        fillcolor=SF_BEAR, opacity=0.15, line_width=0,
+    )
+
+    # Put spread zone
+    fig.add_shape(type="rect",
+        x0=min(put_long, put_short), x1=max(put_long, put_short),
+        y0=-0.5, y1=len(levels) - 0.5,
+        fillcolor=SF_BEAR, opacity=0.15, line_width=0,
+    )
+
+    for i, (price, label, color, symbol, size) in enumerate(levels):
+        fig.add_trace(go.Scatter(
+            x=[price], y=[i],
+            mode="markers+text",
+            marker=dict(color=color, size=size, symbol=symbol, line=dict(width=1, color="#fff")),
+            text=[f"{label}  {price:,.0f}"],
+            textposition="middle right" if price <= spx_ref else "middle left",
+            textfont=dict(size=11, color=color),
+            showlegend=False,
+            hovertemplate=f"{label}: {price:,.0f}<extra></extra>",
+        ))
+
+    fig.add_vline(x=spx_ref, line_dash="solid", line_color=COLORS["spot"], line_width=2, opacity=0.4)
+
+    all_prices = [l[0] for l in levels]
+    margin_px = (max(all_prices) - min(all_prices)) * 0.15
+
+    fig.update_layout(
+        plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
+        xaxis_title=f"{ticker} Price Level",
+        xaxis_range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
+        yaxis_visible=False, showlegend=False,
         margin=dict(t=10, b=30, l=10, r=10),
         height=380, dragmode=False,
     )
