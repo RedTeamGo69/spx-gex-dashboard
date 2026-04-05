@@ -329,13 +329,37 @@ def _classify_error(exc: Exception) -> str:
     code_str = str(code) if code is not None else ""
 
     # 429 — rate limit / quota
-    if "429" in msg or "429" in code_str or "resource_exhausted" in msg or "rate" in msg:
-        # Distinguish daily quota vs per-minute rate limit when we can
-        if "daily" in msg or "per day" in msg or "rpd" in msg:
-            return "daily quota hit — resets at midnight PT"
-        if "quota" in msg and "exceeded" in msg:
-            return "quota hit — retry in ~60s"
-        return "rate limit — retry in ~60s"
+    if "429" in msg or "429" in code_str or "resource_exhausted" in msg:
+        # Try to extract the actual retry delay from the API response
+        retry_hint = ""
+        import re
+        m = re.search(r"retrydelay['\"]?\s*:\s*['\"]?(\d+)\s*s", msg)
+        if m:
+            secs = int(m.group(1))
+            retry_hint = f" — retry in ~{secs}s"
+
+        # Detect daily quota. Google's message uses "PerDay" (camelCase)
+        # which becomes "perday" after lowercasing — no space.
+        is_daily = (
+            "perday" in msg
+            or "per day" in msg
+            or "rpd" in msg
+            or "daily" in msg
+            or "requests_per_day" in msg
+        )
+        is_per_minute = (
+            "perminute" in msg
+            or "per minute" in msg
+            or "rpm" in msg
+            or "requests_per_minute" in msg
+        )
+
+        if is_daily and not is_per_minute:
+            return "daily quota hit (500/day) — resets at midnight PT"
+        if is_per_minute and not is_daily:
+            return f"per-minute rate limit (10/min){retry_hint or ' — retry in ~60s'}"
+        # Generic quota — use the API-provided retry hint if available
+        return f"quota exhausted{retry_hint or ' — check AI Studio for reset time'}"
 
     # 400 — bad request
     if "400" in msg or "400" in code_str or "invalid_argument" in msg:
