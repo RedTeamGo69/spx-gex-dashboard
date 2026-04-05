@@ -1693,6 +1693,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     is_market_open = data.market_open
 
     mon_open_key = f"sf_monday_open_{ticker}"
+    mon_vix_key = f"sf_monday_vix_{ticker}"
     mon_open_week_key = f"sf_monday_open_week_{ticker}"
 
     # Determine which week we're in (use ISO week number)
@@ -1702,16 +1703,19 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     if is_freeze_day and is_market_open:
         stored_week = st.session_state.get(mon_open_week_key)
         if stored_week != current_week:
-            # First market-hours refresh on the freeze day — lock the open price
+            # First market-hours refresh on the freeze day — lock the open price + VIX
             st.session_state[mon_open_key] = round(spot, 2)
+            st.session_state[mon_vix_key] = live_vix
             st.session_state[mon_open_week_key] = current_week
 
-    # Determine the reference price and its source label
+    # Determine the reference price/VIX and their source label
     frozen_open = st.session_state.get(mon_open_key)
+    frozen_vix = st.session_state.get(mon_vix_key)
     frozen_week = st.session_state.get(mon_open_week_key)
 
     if frozen_week == current_week and frozen_open:
         default_ref = frozen_open
+        default_vix = frozen_vix or live_vix
         ref_source = "Mon open (frozen)"
     else:
         # Try to restore Monday open from the weekly EM snapshot in Postgres
@@ -1729,9 +1733,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
         if restored_open:
             default_ref = restored_open
+            default_vix = live_vix  # VIX not saved in DB yet, use latest
             ref_source = "Mon open (from DB)"
         else:
             default_ref = round(spot, 2)
+            default_vix = live_vix
             ref_source = "Fri close" if run_now.weekday() >= 5 else "live spot"
 
     # ── Auto-update reference price and VIX when ticker changes ──
@@ -1740,12 +1746,14 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     prev_ticker = st.session_state.get("_sf_prev_ticker")
     if prev_ticker != ticker:
         st.session_state[ref_key] = default_ref
-        st.session_state[vix_key] = live_vix
+        st.session_state[vix_key] = default_vix
         st.session_state["_sf_prev_ticker"] = ticker
 
-    # Also update the default on first render if not yet set
+    # Also update the defaults on first render if not yet set
     if ref_key not in st.session_state:
         st.session_state[ref_key] = default_ref
+    if vix_key not in st.session_state:
+        st.session_state[vix_key] = default_vix
 
     st.markdown(f"### {ticker} Weekly Credit Spread Finder")
     from range_finder.db import get_backend as rf_get_backend
@@ -1770,10 +1778,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         )
 
     with col_ctrl2:
+        vix_source = "Mon open" if (frozen_week == current_week and frozen_vix) else "last close"
         vix_input = st.number_input(
-            "VIX Level",
-            min_value=5.0, max_value=100.0, value=live_vix, step=0.5,
-            help="Last VIX close (auto-filled; used for credit estimation via BSM)",
+            f"VIX Level ({vix_source})",
+            min_value=5.0, max_value=100.0, value=default_vix, step=0.5,
+            help=f"VIX level for BSM credit estimation. Source: {vix_source}. "
+                 "Frozen at Monday's open alongside the reference price.",
             key=vix_key,
         )
 
