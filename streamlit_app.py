@@ -1702,7 +1702,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     gex_ctx = extract_gex_context(levels, spot, regime)
 
     # ── Sidebar-like controls within the tab ──
-    col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
+    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
 
     with col_ctrl1:
         step_size = ticker_cfg["strike_increment"]
@@ -1728,17 +1728,6 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             index=2,
             help="M3_extended recommended; M4_full when GEX data is populated",
             key=f"sf_model_choice_{ticker}",
-        )
-
-    with col_ctrl4:
-        ticker_widths = ticker_cfg["wing_widths"]
-        default_width = ticker_widths[1] if len(ticker_widths) > 1 else ticker_widths[0]
-        wing_width = st.select_slider(
-            "Wing Width (pts)",
-            options=ticker_widths,
-            value=default_width,
-            help="Spread width to highlight",
-            key=f"sf_wing_width_{ticker}",
         )
 
     # Action buttons
@@ -1991,7 +1980,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     with col_strikes:
         st.markdown("**Strike Map with GEX Walls**")
-        _render_sf_strike_map_tier(selected_tier, plan, spx_close_input, gex_ctx, wing_width, ticker=ticker)
+        _render_sf_strike_map_tier(
+            selected_tier, plan, spx_close_input, gex_ctx,
+            plan.recommended_width, ticker=ticker,
+            vix_implied_pct=forecast.get("vix_implied_pct", 0),
+        )
 
     st.markdown("---")
 
@@ -2001,11 +1994,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     with col_call:
         st.markdown(f"Call Spreads — short above `{selected_tier.call_short:,.0f}`")
-        _render_sf_spread_table(selected_tier.call_spreads, wing_width)
+        _render_sf_spread_table(selected_tier.call_spreads, plan.recommended_width)
 
     with col_put:
         st.markdown(f"Put Spreads — short below `{selected_tier.put_short:,.0f}`")
-        _render_sf_spread_table(selected_tier.put_spreads, wing_width)
+        _render_sf_spread_table(selected_tier.put_spreads, plan.recommended_width)
 
     # Show credit source note with chain expiration
     all_tier_spreads = selected_tier.call_spreads + selected_tier.put_spreads
@@ -2055,7 +2048,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     st.markdown("---")
     if st.button("Save Spread Plan to Database", key=f"sf_log_plan_{ticker}"):
         try:
-            rf_log_spread_plan(conn, plan, wing_width_used=wing_width)
+            rf_log_spread_plan(conn, plan, wing_width_used=plan.recommended_width)
             st.success(f"Plan for {week_start} logged")
         except Exception as e:
             st.error(f"Failed to log plan: {e}")
@@ -2218,6 +2211,7 @@ def _render_sf_strike_map(plan: SpreadPlan, spx_ref: float, gex_ctx: GEXContext,
 def _render_sf_strike_map_tier(
     tier: SpreadTier, plan: SpreadPlan, spx_ref: float,
     gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX",
+    vix_implied_pct: float = 0.0,
 ):
     """Strike map that updates based on the selected risk tier."""
     import plotly.graph_objects as go
@@ -2237,13 +2231,18 @@ def _render_sf_strike_map_tier(
     call_long = tier.call_spreads[0].long_strike if tier.call_spreads else call_short + 25
     put_long  = tier.put_spreads[0].long_strike  if tier.put_spreads  else put_short - 25
 
-    # Use user-selected wing width if available
+    # Use recommended wing width if available
     for s in tier.call_spreads:
         if s.wing_width == selected_width:
             call_long = s.long_strike
     for s in tier.put_spreads:
         if s.wing_width == selected_width:
             put_long = s.long_strike
+
+    # Weekly expected move from VIX
+    em_half = vix_implied_pct / 2
+    em_upper = round(spx_ref * (1 + em_half), 0)
+    em_lower = round(spx_ref * (1 - em_half), 0)
 
     fig = go.Figure()
 
@@ -2259,7 +2258,22 @@ def _render_sf_strike_map_tier(
         (call_long,  "Call Long",  SF_BEAR,   "triangle-right",  8),
     ]
 
+    # Add EM levels if VIX data is available
+    em_color = "#29b6f6"  # light blue
+    if vix_implied_pct > 0:
+        levels.append((em_upper, "EM Upper", em_color, "line-ew", 9))
+        levels.append((em_lower, "EM Lower", em_color, "line-ew", 9))
+
     levels.sort(key=lambda x: x[0])
+
+    # Weekly expected move band
+    if vix_implied_pct > 0:
+        fig.add_shape(type="rect",
+            x0=em_lower, x1=em_upper,
+            y0=-0.5, y1=len(levels) - 0.5,
+            fillcolor=em_color, opacity=0.06, line_width=1,
+            line_color=em_color, line_dash="dash",
+        )
 
     # Tier range band
     half = tier.range_pct / 2
