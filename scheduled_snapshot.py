@@ -231,7 +231,134 @@ def capture_snapshot():
                 except Exception as e:
                     _logger.warning(f"Monthly EM save failed: {e}")
 
+    # =========================================================================
+    # WEEKLY SPREAD FINDER SETUP (Monday open only)
+    # =========================================================================
+    if is_monday or is_tuesday_after_holiday:
+        _logger.info("Running weekly spread finder setup...")
+        try:
+            _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
+                                     levels, regime_info)
+        except Exception as e:
+            _logger.error(f"Weekly spread finder setup failed: {e}")
+
     _logger.info("Scheduled snapshot complete")
+
+
+def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
+                              levels, regime_info):
+    """Run the full spread finder pipeline: refresh data, rebuild features,
+    save GEX, fit model, and persist Monday open + VIX."""
+    import yfinance as yf
+    from datetime import timedelta
+
+    from range_finder.db import get_connection, init_all_tables
+    from range_finder.data_collector import (
+        fetch_spx_vix, save_spx_vix,
+        fetch_fred_macro, save_fred_macro,
+        build_event_flags,
+    )
+    from range_finder.feature_builder import build_features
+    from range_finder.gex_bridge import (
+        GEXContext, extract_gex_context, save_gex_to_range_finder,
+    )
+    from range_finder.har_model import (
+        time_series_split, fit_model, evaluate_oos,
+        save_model, MODEL_SPECS, forecast_next_week,
+    )
+    from range_finder.spread_levels import build_spread_plan, log_spread_plan
+
+    conn = get_connection()
+    init_all_tables(conn)
+
+    # ── Step 1: Refresh market data ──
+    _logger.info("  1/4 Refreshing SPX/VIX weekly data from yfinance...")
+    try:
+        df_spx = fetch_spx_vix(years=3)
+        rows = save_spx_vix(conn, df_spx)
+        _logger.info(f"  SPX/VIX: {len(df_spx)} weeks fetched, {rows} new")
+    except Exception as e:
+        _logger.warning(f"  SPX/VIX fetch failed: {e} (continuing with existing data)")
+
+    if fred_key:
+        try:
+            df_macro = fetch_fred_macro(years=3)
+            save_fred_macro(conn, df_macro)
+            _logger.info(f"  FRED macro: {len(df_macro)} rows")
+        except Exception as e:
+            _logger.warning(f"  FRED fetch skipped: {e}")
+
+    build_event_flags(conn)
+
+    # ── Step 2: Rebuild features ──
+    _logger.info("  2/4 Rebuilding feature matrix...")
+    try:
+        build_features(conn)
+    except Exception as e:
+        _logger.error(f"  Feature rebuild failed: {e}")
+        return
+
+    # ── Step 3: Save GEX to model ──
+    _logger.info("  3/4 Saving GEX to range finder...")
+    try:
+        gex_ctx = extract_gex_context(levels, spot, regime_info)
+        save_gex_to_range_finder(gex_ctx, conn)
+    except Exception as e:
+        _logger.warning(f"  GEX save failed: {e}")
+
+    # ── Step 4: Fit model and forecast ──
+    _logger.info("  4/4 Fitting model and generating forecast...")
+    model_choice = "M3_extended"
+    try:
+        from range_finder.feature_builder import get_features
+        df_feat = get_features(conn)
+        if df_feat.empty:
+            _logger.warning("  No features available — skipping forecast")
+            return
+
+        feat_cols = MODEL_SPECS.get(model_choice, [])
+        avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
+
+        X_train, X_test, y_train, y_test = time_series_split(df_feat, feature_cols=avail_cols)
+        result = fit_model(X_train, y_train, model_name=model_choice)
+        metrics = evaluate_oos(result, X_test, y_test, model_name=model_choice)
+        save_model(result, avail_cols, model_choice, metrics, conn=conn)
+
+        _logger.info(f"  Model fitted: OOS R² = {metrics['oos_r2']:.4f}, MAE = {metrics['mae_pct']*100:.2f}%")
+    except Exception as e:
+        _logger.error(f"  Model fitting failed: {e}")
+
+    # ── Save Monday open + VIX to DB ──
+    _logger.info("  Saving Monday open + VIX...")
+    try:
+        vix_close = 18.0
+        try:
+            vix_hist = yf.Ticker("^VIX").history(period="5d")
+            if not vix_hist.empty:
+                vix_close = round(float(vix_hist["Close"].dropna().iloc[-1]), 2)
+        except Exception:
+            pass
+
+        days_since_monday = run_now.weekday()
+        monday = run_now - timedelta(days=days_since_monday)
+        week_start = monday.strftime("%Y-%m-%d")
+
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        conn.execute("""
+            INSERT INTO weekly_setup (week_start, ticker, monday_open, monday_vix, captured_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (week_start, ticker) DO UPDATE SET
+                monday_open = excluded.monday_open,
+                monday_vix  = excluded.monday_vix,
+                captured_at = excluded.captured_at
+        """, (week_start, ticker, round(spot, 2), vix_close, now_iso))
+        conn.commit()
+
+        _logger.info(f"  Monday open saved: {ticker} = {spot:.2f}, VIX = {vix_close}")
+    except Exception as e:
+        _logger.warning(f"  Monday open/VIX save failed: {e}")
 
 
 if __name__ == "__main__":

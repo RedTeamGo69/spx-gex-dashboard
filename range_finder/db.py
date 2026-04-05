@@ -346,5 +346,17 @@ def init_all_tables(conn) -> None:
             )
         """)
 
+    # --- weekly_setup (Monday open freeze for spread finder) ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS weekly_setup (
+            week_start      TEXT NOT NULL,
+            ticker          TEXT NOT NULL DEFAULT 'SPX',
+            monday_open     REAL,
+            monday_vix      REAL,
+            captured_at     TEXT,
+            PRIMARY KEY (week_start, ticker)
+        )
+    """)
+
     conn.commit()
     log.info(f"All range finder tables initialized ({_backend})")
