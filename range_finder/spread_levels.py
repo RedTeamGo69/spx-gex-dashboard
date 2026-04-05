@@ -286,15 +286,18 @@ def _lookup_chain_price(chain_quotes: dict, strike: float, side: str, field: str
     """Look up bid/ask for a specific strike from chain data.
 
     chain_quotes: {strike: {"call_bid": .., "call_ask": .., "put_bid": .., "put_ask": ..}}
-    Returns None if not found or zero.
+    Returns None only if the strike/side is not in the chain.
+    A $0.00 bid is a valid market price (option is worthless).
     """
     if not chain_quotes:
         return None
     row = chain_quotes.get(strike)
     if not row:
         return None
-    val = row.get(f"{side}_{field}", 0.0)
-    return val if val and val > 0 else None
+    key = f"{side}_{field}"
+    if key not in row:
+        return None
+    return float(row[key] or 0.0)
 
 
 def build_spread_side(
