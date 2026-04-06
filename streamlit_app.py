@@ -2917,15 +2917,30 @@ def main():
             st.markdown(range_html, unsafe_allow_html=True)
 
     # ── AI Trading Briefing ──
+    # Only generates on first load or manual "Regenerate" click to conserve
+    # Gemini API quota.  Auto-refresh cycles reuse the cached result.
     with st.expander("🧠 AI Briefing", expanded=True):
         if not gemini_key:
             st.caption(
                 "Set `GEMINI_API_KEY` in Streamlit secrets or env var to enable "
                 "the AI briefing. Falls back to a templated briefing without a key."
             )
-        try:
-            _brief_ctx = build_briefing_context(data, em_analysis)
-            _brief_text, _brief_source = generate_briefing(_brief_ctx)
+
+        # Generate only when no cached briefing exists in session state
+        if "_ai_briefing" not in st.session_state:
+            try:
+                _brief_ctx = build_briefing_context(data, em_analysis)
+                _brief_text, _brief_source = generate_briefing(_brief_ctx)
+                st.session_state["_ai_briefing"] = (_brief_text, _brief_source)
+            except Exception as _brief_err:
+                st.session_state["_ai_briefing"] = (
+                    f"Briefing unavailable: {_brief_err}", "error",
+                )
+
+        _brief_text, _brief_source = st.session_state["_ai_briefing"]
+        if _brief_source == "error":
+            st.caption(_brief_text)
+        else:
             st.markdown(_brief_text)
             _src_color = COLORS["text_muted"] if _brief_source == "gemini" else COLORS["warning"]
             st.markdown(
@@ -2934,10 +2949,9 @@ def main():
                 f"</div>",
                 unsafe_allow_html=True,
             )
-        except Exception as _brief_err:
-            st.caption(f"Briefing unavailable: {_brief_err}")
+
         if st.button("🔄 Regenerate briefing", key="regen_briefing"):
-            st.cache_data.clear()
+            st.session_state.pop("_ai_briefing", None)
             st.session_state.pop("_gemini_backoff_until", None)  # clear quota backoff
             st.rerun()
 
