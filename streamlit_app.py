@@ -2905,7 +2905,7 @@ def main():
             _src_color = COLORS["text_muted"] if _brief_source == "gemini" else COLORS["warning"]
             st.markdown(
                 f"<div style='font-size:10px;color:{_src_color};margin-top:6px;'>"
-                f"source: {_brief_source} · model: gemini-2.5-flash"
+                f"source: {_brief_source} · model: gemini-2.5-flash-lite"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -2913,6 +2913,7 @@ def main():
             st.caption(f"Briefing unavailable: {_brief_err}")
         if st.button("🔄 Regenerate briefing", key="regen_briefing"):
             st.cache_data.clear()
+            st.session_state.pop("_gemini_backoff_until", None)  # clear quota backoff
             st.rerun()
 
     # ── Charts ──

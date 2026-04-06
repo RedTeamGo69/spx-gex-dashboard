@@ -20,9 +20,13 @@ import streamlit as st
 
 _logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 CACHE_TTL_SECONDS = 600  # 10 minutes — content hash forces refresh on material change
 MAX_OUTPUT_TOKENS = 800
+
+# Daily quota backoff: when we hit the daily limit, stop trying for this many
+# seconds to avoid wasting failed calls on every auto-refresh cycle.
+_DAILY_QUOTA_BACKOFF_SECONDS = 3600  # 1 hour
 
 
 SYSTEM_PROMPT = """You are a senior SPX options flow trader on a dealer desk. \
@@ -359,7 +363,12 @@ def _classify_error(exc: Exception) -> str:
         )
 
         if is_daily and not is_per_minute:
-            return "daily quota hit (500/day) — resets at midnight PT"
+            # Extract the actual quota limit from Google's response
+            quota_limit = ""
+            m_quota = re.search(r"quotavalue['\"]?\s*:\s*['\"]?(\d+)", msg)
+            if m_quota:
+                quota_limit = f" ({m_quota.group(1)}/day)"
+            return f"daily quota hit{quota_limit} — resets at midnight PT"
         if is_per_minute and not is_daily:
             return f"per-minute rate limit (10/min){retry_hint or ' — retry in ~60s'}"
         # Generic quota — use the API-provided retry hint if available
@@ -392,7 +401,24 @@ def generate_briefing(context: dict) -> tuple[str, str]:
     """
     Produce a briefing. Returns (briefing_text, source) where source is
     one of: "gemini", a classified error label, or "error".
+
+    Includes daily-quota backoff: once we hit the daily limit, we stop
+    trying the API for _DAILY_QUOTA_BACKOFF_SECONDS to avoid wasting
+    failed calls on every auto-refresh cycle. The "Regenerate" button
+    resets this backoff (by clearing st.cache_data + session_state).
     """
+    import time
+
+    # Check if we're in daily-quota backoff
+    backoff_until = st.session_state.get("_gemini_backoff_until", 0)
+    if time.time() < backoff_until:
+        remaining = int(backoff_until - time.time())
+        mins = remaining // 60
+        try:
+            return _template_briefing(context), f"template — daily quota backoff ({mins}m remaining)"
+        except Exception:
+            return "Briefing unavailable.", "error"
+
     try:
         ctx_hash = compute_context_hash(context)
         ctx_json = json.dumps(context, default=str, separators=(",", ":"))
@@ -401,6 +427,12 @@ def generate_briefing(context: dict) -> tuple[str, str]:
     except Exception as e:
         label = _classify_error(e)
         _logger.warning(f"Gemini briefing failed ({label}): {e}")
+
+        # If daily quota hit, activate backoff to stop wasting calls
+        if "daily quota hit" in label:
+            st.session_state["_gemini_backoff_until"] = time.time() + _DAILY_QUOTA_BACKOFF_SECONDS
+            _logger.info(f"Daily quota backoff activated for {_DAILY_QUOTA_BACKOFF_SECONDS}s")
+
         try:
             return _template_briefing(context), f"template — {label}"
         except Exception as e2:
