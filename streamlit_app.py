@@ -20,7 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # ── Phase1 engine imports ──
-from phase1.config import HEATMAP_EXPS, NY_TZ, build_config_snapshot
+from phase1.config import HEATMAP_EXPS, NY_TZ, COMPUTATION_RANGE_PCT, build_config_snapshot
 from phase1.market_clock import now_ny, get_calendar_snapshot
 from phase1.data_client import TradierDataClient
 from phase1.rates import fetch_risk_free_rate
@@ -444,8 +444,8 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
             if entry.get("status") != "ok":
                 continue
             from phase1.model_inputs import prepare_option_for_model
-            lower = spot * 0.95
-            upper = spot * 1.05
+            lower = spot * (1 - COMPUTATION_RANGE_PCT)
+            upper = spot * (1 + COMPUTATION_RANGE_PCT)
             for raw_opt, sign in [(c, +1) for c in entry["calls"]] + [(p, -1) for p in entry["puts"]]:
                 K = raw_opt["strike"]
                 if K < lower or K > upper:
@@ -1283,7 +1283,7 @@ def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, 
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
         barmode="overlay",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=700, dragmode=False,
+        height=2000, dragmode=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
