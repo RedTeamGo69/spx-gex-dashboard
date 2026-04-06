@@ -129,7 +129,8 @@ def test_zero_gamma_sweep_details_detects_true_crossing(monkeypatch):
         # _sweep_gex_at_prices returns total GEX (already Spot²-scaled)
         return np.array([float(p - 100.0) for p in prices])
 
-    monkeypatch.setattr(gex_engine, "_sweep_gex_at_prices", fake_sweep)
+    import phase1.zero_gamma as zero_gamma_mod
+    monkeypatch.setattr(zero_gamma_mod, "_sweep_gex_at_prices", fake_sweep)
 
     details = gex_engine.zero_gamma_sweep_details(
         all_options=[(1, 1, 1, 1, 1)],
