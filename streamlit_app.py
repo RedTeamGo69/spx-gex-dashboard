@@ -2050,109 +2050,113 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     st.markdown("---")
 
     # =========================================================================
-    # RISK TIER SELECTOR (full width above charts)
+    # RISK TIER SELECTOR + DEPENDENT UI (wrapped in fragment for fast switching)
     # =========================================================================
 
-    _TIER_COLORS = {
-        "aggressive":   "#ff4b4b",
-        "moderate":     "#ffa726",
-        "conservative": "#66bb6a",
-    }
+    @st.fragment
+    def _risk_tier_fragment():
+        _TIER_COLORS = {
+            "aggressive":   "#ff4b4b",
+            "moderate":     "#ffa726",
+            "conservative": "#66bb6a",
+        }
 
-    tier_labels = [t.label for t in spread_tiers]
-    default_idx = len(tier_labels) - 1
-    selected_tier_idx = st.radio(
-        "Risk Tier",
-        range(len(tier_labels)),
-        format_func=lambda i: f"{tier_labels[i]}  ({spread_tiers[i].range_pct*100:.1f}%)",
-        index=default_idx,
-        key=f"sf_risk_tier_{ticker}",
-        horizontal=True,
-    )
-
-    selected_tier = spread_tiers[selected_tier_idx]
-    tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
-    st.markdown(
-        f"<span style='color:{tier_color};font-size:18px;font-weight:bold;'>"
-        f"{selected_tier.risk_level.upper()}</span>"
-        f" &nbsp;—&nbsp; Range: {selected_tier.range_pct*100:.2f}%"
-        f" &nbsp;|&nbsp; Calls above `{selected_tier.call_short:,.0f}`"
-        f" &nbsp;|&nbsp; Puts below `{selected_tier.put_short:,.0f}`",
-        unsafe_allow_html=True,
-    )
-
-    # =========================================================================
-    # RANGE GAUGE + STRIKE MAP (side by side)
-    # =========================================================================
-
-    col_gauge, col_strikes = st.columns([1, 1])
-
-    with col_gauge:
-        st.markdown("**Range Distribution**")
-        _render_sf_range_gauge(forecast, plan, spx_close_input)
-
-    with col_strikes:
-        st.markdown("**Strike Map with GEX Walls**")
-        _render_sf_strike_map_tier(
-            selected_tier, plan, spx_close_input, gex_ctx,
-            plan.recommended_width, ticker=ticker,
-            weekly_em=weekly_em,
+        tier_labels = [t.label for t in spread_tiers]
+        default_idx = len(tier_labels) - 1
+        selected_tier_idx = st.radio(
+            "Risk Tier",
+            range(len(tier_labels)),
+            format_func=lambda i: f"{tier_labels[i]}  ({spread_tiers[i].range_pct*100:.1f}%)",
+            index=default_idx,
+            key=f"sf_risk_tier_{ticker}",
+            horizontal=True,
         )
 
-    st.markdown("---")
+        selected_tier = spread_tiers[selected_tier_idx]
+        tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
+        st.markdown(
+            f"<span style='color:{tier_color};font-size:18px;font-weight:bold;'>"
+            f"{selected_tier.risk_level.upper()}</span>"
+            f" &nbsp;—&nbsp; Range: {selected_tier.range_pct*100:.2f}%"
+            f" &nbsp;|&nbsp; Calls above `{selected_tier.call_short:,.0f}`"
+            f" &nbsp;|&nbsp; Puts below `{selected_tier.put_short:,.0f}`",
+            unsafe_allow_html=True,
+        )
 
-    st.markdown(f"**Spread Parameters — {selected_tier.label}**")
+        # =====================================================================
+        # RANGE GAUGE + STRIKE MAP (side by side)
+        # =====================================================================
 
-    col_call, col_put = st.columns(2)
+        col_gauge, col_strikes = st.columns([1, 1])
 
-    with col_call:
-        st.markdown(f"Call Spreads — short above `{selected_tier.call_short:,.0f}`")
-        _render_sf_spread_table(selected_tier.call_spreads, plan.recommended_width)
+        with col_gauge:
+            st.markdown("**Range Distribution**")
+            _render_sf_range_gauge(forecast, plan, spx_close_input)
 
-    with col_put:
-        st.markdown(f"Put Spreads — short below `{selected_tier.put_short:,.0f}`")
-        _render_sf_spread_table(selected_tier.put_spreads, plan.recommended_width)
+        with col_strikes:
+            st.markdown("**Strike Map with GEX Walls**")
+            _render_sf_strike_map_tier(
+                selected_tier, plan, spx_close_input, gex_ctx,
+                plan.recommended_width, ticker=ticker,
+                weekly_em=weekly_em,
+            )
 
-    # Show credit source note with chain expiration
-    all_tier_spreads = selected_tier.call_spreads + selected_tier.put_spreads
-    has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_tier_spreads)
-    has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_tier_spreads)
-    exp_note = f" Chain: {chain_exp}" if chain_exp else ""
-    if has_market and has_bsm:
-        st.caption(f"Credits from Friday chain bid/ask.{exp_note} &nbsp;|&nbsp; * = BSM estimate (strike not in chain).")
-    elif has_market:
-        st.caption(f"Credits from Friday chain bid/ask (short bid - long ask).{exp_note}")
-    else:
-        st.caption("Credits are BSM estimates (no Friday chain data available). Verify with broker before trading.")
+        st.markdown("---")
 
-    # =========================================================================
-    # GEX CONTEXT + WARNINGS
-    # =========================================================================
+        st.markdown(f"**Spread Parameters — {selected_tier.label}**")
 
-    st.markdown("---")
+        col_call, col_put = st.columns(2)
 
-    col_gex, col_warn = st.columns([1, 1])
+        with col_call:
+            st.markdown(f"Call Spreads — short above `{selected_tier.call_short:,.0f}`")
+            _render_sf_spread_table(selected_tier.call_spreads, plan.recommended_width)
 
-    with col_gex:
-        _render_gex_context_panel(gex_ctx, spot)
+        with col_put:
+            st.markdown(f"Put Spreads — short below `{selected_tier.put_short:,.0f}`")
+            _render_sf_spread_table(selected_tier.put_spreads, plan.recommended_width)
 
-    with col_warn:
-        st.markdown("**Warnings & GEX Notes**")
-
-        all_warnings = list(plan.warnings) + gex_adj.get("gex_adjustment_notes", [])
-        if all_warnings:
-            for w in all_warnings:
-                st.warning(w)
+        # Show credit source note with chain expiration
+        all_tier_spreads = selected_tier.call_spreads + selected_tier.put_spreads
+        has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_tier_spreads)
+        has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_tier_spreads)
+        exp_note = f" Chain: {chain_exp}" if chain_exp else ""
+        if has_market and has_bsm:
+            st.caption(f"Credits from Friday chain bid/ask.{exp_note} &nbsp;|&nbsp; * = BSM estimate (strike not in chain).")
+        elif has_market:
+            st.caption(f"Credits from Friday chain bid/ask (short bid - long ask).{exp_note}")
         else:
-            st.success("No warnings for this week.")
+            st.caption("Credits are BSM estimates (no Friday chain data available). Verify with broker before trading.")
 
-        # Event flags
-        events = {"FOMC": plan.has_fomc, "CPI": plan.has_cpi, "NFP": plan.has_nfp, "OPEX": plan.has_opex}
-        active = [k for k, v in events.items() if v]
-        if active:
-            st.markdown(f"**Events this week:** {', '.join(active)}")
-        else:
-            st.caption("No major events this week")
+        # =====================================================================
+        # GEX CONTEXT + WARNINGS
+        # =====================================================================
+
+        st.markdown("---")
+
+        col_gex, col_warn = st.columns([1, 1])
+
+        with col_gex:
+            _render_gex_context_panel(gex_ctx, spot)
+
+        with col_warn:
+            st.markdown("**Warnings & GEX Notes**")
+
+            all_warnings = list(plan.warnings) + gex_adj.get("gex_adjustment_notes", [])
+            if all_warnings:
+                for w in all_warnings:
+                    st.warning(w)
+            else:
+                st.success("No warnings for this week.")
+
+            # Event flags
+            events = {"FOMC": plan.has_fomc, "CPI": plan.has_cpi, "NFP": plan.has_nfp, "OPEX": plan.has_opex}
+            active = [k for k, v in events.items() if v]
+            if active:
+                st.markdown(f"**Events this week:** {', '.join(active)}")
+            else:
+                st.caption("No major events this week")
+
+    _risk_tier_fragment()
 
     # =========================================================================
     # LOG PLAN BUTTON
