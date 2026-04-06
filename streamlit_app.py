@@ -2053,6 +2053,19 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # RISK TIER SELECTOR + DEPENDENT UI (wrapped in fragment for fast switching)
     # =========================================================================
 
+    # Store everything the fragment needs in session_state so it doesn't
+    # rely on closure variables that become stale across fragment reruns.
+    st.session_state["_rtf_spread_tiers"] = spread_tiers
+    st.session_state["_rtf_forecast"]     = forecast
+    st.session_state["_rtf_plan"]         = plan
+    st.session_state["_rtf_spx_close"]    = spx_close_input
+    st.session_state["_rtf_gex_ctx"]      = gex_ctx
+    st.session_state["_rtf_ticker"]       = ticker
+    st.session_state["_rtf_weekly_em"]    = weekly_em
+    st.session_state["_rtf_chain_exp"]    = chain_exp
+    st.session_state["_rtf_spot"]         = spot
+    st.session_state["_rtf_gex_adj"]      = gex_adj
+
     @st.fragment
     def _risk_tier_fragment():
         _TIER_COLORS = {
@@ -2061,18 +2074,30 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             "conservative": "#66bb6a",
         }
 
-        tier_labels = [t.label for t in spread_tiers]
+        # Read from session_state to avoid stale closure references
+        _spread_tiers  = st.session_state["_rtf_spread_tiers"]
+        _forecast      = st.session_state["_rtf_forecast"]
+        _plan          = st.session_state["_rtf_plan"]
+        _spx_close_inp = st.session_state["_rtf_spx_close"]
+        _gex_ctx       = st.session_state["_rtf_gex_ctx"]
+        _ticker        = st.session_state["_rtf_ticker"]
+        _weekly_em     = st.session_state["_rtf_weekly_em"]
+        _chain_exp     = st.session_state["_rtf_chain_exp"]
+        _spot          = st.session_state["_rtf_spot"]
+        _gex_adj       = st.session_state["_rtf_gex_adj"]
+
+        tier_labels = [t.label for t in _spread_tiers]
         default_idx = len(tier_labels) - 1
         selected_tier_idx = st.radio(
             "Risk Tier",
             range(len(tier_labels)),
-            format_func=lambda i: f"{tier_labels[i]}  ({spread_tiers[i].range_pct*100:.1f}%)",
+            format_func=lambda i: f"{tier_labels[i]}  ({_spread_tiers[i].range_pct*100:.1f}%)",
             index=default_idx,
-            key=f"sf_risk_tier_{ticker}",
+            key=f"sf_risk_tier_{_ticker}",
             horizontal=True,
         )
 
-        selected_tier = spread_tiers[selected_tier_idx]
+        selected_tier = _spread_tiers[selected_tier_idx]
         tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
         st.markdown(
             f"<span style='color:{tier_color};font-size:18px;font-weight:bold;'>"
@@ -2091,14 +2116,14 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
         with col_gauge:
             st.markdown("**Range Distribution**")
-            _render_sf_range_gauge(forecast, plan, spx_close_input)
+            _render_sf_range_gauge(_forecast, _plan, _spx_close_inp)
 
         with col_strikes:
             st.markdown("**Strike Map with GEX Walls**")
             _render_sf_strike_map_tier(
-                selected_tier, plan, spx_close_input, gex_ctx,
-                plan.recommended_width, ticker=ticker,
-                weekly_em=weekly_em,
+                selected_tier, _plan, _spx_close_inp, _gex_ctx,
+                _plan.recommended_width, ticker=_ticker,
+                weekly_em=_weekly_em,
             )
 
         st.markdown("---")
@@ -2109,17 +2134,17 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
         with col_call:
             st.markdown(f"Call Spreads — short above `{selected_tier.call_short:,.0f}`")
-            _render_sf_spread_table(selected_tier.call_spreads, plan.recommended_width)
+            _render_sf_spread_table(selected_tier.call_spreads, _plan.recommended_width)
 
         with col_put:
             st.markdown(f"Put Spreads — short below `{selected_tier.put_short:,.0f}`")
-            _render_sf_spread_table(selected_tier.put_spreads, plan.recommended_width)
+            _render_sf_spread_table(selected_tier.put_spreads, _plan.recommended_width)
 
         # Show credit source note with chain expiration
         all_tier_spreads = selected_tier.call_spreads + selected_tier.put_spreads
         has_market = any(getattr(s, "credit_source", "bsm") == "market" for s in all_tier_spreads)
         has_bsm = any(getattr(s, "credit_source", "bsm") == "bsm" for s in all_tier_spreads)
-        exp_note = f" Chain: {chain_exp}" if chain_exp else ""
+        exp_note = f" Chain: {_chain_exp}" if _chain_exp else ""
         if has_market and has_bsm:
             st.caption(f"Credits from Friday chain bid/ask.{exp_note} &nbsp;|&nbsp; * = BSM estimate (strike not in chain).")
         elif has_market:
@@ -2136,12 +2161,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         col_gex, col_warn = st.columns([1, 1])
 
         with col_gex:
-            _render_gex_context_panel(gex_ctx, spot)
+            _render_gex_context_panel(_gex_ctx, _spot)
 
         with col_warn:
             st.markdown("**Warnings & GEX Notes**")
 
-            all_warnings = list(plan.warnings) + gex_adj.get("gex_adjustment_notes", [])
+            all_warnings = list(_plan.warnings) + _gex_adj.get("gex_adjustment_notes", [])
             if all_warnings:
                 for w in all_warnings:
                     st.warning(w)
@@ -2149,7 +2174,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 st.success("No warnings for this week.")
 
             # Event flags
-            events = {"FOMC": plan.has_fomc, "CPI": plan.has_cpi, "NFP": plan.has_nfp, "OPEX": plan.has_opex}
+            events = {"FOMC": _plan.has_fomc, "CPI": _plan.has_cpi, "NFP": _plan.has_nfp, "OPEX": _plan.has_opex}
             active = [k for k, v in events.items() if v]
             if active:
                 st.markdown(f"**Events this week:** {', '.join(active)}")

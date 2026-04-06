@@ -7,9 +7,10 @@ on:
     # We fire at BOTH possible UTC offsets and let the script skip if
     # it's outside market hours — no manual DST adjustment needed.
 
-    # 9:30 AM ET open scan
-    - cron: "30 13 * * 1-5"   # 9:30 AM EDT (Mar-Nov)
-    - cron: "30 14 * * 1-5"   # 9:30 AM EST (Nov-Mar)
+    # 9:28 AM ET — start early so deps install before market open.
+    # The snapshot script waits until 9:30 AM ET before fetching data.
+    - cron: "28 13 * * 1-5"   # 9:28 AM EDT (Mar-Nov)
+    - cron: "28 14 * * 1-5"   # 9:28 AM EST (Nov-Mar)
 
     # 3:59 PM ET close scan
     - cron: "59 19 * * 1-5"   # 3:59 PM EDT (Mar-Nov)

@@ -55,10 +55,11 @@ def capture_snapshot():
     _logger.info(f"Starting scheduled snapshot for {ticker} at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
 
     # ── Market hours guard ──
-    # Both EDT and EST cron triggers fire; skip if outside 9:25 AM - 4:05 PM ET window.
+    # Both EDT and EST cron triggers fire; skip if outside 9:20 AM - 4:05 PM ET window.
+    # The 9:28 AM cron may arrive as early as 9:20 depending on GitHub runner startup.
     hour, minute = run_now.hour, run_now.minute
     time_val = hour * 60 + minute  # minutes since midnight
-    market_open = 9 * 60 + 25      # 9:25 AM (5-min early buffer)
+    market_open = 9 * 60 + 20      # 9:20 AM (10-min early buffer for pre-warm)
     market_close = 16 * 60 + 5     # 4:05 PM (5-min late buffer)
     if time_val < market_open or time_val > market_close:
         _logger.info(f"Outside market hours ({run_now.strftime('%I:%M %p ET')}) — skipping (likely wrong DST trigger)")
@@ -76,6 +77,21 @@ def capture_snapshot():
     if session.market_open is None:
         _logger.info(f"Market holiday ({today_str}) — skipping")
         sys.exit(0)
+
+    # ── Wait for market open (9:30 AM ET) ──
+    # The cron fires at 9:28 AM so deps install before open.
+    # Wait here until 9:30:00 so we capture live opening data.
+    import time
+    market_open_time = 9 * 60 + 30  # 9:30 AM in minutes
+    while True:
+        wait_now = now_ny()
+        current_minutes = wait_now.hour * 60 + wait_now.minute
+        if current_minutes >= market_open_time:
+            break
+        wait_seconds = (market_open_time - current_minutes) * 60 - wait_now.second
+        wait_seconds = max(wait_seconds, 1)
+        _logger.info(f"Waiting {wait_seconds}s for market open (currently {wait_now.strftime('%I:%M:%S %p ET')})...")
+        time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
 
     # ── Fetch market data ──
     client = TradierDataClient(token=tradier_token)
