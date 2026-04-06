@@ -1,0 +1,372 @@
+"""
+Sidebar rendering functions extracted from streamlit_app.py.
+"""
+from __future__ import annotations
+
+import streamlit as st
+
+from streamlit_app import COLORS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sidebar rendering
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_move_display(overnight, classification, futures_ctx, market_ctx):
+    """Render the overnight/today's move section."""
+    move_source = classification.get("move_source", "spx")
+
+    if market_ctx == "live":
+        on_pts = overnight.get("overnight_move_pts")
+        if on_pts is not None:
+            arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
+            st.markdown(
+                f"**Today's Move:** {arrow} **{on_pts:+.1f} pts** ({overnight['overnight_move_pct']:+.2f}%)"
+            )
+    elif "es_futures" in move_source and futures_ctx:
+        arrow = "🟢 ▲" if futures_ctx["overnight_move_pts"] >= 0 else "🔴 ▼"
+        st.markdown(
+            f"**Overnight ({'ES÷10' if ticker == 'XSP' else 'ES'}):** {arrow} **{futures_ctx['overnight_move_pts']:+.1f} pts** ({futures_ctx['overnight_move_pct']:+.2f}%)"
+        )
+        src_label = "manual" if futures_ctx["source"] == "manual" else "Yahoo ~10m delayed"
+        _es_label = "ES÷10" if ticker == "XSP" else "ES"
+        _prev_label = f"{ticker} prevclose"
+        st.caption(f"{_es_label}: \\${futures_ctx['es_last']:.2f} vs {_prev_label} \\${futures_ctx['spx_prevclose']:.2f} ({src_label})")
+    else:
+        on_pts = overnight.get("overnight_move_pts")
+        if on_pts is not None:
+            label = "Session Move" if market_ctx == "afterhours" else "Overnight Move"
+            arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
+            st.markdown(
+                f"**{label}:** {arrow} **{on_pts:+.1f} pts** ({overnight['overnight_move_pct']:+.2f}%)"
+            )
+    return move_source
+
+
+def _render_overnight_range(overnite_range, move_source, spy):
+    """Render overnight range and SPY proxy."""
+    if overnite_range and overnite_range.get("es_high"):
+        hi = overnite_range["high_move_from_close"]
+        lo = overnite_range["low_move_from_close"]
+        max_em = overnite_range.get("max_move_vs_em")
+        max_em_str = f" ({max_em*100:.0f}% of EM)" if max_em else ""
+        st.markdown(
+            f"**O/N Range:** :green[${overnite_range['es_high']:.0f}] ({hi:+.0f}) "
+            f"— :red[${overnite_range['es_low']:.0f}] ({lo:+.0f}) "
+            f"= {overnite_range['range_pts']:.0f} pts"
+        )
+        st.caption(f"Max overnight excursion: {overnite_range['max_move_pts']:.0f} pts{max_em_str}")
+
+    if spy and "es_futures" not in move_source:
+        st.caption(
+            f"SPY Pre-mkt: ${spy['spy_price']:.2f} ({spy['spy_move_pct']:+.2f}%) "
+            f"→ ~{spy['implied_spx_move_pts']:+.1f} SPX pts"
+        )
+
+
+def _render_classification(classification, level_ctx):
+    """Render session classification and zero gamma context."""
+    ratio = classification.get("move_ratio")
+    if ratio is not None:
+        pct = min(ratio * 100, 100)
+        label = classification.get("move_ratio_label", "")
+        st.markdown(f"**Vol Budget Used:** {pct:.0f}% ({label})")
+        st.progress(min(ratio, 1.0))
+
+    if classification.get("classification"):
+        bias = classification.get("bias", "")
+        if bias in ("range-bound", "mean-revert"):
+            cls_icon = "🟢"
+        elif bias in ("directional", "continued-trend"):
+            cls_icon = "🔴"
+        else:
+            cls_icon = "🟡"
+
+        st.markdown(f"### {cls_icon} {classification['classification']}")
+        if classification.get("description"):
+            st.caption(classification["description"])
+        if classification.get("historical_tendencies"):
+            st.markdown(f"**Tendencies:** {classification['historical_tendencies'][0]}")
+        if classification.get("confidence_note"):
+            st.caption(classification["confidence_note"])
+
+    if level_ctx and level_ctx.get("zero_gamma_within_em") is not None:
+        inside = "✅ inside" if level_ctx["zero_gamma_within_em"] else "⚠️ outside"
+        st.markdown(
+            f"**Zero Γ:** {inside} expected range "
+            f"({level_ctx['zero_gamma_distance_to_spot']:+.1f} pts from spot)"
+        )
+
+
+def render_expected_move_panel(em_analysis, ticker="SPX"):
+    em_data = em_analysis.get("expected_move", {})
+    overnight = em_analysis.get("overnight_move", {})
+    classification = em_analysis.get("classification", {})
+    spy = em_analysis.get("spy_proxy")
+    futures_ctx = em_analysis.get("futures_context")
+    overnite_range = em_analysis.get("overnight_range")
+    level_ctx = em_analysis.get("level_context")
+    market_ctx = em_analysis.get("market_context", "live")
+
+    if em_data.get("expected_move_pts") is None:
+        st.caption("Expected move data not available.")
+        return
+
+    st.markdown("#### ⚡ Expected Move — 0DTE")
+
+    # Straddle & range
+    straddle = em_data.get("straddle", {})
+    em_pts_val = em_data.get("expected_move_pts", 0) or 0
+    em_pct_val = em_data.get("expected_move_pct", 0) or 0
+    em_lower = em_data.get("lower_level")
+    em_upper = em_data.get("upper_level")
+    straddle_html = (
+        '<div class="level-grid" style="grid-template-columns: 1fr 1fr;">'
+        f'<div class="level-card"><div class="lbl">ATM Straddle</div><div class="val">{em_pts_val:.1f} pts</div><div class="lbl">{em_pct_val:.2f}%</div></div>'
+        f'<div class="level-card"><div class="lbl">Strike</div><div class="val">${straddle.get("strike", "?")}</div></div>'
+        '</div>'
+    )
+    st.markdown(straddle_html, unsafe_allow_html=True)
+
+    if em_lower is not None and em_upper is not None:
+        st.markdown(
+            f"**Expected Range:** "
+            f":red[${em_lower:.0f}] — :green[${em_upper:.0f}]"
+        )
+
+    move_source = _render_move_display(overnight, classification, futures_ctx, market_ctx)
+    _render_overnight_range(overnite_range, move_source, spy)
+    _render_classification(classification, level_ctx)
+
+    st.divider()
+
+
+def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info):
+    conf_score = confidence_info.get("score", 0)
+    conf_label = confidence_info.get("label", "?")
+    conf_color = COLORS["positive"] if conf_label == "High" else COLORS["warning"] if conf_label == "Moderate" else COLORS["negative"]
+
+    spot_c = COLORS["spot"]
+    cw_c = COLORS["call_wall"]
+    pw_c = COLORS["put_wall"]
+    zg_c = COLORS["zero_gamma"]
+    html = (
+        '<div class="level-grid">'
+        f'<div class="level-card"><div class="lbl">Spot</div><div class="val" style="color:{spot_c};">${spot:.2f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Call Wall</div><div class="val" style="color:{cw_c};">${levels["call_wall"]:.0f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Put Wall</div><div class="val" style="color:{pw_c};">${levels["put_wall"]:.0f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Zero Gamma</div><div class="val" style="color:{zg_c};">${levels["zero_gamma"]:.2f}</div></div>'
+        f'<div class="level-card"><div class="lbl">Regime</div><div class="val" style="color:{regime_info["color"]};font-size:12px;">{regime_info["regime"]}</div></div>'
+        f'<div class="level-card"><div class="lbl">Confidence</div><div class="val" style="color:{conf_color};">{conf_score:.0f}</div><div class="lbl" style="color:{conf_color};">{conf_label}</div></div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+    if not levels.get("is_true_crossing", True):
+        st.warning("⚠️ Zero gamma is a fallback estimate — no true sign-change crossing was found in the sweep range. Use this level with caution.")
+
+    st.caption(
+        "**Dealer positioning assumption:** GEX models assume dealers are net short calls and net short puts "
+        "(the standard retail convention). In reality, dealer positioning varies by strike — institutional "
+        "overlays (collars, risk reversals) and retail put-selling can invert the sign at specific strikes. "
+        "Open interest updates once daily (EOD), so intraday flow is not reflected. "
+        "Treat GEX levels as probabilistic zones, not hard barriers."
+    )
+
+
+def _fmt_delta(val, base_val):
+    """Format a value as 'value (delta)' with color coding."""
+    delta = val - base_val
+    if abs(delta) < 0.5:
+        return f"${val:.0f}"
+    color = COLORS["positive"] if delta > 0 else COLORS["negative"]
+    return f"${val:.0f} <span style='color:{color};font-size:9px;'>({delta:+.0f})</span>"
+
+
+def _fmt_gex_short(v):
+    if abs(v) >= 1_000_000:
+        return f"{v/1_000_000:.1f}M"
+    if abs(v) >= 1000:
+        return f"{v/1000:.0f}K"
+    return f"{v:.0f}"
+
+
+def render_scenarios_table(scenarios_df):
+    if scenarios_df is None or scenarios_df.empty:
+        return
+    st.markdown("#### Scenario Analysis")
+    st.caption("How key levels shift under spot shocks. Deltas shown vs Base.")
+
+    base = scenarios_df.iloc[0]
+    base_cw = float(base["call_wall"])
+    base_pw = float(base["put_wall"])
+    base_zg = float(base["zero_gamma"])
+    base_gex = float(base.get("net_gex", 0))
+
+    rows_html = ""
+    for _, row in scenarios_df.iterrows():
+        regime = row.get("gamma_regime", "")
+        is_base = row["scenario"] == "Base"
+        r_color = COLORS["positive"] if "Pos" in regime else COLORS["negative"] if "Neg" in regime else COLORS["zero_gamma"]
+        tl_c = COLORS["text_light"]
+        cw_c = COLORS["call_wall"]
+        pw_c = COLORS["put_wall"]
+        zg_c = COLORS["zero_gamma"]
+        bg = f"background:{COLORS['bg_card']};" if is_base else ""
+
+        net_gex = row.get("net_gex", 0)
+        gex_delta = net_gex - base_gex
+        gex_color = COLORS["positive"] if net_gex > 0 else COLORS["negative"]
+
+        cw_val = f"${row['call_wall']:.0f}" if is_base else _fmt_delta(row["call_wall"], base_cw)
+        pw_val = f"${row['put_wall']:.0f}" if is_base else _fmt_delta(row["put_wall"], base_pw)
+        zg_val = f"${row['zero_gamma']:.0f}" if is_base else _fmt_delta(row["zero_gamma"], base_zg)
+
+        rows_html += (
+            f'<tr style="{bg}">'
+            f'<td style="color:{tl_c};font-weight:bold;">{row["scenario"]}</td>'
+            f'<td>${row["spot"]:.0f}</td>'
+            f'<td style="color:{cw_c};">{cw_val}</td>'
+            f'<td style="color:{pw_c};">{pw_val}</td>'
+            f'<td style="color:{zg_c};">{zg_val}</td>'
+            f'<td style="color:{gex_color};font-size:9px;">{_fmt_gex_short(net_gex)}</td>'
+            f'<td style="color:{r_color};font-size:9px;">{regime}</td></tr>'
+        )
+
+    bg_card = COLORS["bg_card"]
+    text_m = COLORS["text_muted"]
+    table_html = (
+        '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px;">'
+        f'<thead><tr style="background:{bg_card};color:{text_m};font-size:10px;">'
+        '<th style="padding:4px;text-align:left;">Scenario</th>'
+        '<th style="padding:4px;">Spot</th>'
+        '<th style="padding:4px;">CW</th>'
+        '<th style="padding:4px;">PW</th>'
+        '<th style="padding:4px;">ZG</th>'
+        '<th style="padding:4px;">Net GEX</th>'
+        '<th style="padding:4px;">Regime</th>'
+        '</tr></thead>'
+        f'<tbody style="color:#ddd;text-align:center;">{rows_html}</tbody>'
+        '</table>'
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+
+
+def render_wall_credibility(wall_cred):
+    if not wall_cred:
+        return
+    st.markdown("#### Wall Credibility")
+    for key, label in [("call_wall", "Call Wall"), ("put_wall", "Put Wall"), ("zero_gamma", "Zero Γ")]:
+        info = wall_cred.get(key, {})
+        if not info:
+            continue
+        score = info.get("score", 0)
+        lbl = info.get("label", "?")
+        color = "🟢" if lbl == "High" else "🟡" if lbl == "Moderate" else "🔴"
+        st.markdown(f"{color} **{label}:** {score:.0f}/100 ({lbl})")
+        reasons = info.get("reasons", [])
+        for r in reasons[:2]:
+            st.caption(f"  • {r}")
+
+
+def render_gex_stream(stats, levels, spot):
+    """Sidebar GEX Stream panel — key metrics at a glance."""
+    st.markdown("#### 📡 GEX Stream")
+
+    gex_ratio = stats.get("gex_ratio", 0)
+    net_gex = stats.get("net_gex", 0)
+    pc_ratio = stats.get("pc_ratio", 0)
+    call_iv = stats.get("call_iv", 0)
+    put_iv = stats.get("put_iv", 0)
+
+    # Color coding
+    gr_color = COLORS["positive"] if gex_ratio > 1 else COLORS["negative"]
+    ng_color = COLORS["positive"] if net_gex > 0 else COLORS["negative"]
+    cw_c = COLORS["call_wall"]
+    pw_c = COLORS["put_wall"]
+    zg_c = COLORS["zero_gamma"]
+    text_w = COLORS["text_white"]
+    text_m = COLORS["text_muted"]
+
+    # Format net GEX
+    ng_fmt = stats.get("net_gex_fmt", f"{net_gex:.0f}")
+
+    # GEX Ratio sigma (rough heuristic: 1.0 = neutral)
+    gr_sigma = abs(gex_ratio - 1.0) / 0.5
+    gr_sigma_str = f"{gr_sigma:.1f}σ"
+
+    stream_html = f"""
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">GEX Ratio</td>
+        <td style="color:{gr_color};font-weight:bold;text-align:right;padding:3px 6px;">{gex_ratio:.2f}</td>
+        <td style="color:{text_m};font-size:10px;text-align:right;padding:3px 6px;">{gr_sigma_str}</td>
+        <td style="color:{text_m};padding:3px 6px;">Net GEX</td>
+        <td style="color:{ng_color};font-weight:bold;text-align:right;padding:3px 6px;">{ng_fmt}</td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{text_m};padding:3px 6px;">Call OI</td>
+        <td colspan="2" style="color:{cw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("call_oi", "0")} @ {stats.get("call_oi_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Pos GEX</td>
+        <td colspan="2" style="color:{cw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("pos_gex", "0")} @ {stats.get("pos_gex_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Zero Gamma</td>
+        <td colspan="4" style="color:{zg_c};font-weight:bold;text-align:right;padding:3px 6px;">{levels.get("zero_gamma", 0):,.2f}</td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Neg GEX</td>
+        <td colspan="2" style="color:{pw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("neg_gex", "0")} @ {stats.get("neg_gex_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr>
+        <td style="color:{text_m};padding:3px 6px;">Put OI</td>
+        <td colspan="2" style="color:{pw_c};font-weight:bold;text-align:right;padding:3px 6px;">{stats.get("put_oi", "0")} @ {stats.get("put_oi_strike", 0):.0f}</td>
+        <td colspan="2" style="color:{text_m};"></td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{text_m};padding:3px 6px;">Call IV</td>
+        <td style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{call_iv:.1f}%</td>
+        <td style="color:{text_m};padding:3px 6px;"></td>
+        <td style="color:{text_m};padding:3px 6px;">Put IV</td>
+        <td style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{put_iv:.1f}%</td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{text_m};padding:3px 6px;">P/C OI Ratio</td>
+        <td colspan="4" style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{pc_ratio:.2f}</td>
+      </tr>
+    </table>
+    """
+    st.markdown(stream_html, unsafe_allow_html=True)
+
+
+def render_data_quality(stats, staleness_info):
+    st.markdown("#### Data Quality")
+
+    fresh = staleness_info.get("freshness_score", 0)
+    fresh_lbl = staleness_info.get("freshness_label", "?")
+    fresh_color = COLORS["positive"] if fresh_lbl == "High" else COLORS["warning"] if fresh_lbl == "Moderate" else COLORS["negative"]
+
+    coverage = stats.get("coverage_ratio", 0)
+    cov_color = COLORS["positive"] if coverage >= 0.95 else COLORS["warning"] if coverage >= 0.85 else COLORS["negative"]
+
+    html = (
+        '<div class="level-grid">'
+        f'<div class="level-card"><div class="lbl">Used Options</div><div class="val">{stats.get("used_option_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Coverage</div><div class="val" style="color:{cov_color};">{coverage*100:.1f}%</div></div>'
+        f'<div class="level-card"><div class="lbl">Freshness</div><div class="val" style="color:{fresh_color};">{fresh:.0f}</div><div class="lbl" style="color:{fresh_color};">{fresh_lbl}</div></div>'
+        f'<div class="level-card"><div class="lbl">Direct IV</div><div class="val">{stats.get("direct_iv_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Synthetic IV</div><div class="val">{stats.get("synthetic_iv_count", 0):,}</div></div>'
+        f'<div class="level-card"><div class="lbl">Skipped (quality)</div><div class="val">{stats.get("skipped_count", 0):,}</div></div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+    # Detailed filter breakdown
+    range_filt = stats.get("range_filtered_count", 0)
+    zero_oi = stats.get("zero_oi_filtered_count", 0)
+    if range_filt or zero_oi:
+        st.caption(f"Filtered: {range_filt:,} out-of-range strikes, {zero_oi:,} zero-OI contracts")
