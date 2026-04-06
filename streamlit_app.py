@@ -527,7 +527,7 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, month
         title="Strike-by-Strike Net GEX Proxy",
         xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
-        showlegend=False, height=900, dragmode=False,
+        showlegend=False, height=1200, dragmode=False,
     )
     return fig
 
