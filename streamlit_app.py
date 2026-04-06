@@ -1004,146 +1004,142 @@ def _render_history_tab(current_spot, ticker="SPX"):
                 else:
                     st.error(f"DB Error: {diag.get('error', 'unknown')}")
 
-    # ── View toggle: daily summary vs intraday snapshots ──
-    view = st.radio("View", ["Daily Summary", "Today's Snapshots"], horizontal=True, key="hist_view")
+    # ── View toggle + charts (fragment — switching views doesn't rerun the page) ──
+    @st.fragment
+    def _history_fragment():
+        view = st.radio("View", ["Daily Summary", "Today's Snapshots"], horizontal=True, key="hist_view")
 
-    if view == "Today's Snapshots":
-        # Show all snapshots from the current session (useful for debugging)
-        all_snaps = get_history(days=1, ticker=ticker)
-        if not all_snaps:
-            st.info("No snapshots recorded yet this session. Each refresh saves a snapshot automatically.")
+        if view == "Today's Snapshots":
+            all_snaps = get_history(days=1, ticker=ticker)
+            if not all_snaps:
+                st.info("No snapshots recorded yet this session. Each refresh saves a snapshot automatically.")
+                return
+
+            snap_df = pd.DataFrame(all_snaps)
+            snap_df["time"] = pd.to_datetime(snap_df["timestamp"]).dt.strftime("%H:%M:%S")
+            display_cols = ["time", "spot", "zero_gamma", "call_wall", "put_wall", "regime",
+                            "net_gex", "gex_ratio", "call_iv", "put_iv"]
+            avail_cols = [c for c in display_cols if c in snap_df.columns]
+            st.markdown(f"**{len(snap_df)} snapshot(s)** recorded today")
+            st.dataframe(snap_df[avail_cols], use_container_width=True, hide_index=True)
+
+            if len(snap_df) >= 2:
+                snap_df["ts"] = pd.to_datetime(snap_df["timestamp"])
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=snap_df["ts"], y=snap_df["spot"], mode="lines+markers",
+                    name="Spot", line=dict(color=COLORS["spot"], width=2), marker=dict(size=4),
+                ))
+                fig.add_trace(go.Scatter(
+                    x=snap_df["ts"], y=snap_df["zero_gamma"], mode="lines+markers",
+                    name="Zero Gamma", line=dict(color=COLORS["zero_gamma"], width=2), marker=dict(size=4),
+                ))
+                fig.update_layout(
+                    paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+                    font_color="white", font_size=10,
+                    margin=dict(l=60, r=10, t=60, b=40),
+                    title="Intraday Spot vs Zero Gamma",
+                    xaxis=dict(gridcolor=COLORS["grid_major"]),
+                    yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=400, dragmode=False,
+                )
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
             return
 
-        snap_df = pd.DataFrame(all_snaps)
-        snap_df["time"] = pd.to_datetime(snap_df["timestamp"]).dt.strftime("%H:%M:%S")
-        display_cols = ["time", "spot", "zero_gamma", "call_wall", "put_wall", "regime",
-                        "net_gex", "gex_ratio", "call_iv", "put_iv"]
-        avail_cols = [c for c in display_cols if c in snap_df.columns]
-        st.markdown(f"**{len(snap_df)} snapshot(s)** recorded today")
-        st.dataframe(snap_df[avail_cols], use_container_width=True, hide_index=True)
+        # ── Daily Summary view ──
+        days = st.selectbox("History range", [7, 14, 30, 60], index=1, key="hist_days")
+        history = get_daily_summary(days=days, ticker=ticker)
 
-        # Intraday chart
-        if len(snap_df) >= 2:
-            snap_df["ts"] = pd.to_datetime(snap_df["timestamp"])
-            fig = go.Figure()
+        if not history:
+            st.info("No historical data yet. Snapshots are saved automatically on each refresh.")
+            return
+
+        hist_df = pd.DataFrame(history)
+        hist_df["date"] = pd.to_datetime(hist_df["date"])
+        if "scan_type" not in hist_df.columns:
+            hist_df["scan_type"] = "close"
+
+        open_df = hist_df[hist_df["scan_type"] == "open"].copy()
+        close_df = hist_df[hist_df["scan_type"] == "close"].copy()
+        if close_df.empty and not open_df.empty:
+            close_df = open_df.copy()
+
+        fig = go.Figure()
+
+        if not open_df.empty:
             fig.add_trace(go.Scatter(
-                x=snap_df["ts"], y=snap_df["spot"], mode="lines+markers",
-                name="Spot", line=dict(color=COLORS["spot"], width=2), marker=dict(size=4),
+                x=open_df["date"], y=open_df["spot"],
+                mode="markers", name="Spot (Open)",
+                marker=dict(size=8, color=COLORS["spot"], symbol="circle-open", line=dict(width=2)),
+                hovertemplate="Open %{x|%b %d}<br>Spot: $%{y:,.0f}<extra></extra>",
             ))
             fig.add_trace(go.Scatter(
-                x=snap_df["ts"], y=snap_df["zero_gamma"], mode="lines+markers",
-                name="Zero Gamma", line=dict(color=COLORS["zero_gamma"], width=2), marker=dict(size=4),
+                x=open_df["date"], y=open_df["zero_gamma"],
+                mode="markers", name="ZG (Open)",
+                marker=dict(size=8, color=COLORS["zero_gamma"], symbol="circle-open", line=dict(width=2)),
+                hovertemplate="Open %{x|%b %d}<br>ZG: $%{y:,.0f}<extra></extra>",
             ))
-            fig.update_layout(
-                paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
-                font_color="white", font_size=10,
-                margin=dict(l=60, r=10, t=60, b=40),
-                title="Intraday Spot vs Zero Gamma",
-                xaxis=dict(gridcolor=COLORS["grid_major"]),
-                yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                height=400, dragmode=False,
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-        return
 
-    # ── Daily Summary view ──
-    days = st.selectbox("History range", [7, 14, 30, 60], index=1, key="hist_days")
-    history = get_daily_summary(days=days, ticker=ticker)
+        if not close_df.empty:
+            fig.add_trace(go.Scatter(
+                x=close_df["date"], y=close_df["spot"],
+                mode="lines+markers", name="Spot (Close)",
+                line=dict(color=COLORS["spot"], width=2),
+                marker=dict(size=5),
+                hovertemplate="Close %{x|%b %d}<br>Spot: $%{y:,.0f}<extra></extra>",
+            ))
+            fig.add_trace(go.Scatter(
+                x=close_df["date"], y=close_df["zero_gamma"],
+                mode="lines+markers", name="ZG (Close)",
+                line=dict(color=COLORS["zero_gamma"], width=2),
+                marker=dict(size=5),
+                hovertemplate="Close %{x|%b %d}<br>ZG: $%{y:,.0f}<extra></extra>",
+            ))
+            fig.add_trace(go.Scatter(
+                x=close_df["date"], y=close_df["call_wall"],
+                mode="lines", name="Call Wall",
+                line=dict(color=COLORS["call_wall"], width=1, dash="dash"),
+            ))
+            fig.add_trace(go.Scatter(
+                x=close_df["date"], y=close_df["put_wall"],
+                mode="lines", name="Put Wall",
+                line=dict(color=COLORS["put_wall"], width=1, dash="dash"),
+            ))
 
-    if not history:
-        st.info("No historical data yet. Snapshots are saved automatically on each refresh.")
-        return
+        for _, o_row in open_df.iterrows():
+            c_match = close_df[close_df["date"] == o_row["date"]]
+            if c_match.empty:
+                continue
+            c_row = c_match.iloc[0]
+            spot_open, spot_close = o_row["spot"], c_row["spot"]
+            if spot_open and spot_close and spot_open != spot_close:
+                color = "rgba(105,240,174,0.10)" if spot_close >= spot_open else "rgba(255,107,107,0.10)"
+                fig.add_shape(
+                    type="rect", x0=o_row["date"], x1=o_row["date"],
+                    y0=min(spot_open, spot_close), y1=max(spot_open, spot_close),
+                    fillcolor=color, line_width=0, layer="below",
+                )
 
-    hist_df = pd.DataFrame(history)
-    hist_df["date"] = pd.to_datetime(hist_df["date"])
-    # Backward compat: tag rows if scan_type not present (old data)
-    if "scan_type" not in hist_df.columns:
-        hist_df["scan_type"] = "close"
+        fig.update_layout(
+            paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+            font_color="white", font_size=10,
+            margin=dict(l=60, r=10, t=60, b=40),
+            title=f"GEX Key Levels — Last {days} Days (Open + Close)",
+            xaxis=dict(gridcolor=COLORS["grid_major"]),
+            yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=500, dragmode=False,
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-    open_df = hist_df[hist_df["scan_type"] == "open"].copy()
-    close_df = hist_df[hist_df["scan_type"] == "close"].copy()
-    # For days with only an open scan and no close yet, also include in close for line continuity
-    if close_df.empty and not open_df.empty:
-        close_df = open_df.copy()
+        with st.expander("📋 Daily Summary"):
+            display_cols = ["date", "scan_type", "spot", "zero_gamma", "call_wall", "put_wall",
+                            "regime", "confidence_score", "coverage_ratio"]
+            avail_cols = [c for c in display_cols if c in hist_df.columns]
+            st.dataframe(hist_df[avail_cols].head(60), use_container_width=True, hide_index=True)
 
-    fig = go.Figure()
-
-    # -- Open scan (9:30 AM) --
-    if not open_df.empty:
-        fig.add_trace(go.Scatter(
-            x=open_df["date"], y=open_df["spot"],
-            mode="markers", name="Spot (Open)",
-            marker=dict(size=8, color=COLORS["spot"], symbol="circle-open", line=dict(width=2)),
-            hovertemplate="Open %{x|%b %d}<br>Spot: $%{y:,.0f}<extra></extra>",
-        ))
-        fig.add_trace(go.Scatter(
-            x=open_df["date"], y=open_df["zero_gamma"],
-            mode="markers", name="ZG (Open)",
-            marker=dict(size=8, color=COLORS["zero_gamma"], symbol="circle-open", line=dict(width=2)),
-            hovertemplate="Open %{x|%b %d}<br>ZG: $%{y:,.0f}<extra></extra>",
-        ))
-
-    # -- Close scan (3:59 PM) — connected lines --
-    if not close_df.empty:
-        fig.add_trace(go.Scatter(
-            x=close_df["date"], y=close_df["spot"],
-            mode="lines+markers", name="Spot (Close)",
-            line=dict(color=COLORS["spot"], width=2),
-            marker=dict(size=5),
-            hovertemplate="Close %{x|%b %d}<br>Spot: $%{y:,.0f}<extra></extra>",
-        ))
-        fig.add_trace(go.Scatter(
-            x=close_df["date"], y=close_df["zero_gamma"],
-            mode="lines+markers", name="ZG (Close)",
-            line=dict(color=COLORS["zero_gamma"], width=2),
-            marker=dict(size=5),
-            hovertemplate="Close %{x|%b %d}<br>ZG: $%{y:,.0f}<extra></extra>",
-        ))
-        fig.add_trace(go.Scatter(
-            x=close_df["date"], y=close_df["call_wall"],
-            mode="lines", name="Call Wall",
-            line=dict(color=COLORS["call_wall"], width=1, dash="dash"),
-        ))
-        fig.add_trace(go.Scatter(
-            x=close_df["date"], y=close_df["put_wall"],
-            mode="lines", name="Put Wall",
-            line=dict(color=COLORS["put_wall"], width=1, dash="dash"),
-        ))
-
-    # -- Open-to-Close range shading per day --
-    for _, o_row in open_df.iterrows():
-        c_match = close_df[close_df["date"] == o_row["date"]]
-        if c_match.empty:
-            continue
-        c_row = c_match.iloc[0]
-        spot_open, spot_close = o_row["spot"], c_row["spot"]
-        if spot_open and spot_close and spot_open != spot_close:
-            color = "rgba(105,240,174,0.10)" if spot_close >= spot_open else "rgba(255,107,107,0.10)"
-            fig.add_shape(
-                type="rect", x0=o_row["date"], x1=o_row["date"],
-                y0=min(spot_open, spot_close), y1=max(spot_open, spot_close),
-                fillcolor=color, line_width=0, layer="below",
-            )
-
-    fig.update_layout(
-        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
-        font_color="white", font_size=10,
-        margin=dict(l=60, r=10, t=60, b=40),
-        title=f"GEX Key Levels — Last {days} Days (Open + Close)",
-        xaxis=dict(gridcolor=COLORS["grid_major"]),
-        yaxis=dict(title="Price", gridcolor=COLORS["grid_minor"]),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=500, dragmode=False,
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-
-    # Summary table — show open and close side by side
-    with st.expander("📋 Daily Summary"):
-        display_cols = ["date", "scan_type", "spot", "zero_gamma", "call_wall", "put_wall",
-                        "regime", "confidence_score", "coverage_ratio"]
-        avail_cols = [c for c in display_cols if c in hist_df.columns]
-        st.dataframe(hist_df[avail_cols].head(60), use_container_width=True, hide_index=True)
+    _history_fragment()
 
 
 def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=None):
@@ -1307,11 +1303,13 @@ def _render_iv_surface(hm_iv, hm_gex, spot):
         st.info("IV surface data not available. Requires multiple expirations.")
         return
 
-    view = st.radio("View", ["IV Surface", "GEX Heatmap"], horizontal=True, key="iv_view")
+    @st.fragment
+    def _iv_fragment():
+        view = st.radio("View", ["IV Surface", "GEX Heatmap"], horizontal=True, key="iv_view")
 
-    with st.expander("How to read this chart"):
-        if view == "IV Surface":
-            st.markdown("""
+        with st.expander("How to read this chart"):
+            if view == "IV Surface":
+                st.markdown("""
 **IV Surface — Implied Volatility across strikes and expirations**
 
 - **X-axis** = Expiration date (left = near-term, right = further out)
@@ -1325,8 +1323,8 @@ def _render_iv_surface(hm_iv, hm_gex, spot):
 - **Term structure:** Compare left to right. If near-term IV is higher than far-term (brighter on the left), the market expects a move soon (event-driven). If far-term is higher, the market is calm short-term.
 - **Hot spots:** Bright patches at specific strikes/expirations can indicate unusual activity or event pricing (e.g., FOMC, earnings).
 """)
-        else:
-            st.markdown("""
+            else:
+                st.markdown("""
 **GEX Heatmap — Gamma Exposure across strikes and expirations**
 
 - **X-axis** = Expiration date
@@ -1343,49 +1341,51 @@ def _render_iv_surface(hm_iv, hm_gex, spot):
 - **Comparison across expirations:** GEX from near-term expirations has the strongest effect on price action (gamma decays as expiration approaches).
 """)
 
-    hm_data = hm_iv if view == "IV Surface" else hm_gex
+        hm_data = hm_iv if view == "IV Surface" else hm_gex
 
-    if hm_data.empty:
-        st.info(f"{view} data not available.")
-        return
+        if hm_data.empty:
+            st.info(f"{view} data not available.")
+            return
 
-    # Clean data
-    strikes = hm_data.index.tolist()
-    expirations = hm_data.columns.tolist()
-    z_values = hm_data.values
+        # Clean data
+        strikes = hm_data.index.tolist()
+        expirations = hm_data.columns.tolist()
+        z_values = hm_data.values
 
-    colorscale = "Viridis" if view == "IV Surface" else "RdYlGn"
-    title = "Implied Volatility Surface" if view == "IV Surface" else "GEX Heatmap"
+        colorscale = "Viridis" if view == "IV Surface" else "RdYlGn"
+        title = "Implied Volatility Surface" if view == "IV Surface" else "GEX Heatmap"
 
-    fig = go.Figure(data=go.Heatmap(
-        z=z_values,
-        x=expirations,
-        y=strikes,
-        colorscale=colorscale,
-        hovertemplate="Exp: %{x}<br>Strike: %{y}<br>Value: %{z:.4f}<extra></extra>",
-    ))
+        fig = go.Figure(data=go.Heatmap(
+            z=z_values,
+            x=expirations,
+            y=strikes,
+            colorscale=colorscale,
+            hovertemplate="Exp: %{x}<br>Strike: %{y}<br>Value: %{z:.4f}<extra></extra>",
+        ))
 
-    # Mark spot on y-axis — use white with dark background for contrast against heatmap
-    fig.add_hline(
-        y=spot, line_color="white", line_dash="dash", line_width=2,
-        annotation_text=f"  Spot ${spot:.0f}  ",
-        annotation_font_color="white", annotation_font_size=11,
-        annotation_bgcolor="rgba(0,0,0,0.7)",
-        annotation_bordercolor="white", annotation_borderwidth=1,
-        annotation_borderpad=3,
-        annotation_position="right",
-    )
+        # Mark spot on y-axis — use white with dark background for contrast against heatmap
+        fig.add_hline(
+            y=spot, line_color="white", line_dash="dash", line_width=2,
+            annotation_text=f"  Spot ${spot:.0f}  ",
+            annotation_font_color="white", annotation_font_size=11,
+            annotation_bgcolor="rgba(0,0,0,0.7)",
+            annotation_bordercolor="white", annotation_borderwidth=1,
+            annotation_borderpad=3,
+            annotation_position="right",
+        )
 
-    fig.update_layout(
-        paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
-        font_color="white", font_size=10,
-        margin=dict(l=60, r=10, t=35, b=60),
-        title=title,
-        xaxis=dict(title="Expiration", tickangle=45),
-        yaxis=dict(title="Strike"),
-        height=600, dragmode=False,
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+        fig.update_layout(
+            paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
+            font_color="white", font_size=10,
+            margin=dict(l=60, r=10, t=35, b=60),
+            title=title,
+            xaxis=dict(title="Expiration", tickangle=45),
+            yaxis=dict(title="Strike"),
+            height=600, dragmode=False,
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
+
+    _iv_fragment()
 
 
 def _render_pin_detection(stats, gex_df, spot):
