@@ -375,6 +375,20 @@ def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
                 EXCEPTION WHEN duplicate_column THEN NULL;
                 END $$
             """)
+        # Migrate PK from old (date)-only to (ticker, date, em_type)
+        cur.execute("""
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'em_snapshots_pkey'
+                      AND conrelid = 'em_snapshots'::regclass
+                      AND array_length(conkey, 1) = 1
+                ) THEN
+                    ALTER TABLE em_snapshots DROP CONSTRAINT em_snapshots_pkey;
+                    ALTER TABLE em_snapshots ADD PRIMARY KEY (ticker, date, em_type);
+                END IF;
+            END $$
+        """)
         # Drop old index and create new composite one
         cur.execute("DROP INDEX IF EXISTS idx_em_ticker_date")
         cur.execute("""

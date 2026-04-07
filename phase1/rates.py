@@ -120,8 +120,8 @@ def fetch_risk_free_rate(fred_api_key: str, debug: bool = False):
     """
     Fetch current 3-month T-bill rate.
 
-    Fires FRED and Treasury API calls in parallel to avoid sequential
-    timeout stacking. FRED is preferred when both succeed.
+    Uses FRED DTB3 API with retry (handles rate limits from parallel
+    matrix jobs). Falls back to Treasury API, then disk cache.
 
     Final fallback: DEFAULT_RISK_FREE_RATE from config.
 
@@ -133,32 +133,35 @@ def fetch_risk_free_rate(fred_api_key: str, debug: bool = False):
         "as_of": "YYYY-MM-DD" or None,
     }
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time
 
-    futures = {}
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        has_fred_key = bool(fred_api_key and fred_api_key != "YOUR_FRED_KEY_HERE")
-        if has_fred_key:
-            futures[pool.submit(_fetch_fred, fred_api_key)] = "fred"
-        futures[pool.submit(_fetch_treasury)] = "treasury"
+    has_fred_key = bool(fred_api_key and fred_api_key != "YOUR_FRED_KEY_HERE")
 
-        results = {}
-        for future in as_completed(futures):
-            label = futures[future]
+    # Try FRED first (with retry to handle rate limits from parallel matrix jobs)
+    if has_fred_key:
+        for attempt in range(3):
             try:
-                results[label] = future.result()
+                parsed = _fetch_fred(fred_api_key)
+                if parsed is not None:
+                    print(f"  Risk-free rate: {parsed['rate']*100:.2f}% ({parsed['label']})")
+                    _write_rate_cache(parsed)
+                    return parsed
             except Exception as e:
                 if debug:
-                    print(f"  {label.upper()} API error: {e}")
-                results[label] = None
+                    print(f"  FRED attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))  # 2s, 4s backoff
 
-    # Prefer FRED over Treasury
-    for key in ["fred", "treasury"]:
-        parsed = results.get(key)
+    # Fall back to Treasury only if FRED is unavailable
+    try:
+        parsed = _fetch_treasury()
         if parsed is not None:
             print(f"  Risk-free rate: {parsed['rate']*100:.2f}% ({parsed['label']})")
             _write_rate_cache(parsed)
             return parsed
+    except Exception as e:
+        if debug:
+            print(f"  Treasury API error: {e}")
 
     # Both APIs failed — try disk cache before hardcoded fallback
     cached = _read_rate_cache()
