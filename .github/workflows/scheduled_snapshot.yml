@@ -1,19 +1,10 @@
 name: Scheduled GEX Snapshot
 
 on:
-  schedule:
-    # 9:30 AM ET morning snapshot — freeze opening prices for SPX/VIX,
-    # daily expected move, and weekly expected move levels.
-    #
-    # Eastern = UTC-4 (EDT, Mar-Nov) or UTC-5 (EST, Nov-Mar).
-    # We fire at BOTH UTC offsets; the script skips the wrong-DST trigger.
-    #
-    # GitHub Actions cron can be delayed 5-40+ min, so we fire at 9:15 AM
-    # to give deps time to install and still capture data near 9:30.
-    - cron: "15 13 * * 1-5"   # 9:15 AM EDT (Mar-Nov)
-    - cron: "15 14 * * 1-5"   # 9:15 AM EST (Nov-Mar)
-
-  workflow_dispatch:           # Allow manual trigger from GitHub UI
+  # Triggered externally by cron-job.org at exactly 9:30 AM ET (Mon-Fri).
+  # cron-job.org handles DST automatically via America/New_York timezone.
+  # Can also be triggered manually from the GitHub Actions UI.
+  workflow_dispatch:
 
 jobs:
   capture:
