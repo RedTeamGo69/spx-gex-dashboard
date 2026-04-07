@@ -1142,7 +1142,7 @@ def _render_history_tab(current_spot, ticker="SPX"):
     _history_fragment()
 
 
-def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=None):
+def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=None, is_frozen=True):
     """C5: Show how much of the expected move has been consumed."""
     em_data = em_analysis.get("expected_move", {}) if isinstance(em_analysis, dict) and "expected_move" in em_analysis else em_analysis
     if em_data is None:
@@ -1159,39 +1159,46 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", 
     # The EM range is anchored to spot at capture time (upper = anchor + em, lower = anchor - em).
     # Measure consumption from that same anchor so the % matches the visual range.
     em_anchor = (upper + lower) / 2 if (upper is not None and lower is not None) else prev_close
-    if em_anchor > 0:
+    if is_frozen and em_anchor > 0:
         current_move = abs(spot - em_anchor)
         move_pct_of_em = (current_move / em_pts) * 100
         direction = "up" if spot >= em_anchor else "down"
     else:
-        current_move = 0
-        move_pct_of_em = 0
-        direction = "flat"
+        # Live (unfrozen) data: anchor = current spot, so tracking is meaningless
+        current_move = None
+        move_pct_of_em = None
+        direction = None
 
     # Gauge display
-    if move_pct_of_em < 40:
-        gauge_color = COLORS["positive"]
-        status = "Plenty of room"
-    elif move_pct_of_em < 70:
-        gauge_color = COLORS["warning"]
-        status = "Moderate — watch for reversal"
-    elif move_pct_of_em < 100:
-        gauge_color = COLORS["negative"]
-        status = "Extended — mean reversion likely"
-    else:
-        gauge_color = "#ff1744"
-        status = "Beyond EM — trend day or breakout"
+    if move_pct_of_em is not None:
+        if move_pct_of_em < 40:
+            gauge_color = COLORS["positive"]
+            status = "Plenty of room"
+        elif move_pct_of_em < 70:
+            gauge_color = COLORS["warning"]
+            status = "Moderate — watch for reversal"
+        elif move_pct_of_em < 100:
+            gauge_color = COLORS["negative"]
+            status = "Extended — mean reversion likely"
+        else:
+            gauge_color = "#ff1744"
+            status = "Beyond EM — trend day or breakout"
 
     if subtitle:
         st.caption(subtitle)
 
     col1, col2, col3 = st.columns(3)
     col1.metric(f"{label} Expected Move", f"±{em_pts:.0f} pts")
-    col2.metric("Current Move", f"{current_move:.1f} pts {direction}")
-    col3.metric("EM Consumed", f"{move_pct_of_em:.0f}%")
+    if current_move is not None:
+        col2.metric("Current Move", f"{current_move:.1f} pts {direction}")
+        col3.metric("EM Consumed", f"{move_pct_of_em:.0f}%")
+    else:
+        col2.metric("Current Move", "—")
+        col3.metric("EM Consumed", "—")
 
-    st.progress(min(move_pct_of_em / 100, 1.0))
-    st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
+    if move_pct_of_em is not None:
+        st.progress(min(move_pct_of_em / 100, 1.0))
+        st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
 
     # Visual range display
     if upper is None or lower is None:
@@ -3015,16 +3022,28 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
         st.divider()
 
         # Weekly
-        weekly_sub = f"Frozen Mon open | Exp: {weekly_exp}" if weekly_exp else "No weekly expiration found"
+        weekly_is_frozen = weekly_em_snap is not None
+        if not weekly_exp:
+            weekly_sub = "No weekly expiration found"
+        elif weekly_is_frozen:
+            weekly_sub = f"Frozen Mon open | Exp: {weekly_exp}"
+        else:
+            weekly_sub = f"Live estimate (freezes Mon open) | Exp: {weekly_exp}"
         weekly_em_for_render = {"expected_move": weekly_em_snap} if weekly_em_snap else {"expected_move": weekly_em_live or {}}
-        _render_em_tracker(weekly_em_for_render, spot, prev_close, market_ctx, label="Weekly", subtitle=weekly_sub)
+        _render_em_tracker(weekly_em_for_render, spot, prev_close, market_ctx, label="Weekly", subtitle=weekly_sub, is_frozen=weekly_is_frozen)
 
         st.divider()
 
         # Monthly
-        monthly_sub = f"Frozen 1st trading day | Exp: {monthly_exp}" if monthly_exp else "No monthly expiration found"
+        monthly_is_frozen = monthly_em_snap is not None
+        if not monthly_exp:
+            monthly_sub = "No monthly expiration found"
+        elif monthly_is_frozen:
+            monthly_sub = f"Frozen 1st trading day | Exp: {monthly_exp}"
+        else:
+            monthly_sub = f"Live estimate (freezes 1st trading day) | Exp: {monthly_exp}"
         monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": monthly_em_live or {}}
-        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="Monthly", subtitle=monthly_sub)
+        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="Monthly", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
 
     # ── C4: IV surface visualization ──
     with tab_iv_surface:
