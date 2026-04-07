@@ -53,21 +53,16 @@ def capture_snapshot():
     today_str = run_now.strftime("%Y-%m-%d")
     _logger.info(f"Starting scheduled snapshot for {ticker} at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
 
-    # ── Morning capture window guard ──
-    # Both EDT and EST cron triggers fire; skip if outside the valid window.
-    # The 9:15 AM cron may be delayed by GitHub Actions (typically 5-40 min).
-    # Accept captures up to 10:15 AM to tolerate delays, but warn if late.
+    # ── Market hours sanity check ──
+    # cron-job.org fires at exactly 9:30 AM ET, but guard against accidental
+    # manual triggers outside market hours.
     hour, minute = run_now.hour, run_now.minute
     time_val = hour * 60 + minute  # minutes since midnight
-    window_start = 9 * 60 + 10     # 9:10 AM (buffer for early runner startup)
-    window_end   = 10 * 60 + 15    # 10:15 AM (tolerate up to ~1h GitHub delay)
-    if time_val < window_start or time_val > window_end:
-        _logger.info(f"Outside morning capture window ({run_now.strftime('%I:%M %p ET')}) — skipping (likely wrong DST trigger or stale run)")
+    market_open  = 9 * 60 + 20     # 9:20 AM (small buffer)
+    market_close = 10 * 60 + 15    # 10:15 AM (tolerate runner startup delay)
+    if time_val < market_open or time_val > market_close:
+        _logger.info(f"Outside morning capture window ({run_now.strftime('%I:%M %p ET')}) — skipping")
         sys.exit(0)
-
-    is_delayed = time_val > (9 * 60 + 45)  # after 9:45 AM = GitHub delayed
-    if is_delayed:
-        _logger.warning(f"GitHub Actions delayed — capturing at {run_now.strftime('%I:%M %p ET')} instead of 9:30 AM. Prices may not reflect market open.")
 
     # Skip weekends (shouldn't happen with Mon-Fri cron, but just in case)
     if run_now.weekday() >= 5:
@@ -82,10 +77,7 @@ def capture_snapshot():
         _logger.info(f"Market holiday ({today_str}) — skipping")
         sys.exit(0)
 
-    # ── Wait for market open (9:30 AM ET) ──
-    # The cron fires at 9:15 AM so deps install before open.
-    # Wait here until 9:30:00 so we capture live opening data.
-    # If GitHub delayed us past 9:30, skip the wait and capture immediately.
+    # ── Wait for market open (9:30 AM ET) if triggered slightly early ──
     import time
     market_open_time = 9 * 60 + 30  # 9:30 AM in minutes
     if time_val < market_open_time:
