@@ -3,8 +3,7 @@
 Scheduled GEX snapshot capture — runs WITHOUT Streamlit.
 
 Designed to be triggered by GitHub Actions (or any cron scheduler) at:
-  - 9:30 AM ET  (market open)
-  - 3:59 PM ET  (just before close)
+  - 9:30 AM ET  (market open — freeze opening prices, EM levels)
 
 Required env vars:
   TRADIER_TOKEN  — Tradier API bearer token
@@ -54,16 +53,21 @@ def capture_snapshot():
     today_str = run_now.strftime("%Y-%m-%d")
     _logger.info(f"Starting scheduled snapshot for {ticker} at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
 
-    # ── Market hours guard ──
-    # Both EDT and EST cron triggers fire; skip if outside 9:20 AM - 4:05 PM ET window.
-    # The 9:28 AM cron may arrive as early as 9:20 depending on GitHub runner startup.
+    # ── Morning capture window guard ──
+    # Both EDT and EST cron triggers fire; skip if outside the valid window.
+    # The 9:15 AM cron may be delayed by GitHub Actions (typically 5-40 min).
+    # Accept captures up to 10:15 AM to tolerate delays, but warn if late.
     hour, minute = run_now.hour, run_now.minute
     time_val = hour * 60 + minute  # minutes since midnight
-    market_open = 9 * 60 + 20      # 9:20 AM (10-min early buffer for pre-warm)
-    market_close = 16 * 60 + 5     # 4:05 PM (5-min late buffer)
-    if time_val < market_open or time_val > market_close:
-        _logger.info(f"Outside market hours ({run_now.strftime('%I:%M %p ET')}) — skipping (likely wrong DST trigger)")
+    window_start = 9 * 60 + 10     # 9:10 AM (buffer for early runner startup)
+    window_end   = 10 * 60 + 15    # 10:15 AM (tolerate up to ~1h GitHub delay)
+    if time_val < window_start or time_val > window_end:
+        _logger.info(f"Outside morning capture window ({run_now.strftime('%I:%M %p ET')}) — skipping (likely wrong DST trigger or stale run)")
         sys.exit(0)
+
+    is_delayed = time_val > (9 * 60 + 45)  # after 9:45 AM = GitHub delayed
+    if is_delayed:
+        _logger.warning(f"GitHub Actions delayed — capturing at {run_now.strftime('%I:%M %p ET')} instead of 9:30 AM. Prices may not reflect market open.")
 
     # Skip weekends (shouldn't happen with Mon-Fri cron, but just in case)
     if run_now.weekday() >= 5:
@@ -79,19 +83,21 @@ def capture_snapshot():
         sys.exit(0)
 
     # ── Wait for market open (9:30 AM ET) ──
-    # The cron fires at 9:28 AM so deps install before open.
+    # The cron fires at 9:15 AM so deps install before open.
     # Wait here until 9:30:00 so we capture live opening data.
+    # If GitHub delayed us past 9:30, skip the wait and capture immediately.
     import time
     market_open_time = 9 * 60 + 30  # 9:30 AM in minutes
-    while True:
-        wait_now = now_ny()
-        current_minutes = wait_now.hour * 60 + wait_now.minute
-        if current_minutes >= market_open_time:
-            break
-        wait_seconds = (market_open_time - current_minutes) * 60 - wait_now.second
-        wait_seconds = max(wait_seconds, 1)
-        _logger.info(f"Waiting {wait_seconds}s for market open (currently {wait_now.strftime('%I:%M:%S %p ET')})...")
-        time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
+    if time_val < market_open_time:
+        while True:
+            wait_now = now_ny()
+            current_minutes = wait_now.hour * 60 + wait_now.minute
+            if current_minutes >= market_open_time:
+                break
+            wait_seconds = (market_open_time - current_minutes) * 60 - wait_now.second
+            wait_seconds = max(wait_seconds, 1)
+            _logger.info(f"Waiting {wait_seconds}s for market open (currently {wait_now.strftime('%I:%M:%S %p ET')})...")
+            time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
 
     # ── Fetch market data ──
     client = TradierDataClient(token=tradier_token)
