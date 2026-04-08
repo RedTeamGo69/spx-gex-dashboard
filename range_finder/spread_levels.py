@@ -626,16 +626,27 @@ def build_spread_tiers(
     wing_widths: list = None,
     dte: int = 5,
     ticker: str = "SPX",
+    weekly_em: dict = None,
 ) -> list[SpreadTier]:
     """Build spread tiers at multiple risk levels from the forecast.
 
     Returns tiers from most aggressive (Point Estimate) to most conservative
     (Effective Range + buffer), each with their own short strikes and spreads.
+
+    If *weekly_em* is provided (dict with ``upper_level`` / ``lower_level``),
+    short strikes that would fall inside the weekly expected-move band are
+    pushed out to (at least) the EM boundary.  This prevents selling strikes
+    that the market's own straddle pricing says are reachable.
     """
     cfg = get_ticker_config(ticker)
     if wing_widths is None:
         wing_widths = cfg["wing_widths"]
     increment = cfg["strike_increment"]
+
+    # Weekly expected-move boundaries (0 = not available)
+    em_upper = float((weekly_em or {}).get("upper_level", 0) or 0)
+    em_lower = float((weekly_em or {}).get("lower_level", 0) or 0)
+    has_em = em_upper > 0 and em_lower > 0
 
     tiers_config = [
         ("Lower PI",         "aggressive",  forecast["lower_pct"]),
@@ -653,9 +664,30 @@ def build_spread_tiers(
         call_short = round_call_short(raw_call, increment=increment)
         put_short  = round_put_short(raw_put, increment=increment)
 
+        # --- Weekly EM floor ---------------------------------------------------
+        # If the short strike lands inside the expected-move band, widen it
+        # to at least the EM boundary so we never sell inside the straddle range.
+        em_adjusted_call = False
+        em_adjusted_put  = False
+        if has_em:
+            if call_short < em_upper:
+                call_short = round_call_short(em_upper, increment=increment)
+                em_adjusted_call = True
+            if put_short > em_lower:
+                put_short = round_put_short(em_lower, increment=increment)
+                em_adjusted_put = True
+
         if chain_quotes:
             call_short = _snap_to_chain_strike(call_short, chain_quotes, "call", direction="up")
             put_short  = _snap_to_chain_strike(put_short, chain_quotes, "put", direction="down")
+
+        if em_adjusted_call or em_adjusted_put:
+            sides = []
+            if em_adjusted_call:
+                sides.append(f"call short → {call_short:.0f} (EM upper {em_upper:.0f})")
+            if em_adjusted_put:
+                sides.append(f"put short → {put_short:.0f} (EM lower {em_lower:.0f})")
+            log.info(f"[{label}] Weekly EM floor applied: {'; '.join(sides)}")
 
         if chain_quotes:
             cw = _available_wing_widths(call_short, chain_quotes, "call", wing_widths)
