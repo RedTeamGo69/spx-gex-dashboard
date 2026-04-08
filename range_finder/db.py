@@ -297,9 +297,12 @@ def init_all_tables(conn) -> None:
         ("gex_normalized", "REAL"),
     ]:
         try:
-            cur.execute(f"ALTER TABLE model_features ADD COLUMN {col} {ctype}")
+            if _backend == "postgres":
+                cur.execute(f"ALTER TABLE model_features ADD COLUMN IF NOT EXISTS {col} {ctype}")
+            else:
+                cur.execute(f"ALTER TABLE model_features ADD COLUMN {col} {ctype}")
         except Exception:
-            pass  # Column already exists
+            pass  # SQLite: column already exists (benign)
 
     # --- gex_inputs ---
     cur.execute("""
