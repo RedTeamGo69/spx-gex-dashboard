@@ -2010,6 +2010,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             vix_level    = vix_input,
             chain_quotes = chain_quotes,
             ticker       = ticker,
+            weekly_em    = weekly_em,
         )
 
         # ── GEX enhancement ──
@@ -2176,6 +2177,25 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             st.markdown("**Warnings & GEX Notes**")
 
             all_warnings = list(_plan.warnings) + _gex_adj.get("gex_adjustment_notes", [])
+
+            # Per-tier weekly EM floor warnings
+            _em_upper = (_weekly_em or {}).get("upper_level", 0) or 0
+            _em_lower = (_weekly_em or {}).get("lower_level", 0) or 0
+            if _em_upper and _em_lower:
+                _half = selected_tier.range_pct / 2
+                _raw_call = _spx_close_inp * (1 + _half)
+                _raw_put  = _spx_close_inp * (1 - _half)
+                if _raw_call < _em_upper:
+                    all_warnings.append(
+                        f"Weekly EM floor applied: call short widened from ~{_raw_call:,.0f} "
+                        f"to {selected_tier.call_short:,.0f} (EM upper = {_em_upper:,.0f})"
+                    )
+                if _raw_put > _em_lower:
+                    all_warnings.append(
+                        f"Weekly EM floor applied: put short widened from ~{_raw_put:,.0f} "
+                        f"to {selected_tier.put_short:,.0f} (EM lower = {_em_lower:,.0f})"
+                    )
+
             if all_warnings:
                 for w in all_warnings:
                     st.warning(w)
