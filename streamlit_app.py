@@ -1971,7 +1971,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # These depend on reference price, VIX, ticker, and week — NOT on which
     # risk tier is selected. Cache in session_state so switching tiers skips
     # the expensive forecast → plan → tiers pipeline entirely.
-    _sf_cache_key = (ticker, round(spx_close_input, 2), round(vix_input, 2), week_start)
+    _em_cache_sig = (
+        round((weekly_em or {}).get("upper_level", 0) or 0, 2),
+        round((weekly_em or {}).get("lower_level", 0) or 0, 2),
+    )
+    _sf_cache_key = (ticker, round(spx_close_input, 2), round(vix_input, 2), week_start, _em_cache_sig)
     _sf_prev_key = st.session_state.get(f"_sf_cache_key_{ticker}")
 
     if _sf_prev_key == _sf_cache_key and f"_sf_spread_tiers_{ticker}" in st.session_state:
