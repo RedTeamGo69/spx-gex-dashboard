@@ -288,7 +288,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     # ── Step 1: Refresh market data ──
     _logger.info("  1/4 Refreshing SPX/VIX weekly data from yfinance...")
     try:
-        df_spx = fetch_spx_vix(years=3)
+        df_spx = fetch_spx_vix(years=6)
         rows = save_spx_vix(conn, df_spx)
         _logger.info(f"  SPX/VIX: {len(df_spx)} weeks fetched, {rows} new")
     except Exception as e:
@@ -296,7 +296,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
 
     if fred_key:
         try:
-            df_macro = fetch_fred_macro(years=3)
+            df_macro = fetch_fred_macro(years=6)
             save_fred_macro(conn, df_macro)
             _logger.info(f"  FRED macro: {len(df_macro)} rows")
         except Exception as e:

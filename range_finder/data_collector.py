@@ -39,7 +39,7 @@ if not FRED_API_KEY:
 DB_PATH = Path(__file__).parent / "weekly_data.db"
 
 # How many years of history to pull on initial load
-HISTORY_YEARS = 5
+HISTORY_YEARS = 6
 
 # FRED series used as macro features
 FRED_SERIES = {

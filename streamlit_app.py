@@ -1855,7 +1855,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     if do_refresh:
         with st.spinner("1/4 — Fetching SPX / VIX weekly data..."):
             try:
-                df_spx = rf_fetch_spx_vix(years=3)
+                df_spx = rf_fetch_spx_vix(years=6)
                 rows_written = rf_save_spx_vix(conn, df_spx)
                 if len(df_spx) == 0:
                     st.success("SPX/VIX data already up to date")
@@ -1869,7 +1869,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
         with st.spinner("1/4 — Fetching FRED macro data..."):
             try:
-                df_macro = rf_fetch_fred_macro(years=3)
+                df_macro = rf_fetch_fred_macro(years=6)
                 rf_save_fred_macro(conn, df_macro)
                 st.success(f"FRED macro data refreshed — {len(df_macro)} rows")
             except Exception as e:
