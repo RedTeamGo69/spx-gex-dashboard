@@ -71,6 +71,8 @@ from range_finder.spread_levels import (
     build_spread_tiers as rf_build_spread_tiers,
     log_spread_plan as rf_log_spread_plan,
     update_outcome as rf_update_outcome,
+    update_expiration_outcome as rf_update_expiration_outcome,
+    get_spread_log as rf_get_spread_log,
     STANDARD_WING_WIDTHS as RF_WING_WIDTHS,
     TICKER_CONFIG as RF_TICKER_CONFIG,
     SpreadPlan,
@@ -2527,6 +2529,115 @@ def _render_sf_spread_table(spreads, recommended_width: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Trade Log tab — spread outcome history + breach tracker
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _render_trade_log_tab():
+    """Display the spread_log table with color-coded outcomes and summary stats."""
+    import pandas as pd
+    from datetime import date as _date_cls
+
+    conn = _get_rf_conn()
+    rows = rf_get_spread_log(conn)
+
+    if not rows:
+        st.info("No spread plans logged yet. Save a spread plan from the Spread Finder tab to get started.")
+        return
+
+    df = pd.DataFrame(rows)
+
+    # ── Summary stats (only rows with an outcome) ──
+    has_outcome = df[df["outcome"].notna() & (df["outcome"] != "")]
+    st.subheader("Summary")
+
+    if has_outcome.empty:
+        st.caption("No outcomes recorded yet — use the button below to update expired weeks.")
+    else:
+        n = len(has_outcome)
+        wins = (has_outcome["outcome"] == "full_profit").sum()
+        win_rate = wins / n * 100
+
+        call_breaches = has_outcome["call_breached"].fillna(0).sum()
+        put_breaches = has_outcome["put_breached"].fillna(0).sum()
+        call_rate = call_breaches / n * 100
+        put_rate = put_breaches / n * 100
+
+        # Average range error: |model effective_range_pct - actual_range_pct|
+        err_df = has_outcome.dropna(subset=["actual_range_pct", "effective_range_pct"])
+        if not err_df.empty:
+            avg_err = (err_df["actual_range_pct"].astype(float) - err_df["effective_range_pct"].astype(float)).abs().mean()
+            avg_err_str = f"{avg_err * 100:.2f}%"
+        else:
+            avg_err_str = "N/A"
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Win Rate", f"{win_rate:.1f}%", delta=f"{wins}/{n} weeks")
+        c2.metric("Avg Range Error", avg_err_str)
+        c3.metric("Call Breach Rate", f"{call_rate:.1f}%")
+        c4.metric("Put Breach Rate", f"{put_rate:.1f}%")
+
+    # ── Update button ──
+    st.divider()
+    today = _date_cls.today()
+    # Find rows where outcome is NULL and the week has expired (Friday = week_start + 4 days)
+    updatable = [
+        r for r in rows
+        if (not r.get("outcome"))
+        and r.get("call_short") is not None
+        and (datetime.strptime(r["week_start"], "%Y-%m-%d").date() + timedelta(days=5)) <= today
+    ]
+
+    if updatable:
+        latest = updatable[0]  # rows are already sorted DESC by week_start
+        st.caption(f"Most recent expired week without outcome: **{latest['week_start']}**")
+        if st.button("Update This Week's Outcome", key="tl_update_btn"):
+            with st.spinner(f"Fetching OHLC for {latest['week_start']}..."):
+                result = rf_update_expiration_outcome(latest["week_start"], conn)
+            if result in ("full_profit", "call_loss", "put_loss", "max_loss"):
+                st.success(f"Outcome for {latest['week_start']}: **{result}**")
+                st.rerun()
+            elif result == "no_data":
+                st.error("yfinance returned no data for that week. Market may have been closed.")
+            else:
+                st.error(f"Unexpected result: {result}")
+    else:
+        st.caption("All expired weeks have outcomes recorded.")
+
+    # ── Data table with color-coded outcome ──
+    st.divider()
+    st.subheader("Spread Log")
+
+    display_cols = [
+        "week_start", "spx_ref_close", "effective_range_pct",
+        "call_short", "put_short", "wing_width_used",
+        "actual_high", "actual_low", "actual_range_pct",
+        "call_breached", "put_breached", "outcome",
+    ]
+    # Only include columns that actually exist
+    display_cols = [c for c in display_cols if c in df.columns]
+    display_df = df[display_cols].copy()
+
+    # Format percentages for readability
+    for pct_col in ["effective_range_pct", "actual_range_pct"]:
+        if pct_col in display_df.columns:
+            display_df[pct_col] = display_df[pct_col].apply(
+                lambda x: f"{float(x)*100:.2f}%" if x is not None and x == x else ""
+            )
+
+    def _color_outcome(val):
+        colors = {
+            "full_profit": "background-color: #1b5e20; color: white",
+            "call_loss": "background-color: #e65100; color: white",
+            "put_loss": "background-color: #e65100; color: white",
+            "max_loss": "background-color: #b71c1c; color: white",
+        }
+        return colors.get(val, "")
+
+    styled = display_df.style.map(_color_outcome, subset=["outcome"] if "outcome" in display_df.columns else [])
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main app
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
@@ -2963,8 +3074,8 @@ def main():
             st.rerun()
 
     # ── Charts ──
-    tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface, tab_spread_finder = st.tabs(
-        ["📊 Strike GEX", "📈 GEX Profile", "⏱️ Multi-TF", "📅 History", "🎯 EM Tracker", "🌊 IV Surface", "🎯 Spread Finder"]
+    tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface, tab_spread_finder, tab_trade_log = st.tabs(
+        ["📊 Strike GEX", "📈 GEX Profile", "⏱️ Multi-TF", "📅 History", "🎯 EM Tracker", "🌊 IV Surface", "🎯 Spread Finder", "📋 Trade Log"]
     )
 
     with tab_gex:
@@ -3053,6 +3164,9 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
     with tab_spread_finder:
         _sf_weekly_em = weekly_em_snap or weekly_em_live or {}
         _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker, weekly_em=_sf_weekly_em)
+
+    with tab_trade_log:
+        _render_trade_log_tab()
 
     # ── C2: Level crossing alerts ──
     alerts = _check_level_crossings(spot, levels, em_analysis)

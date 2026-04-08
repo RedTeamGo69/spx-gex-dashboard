@@ -272,8 +272,11 @@ def init_all_tables(conn) -> None:
             hv10                REAL,
             hv20                REAL,
             hv_ratio            REAL,
+            garch_vol           REAL,
+            high_vol_regime     INTEGER,
             gex                 REAL,
             gex_flag            INTEGER,
+            gex_normalized      REAL,
             yield_spread        REAL,
             fed_funds           REAL,
             spx_return_lag1     REAL,
@@ -286,6 +289,17 @@ def init_all_tables(conn) -> None:
             updated_at          TEXT
         )
     """)
+
+    # Schema migrations for new columns on existing databases
+    for col, ctype in [
+        ("garch_vol", "REAL"),
+        ("high_vol_regime", "INTEGER"),
+        ("gex_normalized", "REAL"),
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE model_features ADD COLUMN {col} {ctype}")
+        except Exception:
+            pass  # Column already exists
 
     # --- gex_inputs ---
     cur.execute("""

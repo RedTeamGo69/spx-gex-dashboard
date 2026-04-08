@@ -10,6 +10,7 @@ psycopg2-binary>=2.9.9
 # Range finder dependencies
 statsmodels>=0.14.0
 scikit-learn>=1.3.0
+arch>=6.0.0
 fredapi>=0.5.0
 # AI briefing (Gemini)
 google-genai>=1.0.0
