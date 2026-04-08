@@ -81,6 +81,21 @@ MODEL_SPECS = {
         # gex_normalized added dynamically if GEX data is present
         # (continuous feature, replacing the old binary gex_flag)
     ],
+
+    "M5_garch": HAR_CORE + [
+        "vix_close",
+        "vix_implied_range",
+        "garch_vol",
+    ],
+
+    "M6_regime": HAR_CORE + [
+        "vix_close",
+        "vix_implied_range",
+        "hv_ratio",
+        "high_vol_regime",
+        "har_d1_x_regime",
+        "har_w_x_regime",
+    ],
 }
 
 
@@ -135,6 +150,34 @@ def fit_model(
 
     log.info(f"\n{'='*60}")
     log.info(f"  {model_name} — IN-SAMPLE FIT")
+    log.info(f"{'='*60}")
+    log.info(f"  R²        : {result.rsquared:.4f}")
+    log.info(f"  Adj R²    : {result.rsquared_adj:.4f}")
+    log.info(f"  AIC       : {result.aic:.2f}")
+    log.info(f"  BIC       : {result.bic:.2f}")
+    log.info(f"  N (train) : {int(result.nobs)}")
+    log.info(result.summary2().tables[1].to_string())
+
+    return result
+
+
+def fit_model_wls(
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    half_life: int = 52,
+    model_name: str = "HAR-WLS",
+) -> sm.regression.linear_model.RegressionResultsWrapper:
+    """Fit WLS with exponential recency weighting (half_life in weeks)."""
+    n = len(y_train)
+    decay = np.log(2) / half_life
+    # Most recent observation gets weight 1.0, older observations decay
+    weights = np.exp(-decay * np.arange(n)[::-1])
+
+    model = sm.WLS(y_train, X_train, weights=weights)
+    result = model.fit(cov_type="HC3")
+
+    log.info(f"\n{'='*60}")
+    log.info(f"  {model_name} — IN-SAMPLE FIT (WLS, half-life={half_life})")
     log.info(f"{'='*60}")
     log.info(f"  R²        : {result.rsquared:.4f}")
     log.info(f"  Adj R²    : {result.rsquared_adj:.4f}")
@@ -261,6 +304,106 @@ def run_diagnostics(
 
 
 # =============================================================================
+# ENHANCEMENT COMPARISON — walk-forward OOS evaluation
+# =============================================================================
+
+# Improvement gates: only keep enhancements that clear these thresholds
+_MIN_R2_IMPROVEMENT = 0.02    # OOS R² must improve by at least this
+_MIN_MAPE_IMPROVEMENT = 0.003  # MAE_pct must improve by at least this (0.3pp)
+
+
+def compare_enhancements(
+    conn,
+    baseline_spec: str = "M3_extended",
+    exclude_covid: bool = True,
+) -> pd.DataFrame:
+    """Run walk-forward OOS comparison of model enhancements vs baseline.
+
+    Tests: GARCH feature, WLS weighting, regime interactions, and combinations.
+    Only marks an enhancement as 'keep' if it clears the improvement gate.
+    Returns a DataFrame with metrics and a 'keep' column.
+    """
+    df = get_features(conn, exclude_covid=exclude_covid)
+    if df.empty:
+        raise RuntimeError("model_features is empty — run feature_builder.py first")
+
+    # Create interaction terms if regime feature exists
+    if "high_vol_regime" in df.columns and df["high_vol_regime"].notna().sum() > 20:
+        df["har_d1_x_regime"] = df["har_d1"] * df["high_vol_regime"]
+        df["har_w_x_regime"] = df["har_w"] * df["high_vol_regime"]
+    else:
+        df["har_d1_x_regime"] = np.nan
+        df["har_w_x_regime"] = np.nan
+
+    local_specs = {k: list(v) for k, v in MODEL_SPECS.items()}
+
+    # Enhancement configurations to test
+    enhancements = {
+        "Baseline (OLS)":     {"spec": baseline_spec, "use_wls": False},
+        "Baseline (WLS)":     {"spec": baseline_spec, "use_wls": True},
+        "GARCH added":        {"spec": "M5_garch",    "use_wls": False},
+        "Regime + interact":  {"spec": "M6_regime",   "use_wls": False},
+        "Full enhanced":      {"spec": "M6_regime",   "use_wls": True},
+    }
+
+    results = {}
+    for label, cfg in enhancements.items():
+        spec_name = cfg["spec"]
+        feat_cols = local_specs.get(spec_name, [])
+        available = [c for c in feat_cols if c in df.columns and df[c].notna().sum() > 20]
+
+        if len(available) < 2:
+            log.warning(f"{label}: too few available features ({available}), skipping")
+            continue
+
+        try:
+            X_train, X_test, y_train, y_test = time_series_split(df, feature_cols=available)
+            if cfg["use_wls"]:
+                result = fit_model_wls(X_train, y_train, model_name=label)
+            else:
+                result = fit_model(X_train, y_train, model_name=label)
+            metrics = evaluate_oos(result, X_test, y_test, model_name=label)
+            results[label] = metrics
+        except Exception as e:
+            log.error(f"Failed to fit {label}: {e}")
+
+    if not results:
+        log.error("No enhancements could be evaluated")
+        return pd.DataFrame()
+
+    # Build comparison DataFrame
+    comp = pd.DataFrame(results.values())
+
+    # Compute deltas vs baseline
+    baseline = results.get("Baseline (OLS)")
+    if baseline:
+        comp["delta_r2"] = comp["oos_r2"] - baseline["oos_r2"]
+        comp["delta_mae_pct"] = baseline["mae_pct"] - comp["mae_pct"]
+        comp["keep"] = (comp["delta_r2"] > _MIN_R2_IMPROVEMENT) | (comp["delta_mae_pct"] > _MIN_MAPE_IMPROVEMENT)
+    else:
+        comp["delta_r2"] = 0.0
+        comp["delta_mae_pct"] = 0.0
+        comp["keep"] = False
+
+    comp = comp.sort_values("oos_r2", ascending=False).reset_index(drop=True)
+
+    # Print formatted table
+    print("\n" + "=" * 90)
+    print("  ENHANCEMENT COMPARISON — OUT-OF-SAMPLE")
+    print("=" * 90)
+    display_cols = ["model", "oos_r2", "mae_pct", "direction_acc", "delta_r2", "delta_mae_pct", "keep"]
+    print(comp[[c for c in display_cols if c in comp.columns]].to_string(
+        index=False,
+        float_format=lambda x: f"{x:.4f}" if isinstance(x, float) else str(x),
+    ))
+    print("=" * 90)
+    print(f"  Gate: keep if delta_r2 > {_MIN_R2_IMPROVEMENT} OR delta_mae_pct > {_MIN_MAPE_IMPROVEMENT*100:.1f}pp")
+    print("=" * 90 + "\n")
+
+    return comp
+
+
+# =============================================================================
 # FORECAST + PREDICTION INTERVAL
 # =============================================================================
 
@@ -351,14 +494,23 @@ def run_full_pipeline(
     spx_close: float = None,
     next_week_start: str = None,
     preferred_model: str = "M3_extended",
+    exclude_covid: bool = True,
 ) -> dict:
     """End-to-end: load features -> fit all specs -> compare -> forecast."""
     # --- Load features ---
-    df = get_features(conn)
+    df = get_features(conn, exclude_covid=exclude_covid)
     if df.empty:
         raise RuntimeError("model_features is empty — run feature_builder.py first")
 
     log.info(f"Loaded {len(df)} feature rows for modeling")
+
+    # --- Create interaction terms for regime model ---
+    if "high_vol_regime" in df.columns and df["high_vol_regime"].notna().sum() > 20:
+        df["har_d1_x_regime"] = df["har_d1"] * df["high_vol_regime"]
+        df["har_w_x_regime"] = df["har_w"] * df["high_vol_regime"]
+    else:
+        df["har_d1_x_regime"] = np.nan
+        df["har_w_x_regime"] = np.nan
 
     # --- Determine if GEX is available ---
     # Use continuous gex_normalized for richer signal than the deprecated binary gex_flag
@@ -382,6 +534,10 @@ def run_full_pipeline(
             missing = set(feat_cols) - set(available)
             log.warning(f"{spec_name}: skipping missing features {missing}")
         feat_cols = available
+
+        if len(feat_cols) < 2:
+            log.warning(f"{spec_name}: fewer than 2 features available, skipping")
+            continue
 
         try:
             X_train, X_test, y_train, y_test = time_series_split(df, feature_cols=feat_cols)

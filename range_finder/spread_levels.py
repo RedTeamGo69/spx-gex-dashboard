@@ -688,5 +688,7 @@ from range_finder.spread_persistence import (  # noqa: F401
     init_spread_log_table,
     log_spread_plan,
     update_outcome,
+    update_expiration_outcome,
+    get_spread_log,
     print_spread_plan,
 )

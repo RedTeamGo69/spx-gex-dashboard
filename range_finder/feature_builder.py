@@ -94,6 +94,41 @@ def compute_hv_windows(daily_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================================================================
+# GARCH(1,1) VOLATILITY FORECAST
+# =============================================================================
+
+def compute_garch_vol(daily_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fit a GARCH(1,1) model on daily SPX log returns and produce a weekly
+    conditional volatility forecast (annualized, same scale as HV features).
+    """
+    from arch import arch_model
+
+    df = daily_df.copy()
+    df["log_ret"] = np.log(df["spx_close"] / df["spx_close"].shift(1))
+    df.dropna(subset=["log_ret"], inplace=True)
+
+    # arch library expects percentage returns for numerical stability
+    returns = df["log_ret"] * 100
+
+    am = arch_model(returns, vol="Garch", p=1, q=1, dist="Normal", rescale=False)
+    result = am.fit(disp="off", show_warning=False)
+
+    # Conditional volatility: convert back from pct to decimal, annualize
+    cond_vol = result.conditional_volatility / 100 * math.sqrt(252)
+    cond_vol.index = df.index
+
+    # Resample to weekly — take last value of each week (Friday close)
+    weekly_garch = cond_vol.resample("W-FRI").last()
+    weekly_garch.index = weekly_garch.index - pd.offsets.Week(weekday=0)  # shift to Monday
+    weekly_garch.index.name = "week_start"
+
+    result_df = pd.DataFrame({"garch_vol": weekly_garch})
+    log.info(f"GARCH(1,1) vol computed: {len(result_df)} weekly rows")
+    return result_df
+
+
+# =============================================================================
 # VIX TERM STRUCTURE
 # =============================================================================
 
@@ -221,7 +256,7 @@ def upsert_gex(conn: sqlite3.Connection, week_start: str, gex: float, notes: str
 # MAIN FEATURE BUILD
 # =============================================================================
 
-def build_features(conn: sqlite3.Connection) -> pd.DataFrame:
+def build_features(conn: sqlite3.Connection, exclude_covid: bool = True) -> pd.DataFrame:
     """
     Assemble the full model-ready feature matrix and save to model_features.
     Every feature is lagged so that at row t (target week), you only
@@ -278,6 +313,22 @@ def build_features(conn: sqlite3.Connection) -> pd.DataFrame:
     df = df.join(hv_lagged, how="left")
     df["hv_ratio"] = df["hv5"] / df["hv20"]
 
+    # --- GARCH(1,1) volatility forecast ---
+    try:
+        garch_df = compute_garch_vol(daily_spx)
+        garch_lagged = garch_df.shift(1)  # lag 1 week, same as HV
+        df = df.join(garch_lagged, how="left")
+    except ImportError:
+        log.warning("arch library not installed — garch_vol feature will be NULL")
+        df["garch_vol"] = np.nan
+    except Exception as e:
+        log.warning(f"GARCH fit failed ({e}) — garch_vol will be NULL")
+        df["garch_vol"] = np.nan
+
+    # --- High-vol regime detection ---
+    # Binary flag: 1 if trailing 4-week average VIX > 20
+    df["high_vol_regime"] = (df["vix_close"].rolling(4, min_periods=2).mean() > 20).astype(int)
+
     # Join VIX term structure (lag 1 week)
     vix_ts_lagged = vix_ts.shift(1)
     df = df.join(vix_ts_lagged, how="left")
@@ -309,6 +360,16 @@ def build_features(conn: sqlite3.Connection) -> pd.DataFrame:
 
     # Drop rows with insufficient lag history
     df.dropna(subset=["har_d1", "har_w", "har_m", "vix_close", "log_range"], inplace=True)
+
+    # Exclude COVID crash period if requested (default True)
+    if exclude_covid:
+        covid_start = pd.Timestamp("2020-03-01")
+        covid_end = pd.Timestamp("2020-09-30")
+        pre_filter = len(df)
+        df = df[(df.index < covid_start) | (df.index > covid_end)]
+        removed = pre_filter - len(df)
+        if removed:
+            log.info(f"exclude_covid: removed {removed} rows (2020-03-01 to 2020-09-30)")
 
     log.info(f"Feature matrix: {len(df)} rows x {len(df.columns)} columns")
 
@@ -352,13 +413,14 @@ def _save_features(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
                 vix_close, vix_implied_range,
                 vix9d_close, vix3m_close, vix_ts_slope, vix_wk_ratio,
                 hv5, hv10, hv20, hv_ratio,
-                gex, gex_flag,
+                garch_vol, high_vol_regime,
+                gex, gex_flag, gex_normalized,
                 yield_spread, fed_funds,
                 spx_return_lag1, abs_return_lag1,
                 has_fomc, has_cpi, has_nfp, has_opex, event_count,
                 updated_at
             ) VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
             ON CONFLICT(week_start) DO UPDATE SET
                 log_range           = excluded.log_range,
@@ -376,8 +438,11 @@ def _save_features(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
                 hv10                = excluded.hv10,
                 hv20                = excluded.hv20,
                 hv_ratio            = excluded.hv_ratio,
+                garch_vol           = excluded.garch_vol,
+                high_vol_regime     = excluded.high_vol_regime,
                 gex                 = excluded.gex,
                 gex_flag            = excluded.gex_flag,
+                gex_normalized      = excluded.gex_normalized,
                 yield_spread        = excluded.yield_spread,
                 fed_funds           = excluded.fed_funds,
                 spx_return_lag1     = excluded.spx_return_lag1,
@@ -397,7 +462,8 @@ def _save_features(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
             _f(row, "vix_ts_slope"),     _f(row, "vix_wk_ratio"),
             _f(row, "hv5"),              _f(row, "hv10"),            _f(row, "hv20"),
             _f(row, "hv_ratio"),
-            _f(row, "gex"),              _i(row, "gex_flag"),
+            _f(row, "garch_vol"),        _i(row, "high_vol_regime"),
+            _f(row, "gex"),              _i(row, "gex_flag"),        _f(row, "gex_normalized"),
             _f(row, "yield_spread"),     _f(row, "fed_funds"),
             _f(row, "spx_return_lag1"),  _f(row, "abs_return_lag1"),
             _i(row, "has_fomc"),         _i(row, "has_cpi"),
@@ -415,7 +481,7 @@ def _save_features(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
 # READERS
 # =============================================================================
 
-def get_features(conn: sqlite3.Connection, min_date: str = None) -> pd.DataFrame:
+def get_features(conn: sqlite3.Connection, min_date: str = None, exclude_covid: bool = False) -> pd.DataFrame:
     """Load the full model_features table as a DataFrame."""
     query = "SELECT * FROM model_features ORDER BY week_start ASC"
     df = pd.read_sql_query(query, conn, parse_dates=["week_start"])
@@ -423,6 +489,11 @@ def get_features(conn: sqlite3.Connection, min_date: str = None) -> pd.DataFrame
 
     if min_date:
         df = df[df.index >= pd.to_datetime(min_date)]
+
+    if exclude_covid:
+        covid_start = pd.Timestamp("2020-03-01")
+        covid_end = pd.Timestamp("2020-09-30")
+        df = df[(df.index < covid_start) | (df.index > covid_end)]
 
     return df
 
