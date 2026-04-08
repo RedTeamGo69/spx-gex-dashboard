@@ -2167,6 +2167,33 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             st.caption("Credits are BSM estimates (no Friday chain data available). Verify with broker before trading.")
 
         # =====================================================================
+        # MODEL STRIKES (before EM floor) — shown only when EM adjusted
+        # =====================================================================
+
+        _has_model_call = selected_tier.model_call_short is not None and selected_tier.model_call_spreads
+        _has_model_put  = selected_tier.model_put_short  is not None and selected_tier.model_put_spreads
+        if _has_model_call or _has_model_put:
+            st.markdown(
+                f"**Model Strikes (before EM floor) — {selected_tier.label}**"
+                " &nbsp; <span style='color:#ffa726;font-size:12px;'>"
+                "These are the HAR model's original strikes, inside the weekly expected move.</span>",
+                unsafe_allow_html=True,
+            )
+            col_mc, col_mp = st.columns(2)
+            with col_mc:
+                if _has_model_call:
+                    st.markdown(f"Call Spreads — short above `{selected_tier.model_call_short:,.0f}`")
+                    _render_sf_spread_table(selected_tier.model_call_spreads, _plan.recommended_width)
+                else:
+                    st.caption("Call short not adjusted by EM floor")
+            with col_mp:
+                if _has_model_put:
+                    st.markdown(f"Put Spreads — short below `{selected_tier.model_put_short:,.0f}`")
+                    _render_sf_spread_table(selected_tier.model_put_spreads, _plan.recommended_width)
+                else:
+                    st.caption("Put short not adjusted by EM floor")
+
+        # =====================================================================
         # GEX CONTEXT + WARNINGS
         # =====================================================================
 
