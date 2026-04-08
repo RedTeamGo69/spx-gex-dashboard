@@ -615,6 +615,12 @@ class SpreadTier:
     put_short:    float
     call_spreads: list[SpreadSide] = field(default_factory=list)
     put_spreads:  list[SpreadSide] = field(default_factory=list)
+    # Model-only strikes (before EM floor).  Populated only when the EM floor
+    # actually moved a strike; otherwise None → UI skips the extra table.
+    model_call_short:   float | None = None
+    model_put_short:    float | None = None
+    model_call_spreads: list[SpreadSide] = field(default_factory=list)
+    model_put_spreads:  list[SpreadSide] = field(default_factory=list)
 
 
 def build_spread_tiers(
@@ -661,32 +667,40 @@ def build_spread_tiers(
         raw_call = spx_ref * (1 + half)
         raw_put  = spx_ref * (1 - half)
 
-        call_short = round_call_short(raw_call, increment=increment)
-        put_short  = round_put_short(raw_put, increment=increment)
+        model_call_short = round_call_short(raw_call, increment=increment)
+        model_put_short  = round_put_short(raw_put, increment=increment)
+
+        if chain_quotes:
+            model_call_short = _snap_to_chain_strike(model_call_short, chain_quotes, "call", direction="up")
+            model_put_short  = _snap_to_chain_strike(model_put_short, chain_quotes, "put", direction="down")
 
         # --- Weekly EM floor ---------------------------------------------------
         # If the short strike lands inside the expected-move band, widen it
         # to at least the EM boundary so we never sell inside the straddle range.
         em_adjusted_call = False
         em_adjusted_put  = False
+        call_short = model_call_short
+        put_short  = model_put_short
         if has_em:
             if call_short < em_upper:
                 call_short = round_call_short(em_upper, increment=increment)
+                if chain_quotes:
+                    call_short = _snap_to_chain_strike(call_short, chain_quotes, "call", direction="up")
                 em_adjusted_call = True
             if put_short > em_lower:
                 put_short = round_put_short(em_lower, increment=increment)
+                if chain_quotes:
+                    put_short = _snap_to_chain_strike(put_short, chain_quotes, "put", direction="down")
                 em_adjusted_put = True
 
-        if chain_quotes:
-            call_short = _snap_to_chain_strike(call_short, chain_quotes, "call", direction="up")
-            put_short  = _snap_to_chain_strike(put_short, chain_quotes, "put", direction="down")
+        em_adjusted = em_adjusted_call or em_adjusted_put
 
-        if em_adjusted_call or em_adjusted_put:
+        if em_adjusted:
             sides = []
             if em_adjusted_call:
-                sides.append(f"call short → {call_short:.0f} (EM upper {em_upper:.0f})")
+                sides.append(f"call short {model_call_short:.0f} → {call_short:.0f} (EM upper {em_upper:.0f})")
             if em_adjusted_put:
-                sides.append(f"put short → {put_short:.0f} (EM lower {em_lower:.0f})")
+                sides.append(f"put short {model_put_short:.0f} → {put_short:.0f} (EM lower {em_lower:.0f})")
             log.info(f"[{label}] Weekly EM floor applied: {'; '.join(sides)}")
 
         if chain_quotes:
@@ -699,6 +713,17 @@ def build_spread_tiers(
         call_spreads = build_spread_side("call", call_short, cw, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
         put_spreads  = build_spread_side("put",  put_short,  pw, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
 
+        # Build model-only spreads at original strikes (only when EM floor moved them)
+        m_call_spreads = []
+        m_put_spreads  = []
+        if em_adjusted:
+            if em_adjusted_call:
+                mcw = _available_wing_widths(model_call_short, chain_quotes, "call", wing_widths) if chain_quotes else wing_widths
+                m_call_spreads = build_spread_side("call", model_call_short, mcw, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+            if em_adjusted_put:
+                mpw = _available_wing_widths(model_put_short, chain_quotes, "put", wing_widths) if chain_quotes else wing_widths
+                m_put_spreads = build_spread_side("put", model_put_short, mpw, spx_ref, vix_level, dte, chain_quotes=chain_quotes)
+
         tiers.append(SpreadTier(
             label       = label,
             risk_level  = risk,
@@ -707,6 +732,10 @@ def build_spread_tiers(
             put_short   = put_short,
             call_spreads= call_spreads,
             put_spreads = put_spreads,
+            model_call_short  = model_call_short if em_adjusted_call else None,
+            model_put_short   = model_put_short  if em_adjusted_put  else None,
+            model_call_spreads= m_call_spreads,
+            model_put_spreads = m_put_spreads,
         ))
 
     return tiers
