@@ -812,6 +812,24 @@ def main():
     elif market_ctx == "afterhours":
         st.warning(f"🌙 **After hours** — {context_note}")
 
+    # ── Sidebar detail panels ──
+    # Rendered here (before tabs/AI briefing/spread finder) so the sidebar
+    # refreshes immediately on every rerun instead of waiting for the slow
+    # HAR model and Gemini briefing to finish.
+    with st.sidebar:
+        st.divider()
+        render_gex_stream(data.stats, levels, spot)
+        st.divider()
+        if market_ctx != "premarket":
+            render_expected_move_panel(em_analysis, ticker=ticker)
+        render_key_levels(levels, spot, regime, data.confidence_info, data.staleness_info)
+        st.divider()
+        render_wall_credibility(data.wall_cred)
+        st.divider()
+        render_scenarios_table(data.scenarios_df)
+        st.divider()
+        render_data_quality(data.stats, data.staleness_info)
+
     # ── Expected Move panel (top of page) ──
     em_data = em_analysis.get("expected_move", {})
 
@@ -1079,21 +1097,6 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
 
     # ── C6: Pin point detection ──
     _render_pin_detection(data.stats, data.gex_df, spot)
-
-    # ── Sidebar detail panels ──
-    with st.sidebar:
-        st.divider()
-        render_gex_stream(data.stats, levels, spot)
-        st.divider()
-        if market_ctx != "premarket":
-            render_expected_move_panel(em_analysis, ticker=ticker)
-        render_key_levels(levels, spot, regime, data.confidence_info, data.staleness_info)
-        st.divider()
-        render_wall_credibility(data.wall_cred)
-        st.divider()
-        render_scenarios_table(data.scenarios_df)
-        st.divider()
-        render_data_quality(data.stats, data.staleness_info)
 
     # ── Auto-refresh ──
     # Uses st.rerun with a placeholder countdown so the app remains
