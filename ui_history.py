@@ -298,14 +298,14 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", 
 
 def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr, ticker="SPX"):
     """C3: Multi-timeframe GEX comparison — 0DTE vs Weekly vs Monthly."""
-    tradier_token, _, _ = get_credentials()
-    if not tradier_token:
-        st.info("API token required for multi-timeframe analysis.")
+    public_secret_key, _, _ = get_credentials()
+    if not public_secret_key:
+        st.info("API key required for multi-timeframe analysis.")
         return
 
     run_id = st.session_state.get(f"em_snapshot_date_daily_{ticker}", "default")
     with st.spinner("Computing multi-timeframe GEX..."):
-        tf_data = fetch_multi_tf_gex(tradier_token, tuple(avail_exps), spot, rfr, run_id, ticker=ticker)
+        tf_data = fetch_multi_tf_gex(public_secret_key, tuple(avail_exps), spot, rfr, run_id, ticker=ticker)
 
     if not tf_data:
         st.info("No multi-timeframe data available.")

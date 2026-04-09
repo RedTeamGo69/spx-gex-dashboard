@@ -6,9 +6,9 @@ Designed to be triggered by GitHub Actions (or any cron scheduler) at:
   - 9:30 AM ET  (market open — freeze opening prices, EM levels)
 
 Required env vars:
-  TRADIER_TOKEN  — Tradier API bearer token
-  DATABASE_URL   — Postgres connection string (e.g. Neon)
-  FRED_API_KEY   — (optional) FRED API key for risk-free rate
+  PUBLIC_SECRET_KEY  — Public.com API secret key
+  DATABASE_URL       — Postgres connection string (e.g. Neon)
+  FRED_API_KEY       — (optional) FRED API key for risk-free rate
 """
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ def capture_snapshot():
     """Run the full GEX pipeline and save a snapshot + EM to Postgres."""
 
     # ── Validate env ──
-    tradier_token = os.environ.get("TRADIER_TOKEN", "")
-    if not tradier_token:
-        _logger.error("TRADIER_TOKEN not set — aborting")
+    public_secret_key = os.environ.get("PUBLIC_SECRET_KEY", "")
+    if not public_secret_key:
+        _logger.error("PUBLIC_SECRET_KEY not set — aborting")
         sys.exit(1)
 
     db_url = os.environ.get("DATABASE_URL", "")
@@ -39,7 +39,7 @@ def capture_snapshot():
 
     # ── Imports (after env check so errors are clear) ──
     from phase1.market_clock import now_ny, get_calendar_snapshot
-    from phase1.data_client import TradierDataClient
+    from phase1.data_client import PublicDataClient
     from phase1.rates import fetch_risk_free_rate
     from phase1.parity import get_reference_spot_details
     import phase1.gex_engine as gex_engine
@@ -92,7 +92,7 @@ def capture_snapshot():
             time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
 
     # ── Fetch market data ──
-    client = TradierDataClient(token=tradier_token)
+    client = PublicDataClient(secret_key=public_secret_key)
     client.clear_cache()
 
     calendar_snapshot = get_calendar_snapshot(run_now)
@@ -103,7 +103,7 @@ def capture_snapshot():
 
     avail = client.get_expirations(ticker)
     if not avail:
-        _logger.error(f"No expirations returned from Tradier API for {ticker}")
+        _logger.error(f"No expirations returned from Public API for {ticker}")
         sys.exit(1)
     nearest_exp = next((e for e in avail if e >= today_str), avail[0])
 

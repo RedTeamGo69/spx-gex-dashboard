@@ -76,7 +76,7 @@ a Personal Access Token (not your password):
 - Click "Advanced settings" and paste:
 
 ```toml
-TRADIER_TOKEN = "your_actual_tradier_token"
+PUBLIC_SECRET_KEY = "your_actual_public_secret_key"
 FRED_API_KEY = "your_actual_fred_key"
 ```
 

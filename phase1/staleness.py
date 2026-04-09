@@ -49,15 +49,15 @@ def build_staleness_info(calendar_snapshot: dict, spot_info: dict, stats: dict, 
         reasons.append("Market is closed; spot is not a live intraday executable reference.")
         defenses_triggered.append("market_closed_context")
 
-    # Forced or degraded Tradier spot usage
-    if spot_source.startswith("tradier (forced, market closed)"):
+    # Forced or degraded vendor spot usage
+    if spot_source.startswith("vendor (forced, market closed)"):
         score -= 6
-        reasons.append("Spot source was forced to Tradier because the market was closed.")
-        defenses_triggered.append("forced_tradier_spot")
-    elif spot_source.startswith("tradier") and market_open:
+        reasons.append("Spot source was forced to vendor quote because the market was closed.")
+        defenses_triggered.append("forced_vendor_spot")
+    elif spot_source.startswith("vendor") and market_open:
         score -= 18
         reasons.append("Market open but implied parity did not supply the reference spot.")
-        defenses_triggered.append("tradier_spot_during_market_hours")
+        defenses_triggered.append("vendor_spot_during_market_hours")
 
     # Parity chain failure
     if parity_attempted and parity_chain_status not in (None, "ok"):

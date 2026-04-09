@@ -8,7 +8,7 @@ from tkcalendar import Calendar as TkCalendar
 
 from phase1.config import HEATMAP_EXPS, build_config_snapshot
 from phase1.market_clock import now_ny, get_calendar_snapshot
-from phase1.data_client import TradierDataClient
+from phase1.data_client import PublicDataClient
 from phase1.rates import fetch_risk_free_rate
 from phase1.parity import get_reference_spot_details
 from phase1.run_metadata import build_run_metadata
@@ -21,8 +21,8 @@ from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
 
 
-def validate_runtime_inputs(tradier_token: str) -> bool:
-    return bool(tradier_token and tradier_token != "YOUR_TOKEN_HERE")
+def validate_runtime_inputs(secret_key: str) -> bool:
+    return bool(secret_key and secret_key != "YOUR_PUBLIC_SECRET_KEY_HERE")
 
 
 def select_heatmap_exps(avail: list[str], today_str: str, count: int = HEATMAP_EXPS) -> list[str]:
@@ -198,9 +198,8 @@ def pick_dates(available_exps):
 
 
 def run_app(
-    tradier_token: str,
+    public_secret_key: str,
     fred_api_key: str,
-    tradier_base_url: str = "https://api.tradier.com/v1",
     debug: bool = False,
     tool_version: str = "v5",
 ):
@@ -209,13 +208,13 @@ def run_app(
     print("  Implied spot | Zero gamma sweep | GEX profile | Hybrid IV mode")
     print("=" * 58, "\n")
 
-    if not validate_runtime_inputs(tradier_token):
-        print("ERROR: No Tradier API token configured.")
-        print("  Set TRADIER_TOKEN environment variable or edit the launcher file.")
-        print("  Get your token at: https://web.tradier.com/user/api")
+    if not validate_runtime_inputs(public_secret_key):
+        print("ERROR: No Public.com API key configured.")
+        print("  Set PUBLIC_SECRET_KEY environment variable or edit the launcher file.")
+        print("  Get your key at: https://public.com/api/docs")
         return
 
-    client = TradierDataClient(token=tradier_token, base_url=tradier_base_url)
+    client = PublicDataClient(secret_key=public_secret_key)
     client.clear_cache()
 
     run_now = now_ny()
@@ -243,7 +242,7 @@ def run_app(
     spot = spot_info["spot"]
     spot_source = spot_info["source"]
 
-    print(f"  Tradier quote: ${spot_info['tradier_spot']:.2f} (may be delayed)")
+    print(f"  Vendor quote: ${spot_info['vendor_spot']:.2f} (may be delayed)")
 
     if spot_info["parity_attempted"]:
         print(f"  Parity chain status: {spot_info['parity_chain_status']}")

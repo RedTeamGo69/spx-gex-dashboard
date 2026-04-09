@@ -64,7 +64,7 @@ def build_futures_context(
         es_last:        Current ES price
         es_high:        Overnight session high
         es_low:         Overnight session low
-        spx_prevclose:  Yesterday's SPX close (from Tradier)
+        spx_prevclose:  Yesterday's SPX close (from vendor quote)
         source:         "yahoo_es_f" or "manual"
 
     Returns a dict with overnight move, range info, and budget metrics,

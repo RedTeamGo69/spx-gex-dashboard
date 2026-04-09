@@ -16,14 +16,14 @@ def test_weighted_median_falls_to_middle_when_equal():
 
 
 def test_parity_candidate_weight_prefers_tighter_spread():
-    w1 = parity_candidate_weight(strike=5000, tradier_spot=5000, combined_spread=0.5)
-    w2 = parity_candidate_weight(strike=5000, tradier_spot=5000, combined_spread=2.0)
+    w1 = parity_candidate_weight(strike=5000, vendor_spot=5000, combined_spread=0.5)
+    w2 = parity_candidate_weight(strike=5000, vendor_spot=5000, combined_spread=2.0)
     assert w1 > w2
 
 
 def test_parity_candidate_weight_prefers_nearer_strike():
-    w1 = parity_candidate_weight(strike=5000, tradier_spot=5000, combined_spread=1.0)
-    w2 = parity_candidate_weight(strike=5050, tradier_spot=5000, combined_spread=1.0)
+    w1 = parity_candidate_weight(strike=5000, vendor_spot=5000, combined_spread=1.0)
+    w2 = parity_candidate_weight(strike=5050, vendor_spot=5000, combined_spread=1.0)
     assert w1 > w2
 
 

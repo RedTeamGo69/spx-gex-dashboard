@@ -6,7 +6,7 @@ from phase1.parity import get_reference_spot_details
 NY = ZoneInfo("America/New_York")
 
 
-def test_market_closed_forces_tradier(monkeypatch):
+def test_market_closed_forces_vendor(monkeypatch):
     def fake_get_spot_price(_ticker):
         return 5000.0
 
@@ -26,7 +26,7 @@ def test_market_closed_forces_tradier(monkeypatch):
     )
 
     assert details["spot"] == 5000.0
-    assert details["source"] == "tradier (forced, market closed)"
+    assert details["source"] == "vendor (forced, market closed)"
     assert details["parity_attempted"] is False
     assert details["parity_diagnostics"] is None
 

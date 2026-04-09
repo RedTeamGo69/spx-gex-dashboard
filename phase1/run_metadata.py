@@ -30,7 +30,7 @@ def build_run_metadata(
         "spot_reference": {
             "spot": spot_info.get("spot"),
             "source": spot_info.get("source"),
-            "tradier_spot": spot_info.get("tradier_spot"),
+            "vendor_spot": spot_info.get("vendor_spot"),
             "implied_spot": spot_info.get("implied_spot"),
             "market_open": spot_info.get("market_open"),
             "parity_attempted": spot_info.get("parity_attempted"),

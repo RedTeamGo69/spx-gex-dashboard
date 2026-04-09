@@ -67,7 +67,7 @@ def weighted_median(values, weights):
     return float(v[idx])
 
 
-def parity_candidate_weight(strike, tradier_spot, combined_spread):
+def parity_candidate_weight(strike, vendor_spot, combined_spread):
     """
     Build a simple liquidity-and-distance weight:
     - tighter spread => higher weight
@@ -75,13 +75,13 @@ def parity_candidate_weight(strike, tradier_spot, combined_spread):
     """
     spread_component = 1.0 / ((combined_spread + PARITY_WEIGHT_EPS) ** PARITY_SPREAD_WEIGHT_POWER)
 
-    sigma = max(abs(tradier_spot) * PARITY_DISTANCE_SIGMA_PCT, 1.0)
-    dist = abs(strike - tradier_spot)
+    sigma = max(abs(vendor_spot) * PARITY_DISTANCE_SIGMA_PCT, 1.0)
+    dist = abs(strike - vendor_spot)
     distance_component = np.exp(-0.5 * (dist / sigma) ** 2)
 
     return float(spread_component * distance_component)
 
-def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RATE, T=None):
+def _compute_implied_spot_core(calls, puts, vendor_spot, r=DEFAULT_RISK_FREE_RATE, T=None):
     """
     Core parity engine with diagnostics.
     """
@@ -101,8 +101,8 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
 
     if not calls or not puts:
         return {
-            "spot": tradier_spot,
-            "source": "tradier (delayed)",
+            "spot": vendor_spot,
+            "source": "vendor (delayed)",
             "diagnostics": diagnostics,
         }
 
@@ -121,12 +121,12 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
 
     if not common_strikes:
         return {
-            "spot": tradier_spot,
-            "source": "tradier (delayed)",
+            "spot": vendor_spot,
+            "source": "vendor (delayed)",
             "diagnostics": diagnostics,
         }
 
-    common_strikes.sort(key=lambda k: abs(k - tradier_spot))
+    common_strikes.sort(key=lambda k: abs(k - vendor_spot))
     candidates = common_strikes[:PARITY_NEAR_SPOT_CANDIDATES]
     diagnostics["near_spot_candidates"] = len(candidates)
 
@@ -153,17 +153,17 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
 
         s_implied = c_mid - p_mid + K * discount
 
-        if s_implied > 0 and tradier_spot > 0:
-            if abs(s_implied - tradier_spot) / tradier_spot < PARITY_RELATIVE_BAND:
+        if s_implied > 0 and vendor_spot > 0:
+            if abs(s_implied - vendor_spot) / vendor_spot < PARITY_RELATIVE_BAND:
                 implied_prices.append(s_implied)
-                implied_weights.append(parity_candidate_weight(K, tradier_spot, combined_spread(K)))
+                implied_weights.append(parity_candidate_weight(K, vendor_spot, combined_spread(K)))
 
     diagnostics["relative_band_pass_count"] = len(implied_prices)
 
     if len(implied_prices) < MIN_PARITY_STRIKES:
         return {
-            "spot": tradier_spot,
-            "source": "tradier (delayed)",
+            "spot": vendor_spot,
+            "source": "vendor (delayed)",
             "diagnostics": diagnostics,
         }
 
@@ -171,8 +171,8 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
     implied_weights = np.array(implied_weights, dtype=float)
 
     hard_mask = (
-        (implied_prices > tradier_spot * PARITY_HARD_LOW_MULTIPLIER) &
-        (implied_prices < tradier_spot * PARITY_HARD_HIGH_MULTIPLIER)
+        (implied_prices > vendor_spot * PARITY_HARD_LOW_MULTIPLIER) &
+        (implied_prices < vendor_spot * PARITY_HARD_HIGH_MULTIPLIER)
     )
 
     implied_prices = implied_prices[hard_mask]
@@ -182,8 +182,8 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
 
     if len(implied_prices) < MIN_PARITY_STRIKES:
         return {
-            "spot": tradier_spot,
-            "source": "tradier (parity filtered)",
+            "spot": vendor_spot,
+            "source": "vendor (parity filtered)",
             "diagnostics": diagnostics,
         }
 
@@ -208,11 +208,11 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
     }  
 
 
-def compute_implied_spot(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RATE, T=None):
+def compute_implied_spot(calls, puts, vendor_spot, r=DEFAULT_RISK_FREE_RATE, T=None):
     """
     Compatibility wrapper.
     """
-    core = _compute_implied_spot_core(calls, puts, tradier_spot, r=r, T=T)
+    core = _compute_implied_spot_core(calls, puts, vendor_spot, r=r, T=T)
     return core["spot"], core["source"]
 
 
@@ -229,11 +229,11 @@ def get_reference_spot_details(
     """
     now = now or datetime.now()
 
-    tradier_spot = float(get_spot_price_func(ticker))
+    vendor_spot = float(get_spot_price_func(ticker))
     details = {
-        "spot": round(tradier_spot, 2),
-        "source": "tradier (default)",
-        "tradier_spot": round(tradier_spot, 2),
+        "spot": round(vendor_spot, 2),
+        "source": "vendor (default)",
+        "vendor_spot": round(vendor_spot, 2),
         "implied_spot": None,
         "market_open": is_cash_market_open(now),
         "parity_attempted": False,
@@ -245,13 +245,13 @@ def get_reference_spot_details(
     }
 
     # Always compute nearest expiration close metadata,
-    # even if we later force Tradier because the market is closed.
+    # even if we later force vendor spot because the market is closed.
     T, exp_close = compute_time_to_expiry_years(nearest_exp, ts=now, floor=0.0)
     details["T_years"] = T
     details["expiration_close_ny"] = exp_close.isoformat() if exp_close is not None else None
 
     if not details["market_open"]:
-        details["source"] = "tradier (forced, market closed)"
+        details["source"] = "vendor (forced, market closed)"
         return details
 
     entry = get_chain_cached_func(ticker, nearest_exp)
@@ -259,13 +259,13 @@ def get_reference_spot_details(
     details["parity_chain_status"] = entry.get("status", "unknown")
 
     if entry.get("status") != "ok":
-        details["source"] = "tradier (parity chain failed)"
+        details["source"] = "vendor (parity chain failed)"
         return details
 
     calls = entry["calls"]
     puts = entry["puts"]
 
-    core = _compute_implied_spot_core(calls, puts, tradier_spot, r=r, T=T)
+    core = _compute_implied_spot_core(calls, puts, vendor_spot, r=r, T=T)
 
     details["spot"] = round(float(core["spot"]), 2)
     details["source"] = core["source"]

@@ -33,7 +33,7 @@ from ui_spread_finder import (
 # ── Phase1 engine imports ──
 from phase1.config import HEATMAP_EXPS, NY_TZ, COMPUTATION_RANGE_PCT, build_config_snapshot
 from phase1.market_clock import now_ny, get_calendar_snapshot
-from phase1.data_client import TradierDataClient
+from phase1.data_client import PublicDataClient
 from phase1.rates import fetch_risk_free_rate
 from phase1.parity import get_reference_spot_details
 import phase1.gex_engine as gex_engine
@@ -190,21 +190,21 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 def get_credentials():
     """Pull API keys from Streamlit secrets, env vars, or sidebar input."""
-    tradier_token = ""
+    public_secret_key = ""
     fred_key = ""
     gemini_key = ""
 
     # Try st.secrets first (for Streamlit Cloud deployment)
     try:
-        tradier_token = st.secrets.get("TRADIER_TOKEN", "")
+        public_secret_key = st.secrets.get("PUBLIC_SECRET_KEY", "")
         fred_key = st.secrets.get("FRED_API_KEY", "")
         gemini_key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
         pass
 
     # Fall back to env vars
-    if not tradier_token:
-        tradier_token = os.environ.get("TRADIER_TOKEN", "")
+    if not public_secret_key:
+        public_secret_key = os.environ.get("PUBLIC_SECRET_KEY", "")
     if not fred_key:
         fred_key = os.environ.get("FRED_API_KEY", "")
     if not gemini_key:
@@ -215,19 +215,19 @@ def get_credentials():
     if gemini_key:
         os.environ["GEMINI_API_KEY"] = gemini_key
 
-    return tradier_token, fred_key, gemini_key
+    return public_secret_key, fred_key, gemini_key
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data fetching (cached)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource(ttl=90, show_spinner=False)
-def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run_id: str, ticker: str = "SPX"):
+def fetch_all_data(public_secret_key: str, fred_key: str, selected_exps: tuple, _run_id: str, ticker: str = "SPX"):
     """
     Run the full GEX engine pipeline. Cached for 90 seconds.
     _run_id forces a cache bust when the user clicks Refresh.
     """
-    client = TradierDataClient(token=tradier_token)
+    client = PublicDataClient(secret_key=public_secret_key)
     client.clear_cache()
 
     run_now = now_ny()
@@ -238,7 +238,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
 
     avail = client.get_expirations(ticker)
     if not avail:
-        raise RuntimeError(f"No expirations returned from Tradier API for {ticker}")
+        raise RuntimeError(f"No expirations returned from Public API for {ticker}")
     today_str = run_now.strftime("%Y-%m-%d")
     nearest_exp = next((e for e in avail if e >= today_str), avail[0])
 
@@ -335,7 +335,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
 
 
 @st.cache_resource(ttl=90, show_spinner=False)
-def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str, ticker: str = "SPX"):
+def fetch_multi_tf_gex(public_secret_key: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str, ticker: str = "SPX"):
     """
     Compute GEX for 3 timeframe buckets: 0DTE, This Week, This Month.
     Returns dict of {label: gex_df}.
@@ -343,7 +343,7 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
     from phase1.market_clock import now_ny, compute_time_to_expiry_years
     from phase1.config import T_FLOOR
 
-    client = TradierDataClient(token=tradier_token)
+    client = PublicDataClient(secret_key=public_secret_key)
     run_now = now_ny()
     today_str = run_now.strftime("%Y-%m-%d")
     tomorrow_str = (run_now + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -547,21 +547,21 @@ def main():
     st.title("📊 Gamma Exposure Dashboard")
     st.caption(f"GEX Calculator {TOOL_VERSION} — Implied spot | Zero gamma sweep | Expected move | Hybrid IV")
 
-    tradier_token, fred_key, gemini_key = get_credentials()
+    public_secret_key, fred_key, gemini_key = get_credentials()
 
     # ── Sidebar controls ──
     with st.sidebar:
         st.header("⚙️ Settings")
 
-        if not tradier_token:
-            tradier_token = st.text_input("Tradier API Token", type="password",
-                                           help="Get yours at https://web.tradier.com/user/api")
+        if not public_secret_key:
+            public_secret_key = st.text_input("Public.com API Key", type="password",
+                                               help="Get yours at https://public.com/api/docs")
         if not fred_key:
             fred_key = st.text_input("FRED API Key (optional)", type="password",
                                       help="For live T-bill rates. Get at https://fred.stlouisfed.org/docs/api/api_key.html")
 
-        if not tradier_token:
-            st.warning("Enter your Tradier API token to get started.")
+        if not public_secret_key:
+            st.warning("Enter your Public.com API key to get started.")
             st.stop()
 
         st.divider()
@@ -572,7 +572,7 @@ def main():
         # Expiration picker
         with st.spinner("Loading expirations..."):
             try:
-                temp_client = TradierDataClient(token=tradier_token)
+                temp_client = PublicDataClient(secret_key=public_secret_key)
                 avail = temp_client.get_expirations(ticker)
             except Exception as e:
                 st.error(f"Could not fetch expirations: {e}")
@@ -639,7 +639,7 @@ def main():
     # ── Fetch data ──
     with st.spinner("Crunching GEX..."):
         try:
-            data = fetch_all_data(tradier_token, fred_key or "", tuple(selected), run_id, ticker=ticker)
+            data = fetch_all_data(public_secret_key, fred_key or "", tuple(selected), run_id, ticker=ticker)
         except Exception as e:
             st.error(f"Engine error: {e}")
             st.stop()
@@ -729,7 +729,7 @@ def main():
 
     # ── Weekly & Monthly EM ──
     run_now = now_ny()
-    temp_client = TradierDataClient(token=tradier_token)
+    temp_client = PublicDataClient(secret_key=public_secret_key)
 
     # Weekly EM: straddle from this Friday's expiration, frozen Monday at open
     weekly_exp = find_weekly_expiration(data.avail, run_now.date())

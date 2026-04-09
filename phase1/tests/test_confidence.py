@@ -46,7 +46,7 @@ def test_build_run_confidence_penalizes_failed_expirations():
     assert out["failed_exp_count"] == 2
 
 
-def test_build_run_confidence_penalizes_tradier_spot():
+def test_build_run_confidence_penalizes_vendor_spot():
     stats = {
         "coverage_ratio": 1.0,
         "failed_exp_count": 0,
@@ -56,14 +56,14 @@ def test_build_run_confidence_penalizes_tradier_spot():
         "synthetic_fit_max_rel_error": None,
     }
     spot_info = {
-        "source": "tradier (forced, market closed)",
+        "source": "vendor (forced, market closed)",
         "parity_attempted": False,
         "parity_diagnostics": {},
     }
 
     out = build_run_confidence(stats, spot_info)
     assert out["score"] < 100
-    assert out["spot_source"].startswith("tradier")
+    assert out["spot_source"].startswith("vendor")
 
 
 def test_build_run_confidence_penalizes_synthetic_rejections():

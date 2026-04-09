@@ -50,7 +50,7 @@ your-repo/
 5. Click **Advanced settings** → paste your secrets:
 
 ```toml
-TRADIER_TOKEN = "your_tradier_token"
+PUBLIC_SECRET_KEY = "your_public_secret_key"
 FRED_API_KEY = "your_fred_api_key"
 ```
 
@@ -78,7 +78,7 @@ Find your IP with `ipconfig` (Windows) or `ifconfig` (Mac/Linux).
 ## Environment Variables (Alternative to Secrets)
 
 ```bash
-export TRADIER_TOKEN="your_token"
+export PUBLIC_SECRET_KEY="your_key"
 export FRED_API_KEY="your_key"
 streamlit run streamlit_app.py
 ```

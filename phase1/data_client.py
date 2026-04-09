@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
+
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -37,87 +39,253 @@ def reset_coercion_count():
         _safe_float_coercion_count = 0
 
 
-class TradierDataClient:
-    def __init__(self, token: str, base_url: str = "https://api.tradier.com/v1"):
-        self.token = token
-        self.base_url = base_url.rstrip("/")
-        self.chain_cache = {}
+_PUBLIC_BASE = "https://api.public.com"
+_PUBLIC_AUTH_URL = f"{_PUBLIC_BASE}/userapiauthservice/personal/access-tokens"
+_PUBLIC_GW = f"{_PUBLIC_BASE}/userapigateway"
 
-    def tradier_headers(self):
+# Maximum OSI symbols per Greeks batch request
+_GREEKS_BATCH_SIZE = 100
+# Maximum instruments per quotes batch request
+_QUOTES_BATCH_SIZE = 50
+
+
+class PublicDataClient:
+    def __init__(self, secret_key: str):
+        self.secret_key = secret_key
+        self.chain_cache: dict = {}
+
+        # OAuth2 token state
+        self._access_token: str | None = None
+        self._token_expires_at: float = 0.0
+        self._account_id: str | None = None
+        self._token_lock = threading.Lock()
+
+        # Cache for yfinance prevclose (date_str -> prevclose float)
+        self._prevclose_cache: dict[str, float] = {}
+
+    # ── Authentication ─────────────────────────────────────────────────
+
+    def _ensure_auth(self):
+        """Authenticate with Public.com and fetch account ID if needed."""
+        with self._token_lock:
+            # Refresh if token missing or expiring within 5 minutes
+            if self._access_token and time.time() < self._token_expires_at - 300:
+                return
+
+            r = requests.post(
+                _PUBLIC_AUTH_URL,
+                headers={"Content-Type": "application/json"},
+                json={"validityInMinutes": 60, "secret": self.secret_key},
+                timeout=10,
+            )
+            r.raise_for_status()
+            data = r.json()
+            self._access_token = data["accessToken"]
+            self._token_expires_at = time.time() + 60 * 60  # 60 minutes
+
+            # Fetch account ID if not yet known
+            if self._account_id is None:
+                r2 = requests.get(
+                    f"{_PUBLIC_GW}/trading/account",
+                    headers=self._auth_headers_inner(),
+                    timeout=10,
+                )
+                r2.raise_for_status()
+                accounts = r2.json().get("accounts", [])
+                if accounts:
+                    self._account_id = accounts[0]["accountId"]
+                else:
+                    raise RuntimeError("No accounts found on Public.com")
+
+    def _auth_headers_inner(self):
+        """Return auth headers (assumes token is valid, no lock)."""
         return {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
         }
 
+    def _auth_headers(self):
+        """Ensure auth then return headers."""
+        self._ensure_auth()
+        return self._auth_headers_inner()
+
+    # ── Quotes ─────────────────────────────────────────────────────────
+
     def get_spot_price(self, ticker="SPX"):
-        r = requests.get(
-            f"{self.base_url}/markets/quotes",
-            headers=self.tradier_headers(),
-            params={"symbols": ticker},
+        r = requests.post(
+            f"{_PUBLIC_GW}/marketdata/{self._account_id}/quotes",
+            headers=self._auth_headers(),
+            json={"instruments": [{"symbol": ticker, "type": "INDEX"}]},
             timeout=10,
         )
         r.raise_for_status()
-        q = r.json()["quotes"]["quote"]
-        if isinstance(q, list):
-            q = q[0]
-        return safe_float(q.get("last", q.get("close", 0)), 0.0)
+        quotes = r.json().get("quotes", [])
+        if not quotes:
+            return 0.0
+        return safe_float(quotes[0].get("last", 0), 0.0)
 
     def get_full_quote(self, ticker="SPX"):
         """
         Return the full quote dict with prevclose, open, last, bid, ask, etc.
 
-        Useful for computing overnight moves and pre-market context.
+        Public.com returns last for SPX but bid/ask/prevclose are often null.
+        Uses yfinance as fallback for prevclose (needed for overnight move).
         """
-        r = requests.get(
-            f"{self.base_url}/markets/quotes",
-            headers=self.tradier_headers(),
-            params={"symbols": ticker},
+        r = requests.post(
+            f"{_PUBLIC_GW}/marketdata/{self._account_id}/quotes",
+            headers=self._auth_headers(),
+            json={"instruments": [{"symbol": ticker, "type": "INDEX"}]},
             timeout=10,
         )
         r.raise_for_status()
-        q = r.json()["quotes"]["quote"]
-        if isinstance(q, list):
-            q = q[0]
+        quotes = r.json().get("quotes", [])
+        q = quotes[0] if quotes else {}
+
+        last = safe_float(q.get("last", 0), 0.0)
+        prevclose = safe_float(q.get("previousClose", 0), 0.0)
+        open_price = safe_float(q.get("open", 0), 0.0)
+        high = safe_float(q.get("high", 0), 0.0)
+        low = safe_float(q.get("low", 0), 0.0)
+        bid = safe_float(q.get("bid", 0), 0.0)
+        ask = safe_float(q.get("ask", 0), 0.0)
+
+        # Fallback to yfinance for missing prevclose/open/high/low
+        if prevclose <= 0 and ticker in ("SPX", "^SPX", "XSP"):
+            yf_data = self._fetch_yfinance_data(ticker)
+            if prevclose <= 0:
+                prevclose = yf_data.get("prevclose", 0.0)
+            if open_price <= 0:
+                open_price = yf_data.get("open", 0.0)
+            if high <= 0:
+                high = yf_data.get("high", 0.0)
+            if low <= 0:
+                low = yf_data.get("low", 0.0)
+
+        change = last - prevclose if last > 0 and prevclose > 0 else 0.0
+        change_pct = (change / prevclose * 100.0) if prevclose > 0 else 0.0
+
         return {
-            "symbol": q.get("symbol", ticker),
-            "last": safe_float(q.get("last", 0), 0.0),
-            "prevclose": safe_float(q.get("prevclose", 0), 0.0),
-            "open": safe_float(q.get("open", 0), 0.0),
-            "high": safe_float(q.get("high", 0), 0.0),
-            "low": safe_float(q.get("low", 0), 0.0),
-            "bid": safe_float(q.get("bid", 0), 0.0),
-            "ask": safe_float(q.get("ask", 0), 0.0),
-            "change": safe_float(q.get("change", 0), 0.0),
-            "change_pct": safe_float(q.get("change_percentage", 0), 0.0),
+            "symbol": ticker,
+            "last": last,
+            "prevclose": prevclose,
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "bid": bid,
+            "ask": ask,
+            "change": change,
+            "change_pct": change_pct,
         }
 
+    def _fetch_yfinance_data(self, ticker="SPX"):
+        """Fetch prevclose and OHLC from yfinance, cached by date."""
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        cache_key = f"{ticker}_{today_str}"
+        if cache_key in self._prevclose_cache:
+            return self._prevclose_cache[cache_key]
+
+        result = {"prevclose": 0.0, "open": 0.0, "high": 0.0, "low": 0.0}
+        try:
+            import yfinance as yf
+            yf_ticker = "^GSPC" if ticker in ("SPX", "^SPX") else "^XSP" if ticker == "XSP" else ticker
+            hist = yf.Ticker(yf_ticker).history(period="5d")
+            if not hist.empty:
+                result["prevclose"] = round(float(hist["Close"].dropna().iloc[-1]), 2)
+                if len(hist) >= 2:
+                    result["prevclose"] = round(float(hist["Close"].dropna().iloc[-2]), 2)
+                # Today's OHLC if available
+                last_row = hist.iloc[-1]
+                result["open"] = round(float(last_row.get("Open", 0) or 0), 2)
+                result["high"] = round(float(last_row.get("High", 0) or 0), 2)
+                result["low"] = round(float(last_row.get("Low", 0) or 0), 2)
+        except Exception as e:
+            _logger.warning("yfinance fallback failed for %s: %s", ticker, e)
+
+        self._prevclose_cache[cache_key] = result
+        return result
+
+    # ── Expirations ────────────────────────────────────────────────────
+
     def get_expirations(self, ticker="SPX"):
-        r = requests.get(
-            f"{self.base_url}/markets/options/expirations",
-            headers=self.tradier_headers(),
-            params={"symbol": ticker, "includeAllRoots": "true"},
+        r = requests.post(
+            f"{_PUBLIC_GW}/marketdata/{self._account_id}/option-expirations",
+            headers=self._auth_headers(),
+            json={"instrument": {"symbol": ticker, "type": "INDEX"}},
             timeout=10,
         )
         r.raise_for_status()
-        e = r.json()["expirations"]["date"]
-        return sorted([e] if isinstance(e, str) else e)
+        exps = r.json().get("expirations", [])
+        return sorted([exps] if isinstance(exps, str) else exps)
+
+    # ── IV normalization ───────────────────────────────────────────────
 
     @staticmethod
-    def _parse_iv_from_greeks(greeks):
+    def _parse_iv_from_greeks(greeks, is_0dte=False):
+        """
+        Parse implied volatility from Public.com Greeks response.
+
+        Public returns IV in decimal for non-0DTE (e.g., 0.15 = 15%) but
+        inflated values for 0DTE (e.g., 2.63) due to a different time
+        convention for annualizing near-expiry IV.
+
+        For 0DTE with IV > 1.5: zero it out so the synthetic IV fallback
+        (infer_iv_from_gamma) handles it using vendor gamma instead.
+        Normal SPX IV never exceeds ~1.0 even in extreme markets, so 1.5
+        safely separates real IV from 0DTE artifacts.
+
+        For non-0DTE with IV > 3.0: divide by 100 as defensive handling
+        in case of percentage-format data.
+        """
         if not greeks:
             return 0.0
-        iv = greeks.get("mid_iv")
-        if iv in (None, "", 0):
-            iv = greeks.get("ask_iv")
-        iv = safe_float(iv, 0.0)
-        if iv > 3:
-            _logger.debug("IV normalization: %.4f → %.4f (divided by 100)", iv, iv / 100.0)
+        iv = safe_float(greeks.get("impliedVolatility", 0), 0.0)
+        if is_0dte and iv > 1.5:
+            _logger.debug("0DTE IV zeroed out (inflated): %.4f", iv)
+            return 0.0
+        if iv > 3.0:
+            _logger.debug("IV normalization: %.4f -> %.4f (divided by 100)", iv, iv / 100.0)
             iv /= 100.0
         return max(iv, 0.0)
 
+    # ── Greeks batch fetch ─────────────────────────────────────────────
+
+    def _fetch_greeks_batch(self, osi_symbols):
+        """
+        Fetch Greeks for a list of OSI symbols. Returns {symbol: greeks_dict}.
+
+        Batches requests to avoid exceeding API limits.
+        """
+        self._ensure_auth()
+        result = {}
+        for i in range(0, len(osi_symbols), _GREEKS_BATCH_SIZE):
+            batch = osi_symbols[i:i + _GREEKS_BATCH_SIZE]
+            try:
+                r = requests.get(
+                    f"{_PUBLIC_GW}/option-details/{self._account_id}/greeks",
+                    headers=self._auth_headers_inner(),
+                    params={"osiSymbols": batch},
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    for entry in r.json().get("greeks", []):
+                        sym = entry.get("symbol", "")
+                        result[sym] = entry.get("greeks", {})
+                else:
+                    _logger.warning("Greeks batch fetch failed: %s", r.status_code)
+            except requests.RequestException as e:
+                _logger.warning("Greeks batch fetch error: %s", e)
+            if i + _GREEKS_BATCH_SIZE < len(osi_symbols):
+                time.sleep(0.1)
+        return result
+
+    # ── Chain fetch ────────────────────────────────────────────────────
+
     def get_chain_once(self, ticker, expiration):
         """
-        Fetch one options chain.
+        Fetch one options chain from Public.com.
+
+        Fetches the chain (bid/ask/OI/volume) then Greeks separately,
+        merges them, and returns the same normalized format.
 
         Returns dict with:
             status: "ok" or "failed"
@@ -126,11 +294,14 @@ class TradierDataClient:
             error: optional string
         """
         try:
-            r = requests.get(
-                f"{self.base_url}/markets/options/chains",
-                headers=self.tradier_headers(),
-                params={"symbol": ticker, "expiration": expiration, "greeks": "true"},
-                timeout=10,
+            r = requests.post(
+                f"{_PUBLIC_GW}/marketdata/{self._account_id}/option-chain",
+                headers=self._auth_headers(),
+                json={
+                    "instrument": {"symbol": ticker, "type": "INDEX"},
+                    "expirationDate": expiration,
+                },
+                timeout=20,
             )
             r.raise_for_status()
         except (requests.RequestException, requests.Timeout) as e:
@@ -141,7 +312,6 @@ class TradierDataClient:
                 "error": str(e),
             }
 
-        # --- Response shape validation ---
         try:
             d = r.json()
         except (ValueError, TypeError) as e:
@@ -160,80 +330,66 @@ class TradierDataClient:
                 "error": f"Unexpected response type: {type(d).__name__}",
             }
 
-        # "options" key missing or null → vendor returned no data for this expiration
-        options_block = d.get("options")
-        if options_block is None:
-            return {
-                "status": "ok",
-                "calls": [],
-                "puts": [],
-                "error": None,
-            }
+        raw_calls = d.get("calls", [])
+        raw_puts = d.get("puts", [])
 
-        if not isinstance(options_block, dict):
-            return {
-                "status": "failed",
-                "calls": [],
-                "puts": [],
-                "error": f"Malformed 'options' field: {type(options_block).__name__}",
-            }
+        if not raw_calls and not raw_puts:
+            return {"status": "ok", "calls": [], "puts": [], "error": None}
 
-        option_list = options_block.get("option")
-        if option_list is None:
-            return {
-                "status": "ok",
-                "calls": [],
-                "puts": [],
-                "error": None,
-            }
+        # Collect all OSI symbols for batch Greeks fetch
+        all_symbols = []
+        for entry in raw_calls + raw_puts:
+            sym = (entry.get("instrument") or {}).get("symbol", "")
+            if sym:
+                all_symbols.append(sym)
 
-        if isinstance(option_list, dict):
-            # Single option returned as a dict instead of a list
-            option_list = [option_list]
-        elif not isinstance(option_list, list):
-            return {
-                "status": "failed",
-                "calls": [],
-                "puts": [],
-                "error": f"Malformed 'option' field: {type(option_list).__name__}",
-            }
+        # Fetch Greeks for all symbols in batch
+        greeks_map = self._fetch_greeks_batch(all_symbols) if all_symbols else {}
 
-        calls = []
-        puts = []
+        # Determine if this is 0DTE
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        is_0dte = expiration == today_str
 
-        for o in option_list:
-            if not isinstance(o, dict):
-                continue
+        def _parse_entries(raw_entries):
+            rows = []
+            for entry in raw_entries:
+                if not isinstance(entry, dict):
+                    continue
 
-            strike = round(safe_float(o.get("strike", 0), 0.0), 2)
-            if strike <= 0:
-                continue
+                sym = (entry.get("instrument") or {}).get("symbol", "")
 
-            bid = safe_float(o.get("bid", 0), 0.0)
-            ask = safe_float(o.get("ask", 0), 0.0)
-            oi = safe_float(o.get("open_interest", 0), 0.0)
-            volume = safe_float(o.get("volume", 0), 0.0)
-            greeks = o.get("greeks") or {}
-            if not isinstance(greeks, dict):
-                greeks = {}
-            iv = self._parse_iv_from_greeks(greeks)
-            vendor_gamma = safe_float(greeks.get("gamma", 0), 0.0) if greeks else 0.0
+                # Parse strike from OSI symbol (last 8 digits / 1000)
+                try:
+                    strike = round(int(sym[-8:]) / 1000.0, 2)
+                except (ValueError, IndexError):
+                    continue
+                if strike <= 0:
+                    continue
 
-            row = {
-                "strike": strike,
-                "openInterest": oi,
-                "volume": volume,
-                "impliedVolatility": iv,
-                "vendorGamma": vendor_gamma,
-                "bid": bid,
-                "ask": ask,
-                "mid": (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0,
-            }
+                bid = safe_float(entry.get("bid", 0), 0.0)
+                ask = safe_float(entry.get("ask", 0), 0.0)
+                oi = safe_float(entry.get("openInterest", 0), 0.0)
+                volume = safe_float(entry.get("volume", 0), 0.0)
 
-            if o.get("option_type") == "call":
-                calls.append(row)
-            else:
-                puts.append(row)
+                greeks = greeks_map.get(sym, {})
+                iv = self._parse_iv_from_greeks(greeks, is_0dte=is_0dte)
+                vendor_gamma = safe_float(greeks.get("gamma", 0), 0.0) if greeks else 0.0
+
+                rows.append({
+                    "strike": strike,
+                    "openInterest": oi,
+                    "volume": volume,
+                    "impliedVolatility": iv,
+                    "vendorGamma": vendor_gamma,
+                    "bid": bid,
+                    "ask": ask,
+                    "mid": (bid + ask) / 2 if bid > 0 and ask > 0 else 0.0,
+                })
+
+            return rows
+
+        calls = _parse_entries(raw_calls)
+        puts = _parse_entries(raw_puts)
 
         return {
             "status": "ok",
