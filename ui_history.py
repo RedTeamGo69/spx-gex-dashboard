@@ -21,7 +21,6 @@ from phase1.gex_history import (
 
 from theme import COLORS
 from ui_sidebar import _fmt_gex_short
-from streamlit_app import get_credentials, fetch_multi_tf_gex
 
 
 def _render_history_tab(current_spot, ticker="SPX"):
@@ -298,6 +297,10 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", 
 
 def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, rfr, ticker="SPX"):
     """C3: Multi-timeframe GEX comparison — 0DTE vs Weekly vs Monthly."""
+    # Lazy import to avoid circular dependency:
+    # streamlit_app -> ui_spread_finder -> ui_history -> streamlit_app
+    from streamlit_app import get_credentials, fetch_multi_tf_gex
+
     tradier_token, _, _ = get_credentials()
     if not tradier_token:
         st.info("API token required for multi-timeframe analysis.")
