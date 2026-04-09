@@ -112,6 +112,7 @@ class PublicDataClient:
     # ── Quotes ─────────────────────────────────────────────────────────
 
     def get_spot_price(self, ticker="SPX"):
+        self._ensure_auth()
         r = requests.post(
             f"{_PUBLIC_GW}/marketdata/{self._account_id}/quotes",
             headers=self._auth_headers(),
@@ -131,6 +132,7 @@ class PublicDataClient:
         Public.com returns last for SPX but bid/ask/prevclose are often null.
         Uses yfinance as fallback for prevclose (needed for overnight move).
         """
+        self._ensure_auth()
         r = requests.post(
             f"{_PUBLIC_GW}/marketdata/{self._account_id}/quotes",
             headers=self._auth_headers(),
@@ -207,6 +209,7 @@ class PublicDataClient:
     # ── Expirations ────────────────────────────────────────────────────
 
     def get_expirations(self, ticker="SPX"):
+        self._ensure_auth()
         r = requests.post(
             f"{_PUBLIC_GW}/marketdata/{self._account_id}/option-expirations",
             headers=self._auth_headers(),
@@ -293,6 +296,7 @@ class PublicDataClient:
             puts: [...]
             error: optional string
         """
+        self._ensure_auth()
         try:
             r = requests.post(
                 f"{_PUBLIC_GW}/marketdata/{self._account_id}/option-chain",
