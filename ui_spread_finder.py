@@ -14,6 +14,7 @@ import streamlit as st
 
 from theme import COLORS
 from models import GEXData
+from ui_history import _is_weekly_freeze_day
 
 from range_finder.gex_bridge import (
     GEXContext, extract_gex_context, save_gex_to_range_finder,
