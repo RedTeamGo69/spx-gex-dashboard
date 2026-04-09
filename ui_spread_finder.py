@@ -5,7 +5,7 @@ Extracted from streamlit_app.py.
 """
 from __future__ import annotations
 
-from datetime import date as date_cls, timedelta
+from datetime import date as date_cls, datetime, timedelta
 
 import numpy as np
 import pandas as pd
