@@ -207,7 +207,7 @@ def _render_history_tab(current_spot, ticker="SPX"):
     _history_fragment()
 
 
-def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=None):
+def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=None, is_frozen=True):
     """C5: Show how much of the expected move has been consumed."""
     em_data = em_analysis.get("expected_move", {}) if isinstance(em_analysis, dict) and "expected_move" in em_analysis else em_analysis
     if em_data is None:
@@ -224,39 +224,46 @@ def _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", 
     # The EM range is anchored to spot at capture time (upper = anchor + em, lower = anchor - em).
     # Measure consumption from that same anchor so the % matches the visual range.
     em_anchor = (upper + lower) / 2 if (upper is not None and lower is not None) else prev_close
-    if em_anchor > 0:
+    if is_frozen and em_anchor > 0:
         current_move = abs(spot - em_anchor)
         move_pct_of_em = (current_move / em_pts) * 100
         direction = "up" if spot >= em_anchor else "down"
     else:
-        current_move = 0
-        move_pct_of_em = 0
-        direction = "flat"
+        # Live (unfrozen) data: anchor = current spot, so tracking is meaningless
+        current_move = None
+        move_pct_of_em = None
+        direction = None
 
     # Gauge display
-    if move_pct_of_em < 40:
-        gauge_color = COLORS["positive"]
-        status = "Plenty of room"
-    elif move_pct_of_em < 70:
-        gauge_color = COLORS["warning"]
-        status = "Moderate — watch for reversal"
-    elif move_pct_of_em < 100:
-        gauge_color = COLORS["negative"]
-        status = "Extended — mean reversion likely"
-    else:
-        gauge_color = "#ff1744"
-        status = "Beyond EM — trend day or breakout"
+    if move_pct_of_em is not None:
+        if move_pct_of_em < 40:
+            gauge_color = COLORS["positive"]
+            status = "Plenty of room"
+        elif move_pct_of_em < 70:
+            gauge_color = COLORS["warning"]
+            status = "Moderate — watch for reversal"
+        elif move_pct_of_em < 100:
+            gauge_color = COLORS["negative"]
+            status = "Extended — mean reversion likely"
+        else:
+            gauge_color = "#ff1744"
+            status = "Beyond EM — trend day or breakout"
 
     if subtitle:
         st.caption(subtitle)
 
     col1, col2, col3 = st.columns(3)
     col1.metric(f"{label} Expected Move", f"±{em_pts:.0f} pts")
-    col2.metric("Current Move", f"{current_move:.1f} pts {direction}")
-    col3.metric("EM Consumed", f"{move_pct_of_em:.0f}%")
+    if current_move is not None:
+        col2.metric("Current Move", f"{current_move:.1f} pts {direction}")
+        col3.metric("EM Consumed", f"{move_pct_of_em:.0f}%")
+    else:
+        col2.metric("Current Move", "—")
+        col3.metric("EM Consumed", "—")
 
-    st.progress(min(move_pct_of_em / 100, 1.0))
-    st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
+    if move_pct_of_em is not None:
+        st.progress(min(move_pct_of_em / 100, 1.0))
+        st.markdown(f"**Status:** <span style='color:{gauge_color};'>{status}</span>", unsafe_allow_html=True)
 
     # Visual range display
     if upper is None or lower is None:
