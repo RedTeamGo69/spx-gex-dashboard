@@ -883,6 +883,9 @@ def main():
 
         ratio = classification.get("move_ratio")
 
+        display_pts = display_pts if display_pts is not None else 0.0
+        display_pct = display_pct if display_pct is not None else 0.0
+
         on_color = COLORS["positive"] if (display_pts or 0) >= 0 else COLORS["negative"]
         on_arrow = "▲" if (display_pts or 0) > 0 else "▼" if (display_pts or 0) < 0 else "–"
         ratio_pct = f"{ratio*100:.0f}%" if ratio is not None else "–"
