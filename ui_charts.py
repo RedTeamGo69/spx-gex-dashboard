@@ -2,7 +2,7 @@
 
 import plotly.graph_objects as go
 
-from streamlit_app import COLORS
+from theme import COLORS
 
 
 def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, monthly_em=None):

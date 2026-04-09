@@ -12,7 +12,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from streamlit_app import GEXData, COLORS
+from theme import COLORS
+from models import GEXData
 
 from range_finder.gex_bridge import (
     GEXContext, extract_gex_context, save_gex_to_range_finder,
@@ -52,12 +53,7 @@ from range_finder.spread_levels import (
 # Spread Finder Tab — Weekly credit spread placement powered by HAR model + GEX
 # ─────────────────────────────────────────────────────────────────────────────
 
-SF_BG   = "#0e1117"
-SF_BULL = "#26a69a"
-SF_BEAR = "#ef5350"
-SF_NEUT = "#90a4ae"
-SF_WARN = "#ffa726"
-SF_CARD = "#1e2130"
+from theme import SF_BG, SF_BULL, SF_BEAR, SF_NEUT, SF_WARN, SF_CARD
 
 
 @st.cache_resource

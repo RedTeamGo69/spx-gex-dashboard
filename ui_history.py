@@ -19,7 +19,9 @@ from phase1.gex_history import (
     save_em_snapshot, get_em_snapshot,
 )
 
-from streamlit_app import COLORS, get_credentials, fetch_multi_tf_gex, _fmt_gex_short
+from theme import COLORS
+from ui_sidebar import _fmt_gex_short
+from streamlit_app import get_credentials, fetch_multi_tf_gex
 
 
 def _render_history_tab(current_spot, ticker="SPX"):

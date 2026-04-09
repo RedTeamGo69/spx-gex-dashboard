@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from streamlit_app import COLORS
+from theme import COLORS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
