@@ -197,8 +197,13 @@ def capture_snapshot():
             _logger.warning(f"Daily EM snapshot save failed: {e}")
 
     # ── Weekly EM: capture on Mondays (or Tuesday if Monday was a holiday) ──
+    # Intended freeze day is Monday's open, but if Monday's cron run failed
+    # we still want some snap for the week rather than an indefinitely blank
+    # marker. On Tue–Fri, capture only if no weekly snap exists yet for this
+    # week's Monday key (save_em_snapshot uses ON CONFLICT DO NOTHING so a
+    # successful Monday capture is never overwritten).
     from phase1.expected_move import find_weekly_expiration, find_monthly_expiration, compute_em_for_expiration
-    from phase1.gex_history import get_weekly_em_date_key, get_monthly_em_date_key
+    from phase1.gex_history import get_weekly_em_date_key, get_monthly_em_date_key, get_em_snapshot
 
     is_monday = run_now.weekday() == 0
     is_tuesday_after_holiday = False
@@ -207,19 +212,32 @@ def capture_snapshot():
         mon_session = get_session_state(CASH_CALENDAR, monday)
         is_tuesday_after_holiday = mon_session.market_open is None
 
-    if is_monday or is_tuesday_after_holiday:
+    weekly_key = get_weekly_em_date_key(run_now)
+    should_capture_weekly = is_monday or is_tuesday_after_holiday
+    if not should_capture_weekly:
+        # Backfill path: no snap yet for this week → capture today.
+        try:
+            existing_weekly = get_em_snapshot(weekly_key, ticker=ticker, em_type="weekly")
+        except Exception:
+            existing_weekly = None
+        if not (existing_weekly and existing_weekly.get("expected_move_pts")):
+            should_capture_weekly = True
+            _logger.info(f"No weekly EM snap found for {weekly_key} — backfilling from today's open")
+
+    if should_capture_weekly:
         weekly_exp = find_weekly_expiration(avail, run_now.date())
         if weekly_exp:
             weekly_em = compute_em_for_expiration(client, ticker, weekly_exp, spot)
             if weekly_em and weekly_em.get("expected_move_pts"):
                 try:
-                    weekly_key = get_weekly_em_date_key(run_now)
                     save_em_snapshot(weekly_em, weekly_key, ticker=ticker, em_type="weekly")
-                    _logger.info(f"Weekly EM saved: ±{weekly_em['expected_move_pts']:.2f} pts (exp: {weekly_exp})")
+                    _logger.info(f"Weekly EM saved (key={weekly_key}): ±{weekly_em['expected_move_pts']:.2f} pts (exp: {weekly_exp})")
                 except Exception as e:
                     _logger.warning(f"Weekly EM save failed: {e}")
 
     # ── Monthly EM: capture on the first trading day of the month ──
+    # Same backfill logic as weekly: if the first-trading-day run was missed,
+    # capture from a later day rather than leaving the month blank.
     is_first_trading_day = False
     from datetime import timedelta as _td
     first = run_now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
@@ -233,15 +251,25 @@ def capture_snapshot():
         is_first_trading_day = (candidate.date() == run_now.date())
         break
 
-    if is_first_trading_day:
+    monthly_key = get_monthly_em_date_key(run_now)
+    should_capture_monthly = is_first_trading_day
+    if not should_capture_monthly:
+        try:
+            existing_monthly = get_em_snapshot(monthly_key, ticker=ticker, em_type="monthly")
+        except Exception:
+            existing_monthly = None
+        if not (existing_monthly and existing_monthly.get("expected_move_pts")):
+            should_capture_monthly = True
+            _logger.info(f"No monthly EM snap found for {monthly_key} — backfilling from today's open")
+
+    if should_capture_monthly:
         monthly_exp = find_monthly_expiration(avail, run_now.date())
         if monthly_exp:
             monthly_em = compute_em_for_expiration(client, ticker, monthly_exp, spot)
             if monthly_em and monthly_em.get("expected_move_pts"):
                 try:
-                    monthly_key = get_monthly_em_date_key(run_now)
                     save_em_snapshot(monthly_em, monthly_key, ticker=ticker, em_type="monthly")
-                    _logger.info(f"Monthly EM saved: ±{monthly_em['expected_move_pts']:.2f} pts (exp: {monthly_exp})")
+                    _logger.info(f"Monthly EM saved (key={monthly_key}): ±{monthly_em['expected_move_pts']:.2f} pts (exp: {monthly_exp})")
                 except Exception as e:
                     _logger.warning(f"Monthly EM save failed: {e}")
 
