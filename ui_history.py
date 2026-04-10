@@ -574,10 +574,11 @@ def _apply_typed_em_snapshot(em_live_data, is_market_open, spot, ticker, em_type
         st.session_state.pop(sk_date, None)
         st.session_state.pop(sk_time, None)
 
-    if not is_market_open:
-        return st.session_state.get(sk_snap)
-
-    # Try to restore from Postgres
+    # Try to restore from Postgres whenever session state is empty — this must
+    # run regardless of market-open status, otherwise fresh sessions outside
+    # 9:30–16:00 ET never pick up the frozen weekly/monthly snap that the
+    # scheduled cron already persisted, and downstream code falls back to the
+    # live (drifting) EM.
     if sk_snap not in st.session_state:
         try:
             db_snap = get_em_snapshot(date_key, ticker=ticker, em_type=em_type)
@@ -596,6 +597,11 @@ def _apply_typed_em_snapshot(em_live_data, is_market_open, spot, ticker, em_type
                     st.session_state[sk_time] = "restored from DB"
             else:
                 st.session_state[sk_time] = "restored from DB"
+
+    if not is_market_open:
+        # Outside market hours we never capture anything new — just return
+        # whatever we restored (or None if nothing was ever saved).
+        return st.session_state.get(sk_snap)
 
     # First capture of the period — only on the correct freeze day
     if sk_snap not in st.session_state and should_freeze and em_live_data and em_live_data.get("expected_move_pts"):

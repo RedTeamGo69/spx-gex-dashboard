@@ -1000,8 +1000,11 @@ def main():
     )
 
     with tab_gex:
-        w_em_for_chart = weekly_em_snap or weekly_em_live or {}
-        m_em_for_chart = monthly_em_snap or monthly_em_live or {}
+        # Weekly/monthly markers ONLY use the frozen snap — never the live EM.
+        # Falling back to live data makes the markers drift every refresh; if
+        # the snap is missing we'd rather draw nothing than a moving target.
+        w_em_for_chart = weekly_em_snap or {}
+        m_em_for_chart = monthly_em_snap or {}
         fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
@@ -1053,28 +1056,31 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
 
         st.divider()
 
-        # Weekly
+        # Weekly — frozen from Monday's open only. We never show a drifting
+        # "live estimate" here; an absent snap means the chart/tracker simply
+        # reports the snap is pending (e.g. Monday pre-9:30 before cron).
         weekly_is_frozen = weekly_em_snap is not None
         if not weekly_exp:
             weekly_sub = "No weekly expiration found"
         elif weekly_is_frozen:
-            weekly_sub = f"Frozen Mon open | Exp: {weekly_exp}"
+            weekly_sub = f"Frozen Mon open ({weekly_date_key}) | Exp: {weekly_exp}"
         else:
-            weekly_sub = f"Live estimate (freezes Mon open) | Exp: {weekly_exp}"
-        weekly_em_for_render = {"expected_move": weekly_em_snap} if weekly_em_snap else {"expected_move": weekly_em_live or {}}
+            weekly_sub = f"Pending Monday capture ({weekly_date_key}) | Exp: {weekly_exp}"
+        weekly_em_for_render = {"expected_move": weekly_em_snap} if weekly_em_snap else {"expected_move": {}}
         _render_em_tracker(weekly_em_for_render, spot, prev_close, market_ctx, label="Weekly", subtitle=weekly_sub, is_frozen=weekly_is_frozen)
 
         st.divider()
 
-        # Monthly
+        # Monthly — frozen from the first trading day of the month. Same
+        # no-live-fallback rule as weekly.
         monthly_is_frozen = monthly_em_snap is not None
         if not monthly_exp:
             monthly_sub = "No monthly expiration found"
         elif monthly_is_frozen:
-            monthly_sub = f"Frozen 1st trading day | Exp: {monthly_exp}"
+            monthly_sub = f"Frozen 1st trading day ({monthly_date_key}) | Exp: {monthly_exp}"
         else:
-            monthly_sub = f"Live estimate (freezes 1st trading day) | Exp: {monthly_exp}"
-        monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": monthly_em_live or {}}
+            monthly_sub = f"Pending 1st-trading-day capture ({monthly_date_key}) | Exp: {monthly_exp}"
+        monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": {}}
         _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="Monthly", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
 
     # ── C4: IV surface visualization ──
@@ -1083,7 +1089,9 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
 
     # ── C7: Spread Finder — Weekly credit spread placement ──
     with tab_spread_finder:
-        _sf_weekly_em = weekly_em_snap or weekly_em_live or {}
+        # Spread finder also uses the frozen weekly snap only — a drifting
+        # live EM would invalidate the spread plan intra-week.
+        _sf_weekly_em = weekly_em_snap or {}
         _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker, weekly_em=_sf_weekly_em)
 
     with tab_trade_log:
