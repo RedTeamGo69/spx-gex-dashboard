@@ -235,24 +235,33 @@ def capture_snapshot():
                 except Exception as e:
                     _logger.warning(f"Weekly EM save failed: {e}")
 
-    # ── Monthly EM: capture on the first trading day of the month ──
-    # Same backfill logic as weekly: if the first-trading-day run was missed,
-    # capture from a later day rather than leaving the month blank.
-    is_first_trading_day = False
-    from datetime import timedelta as _td
-    first = run_now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
-    for offset in range(10):
-        candidate = first + _td(days=offset)
-        if candidate.weekday() >= 5:
-            continue
-        cand_session = get_session_state(CASH_CALENDAR, candidate)
-        if cand_session.market_open is None:
-            continue
-        is_first_trading_day = (candidate.date() == run_now.date())
-        break
+    # ── OpEx-cycle EM: capture on the first trading day of the new cycle ──
+    # The OpEx cycle runs from the Monday following each 3rd-Friday standard
+    # expiration through the next 3rd Friday. "First trading day of the cycle"
+    # is normally that Monday, or the first non-holiday weekday after it.
+    # Same backfill logic as weekly: if that run was missed, capture from a
+    # later day rather than leaving the cycle blank.
+    from datetime import date as _date, timedelta as _td
 
-    monthly_key = get_monthly_em_date_key(run_now)
-    should_capture_monthly = is_first_trading_day
+    monthly_key = get_monthly_em_date_key(run_now)  # = Monday after last OpEx
+    cycle_open_mon = _date.fromisoformat(monthly_key)
+
+    # Find the actual first trading day of this cycle (skip holidays).
+    cycle_first_trading_day = None
+    walker = cycle_open_mon
+    for _ in range(7):
+        probe = run_now.replace(
+            year=walker.year, month=walker.month, day=walker.day,
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        probe_session = get_session_state(CASH_CALENDAR, probe)
+        if walker.weekday() < 5 and probe_session.market_open is not None:
+            cycle_first_trading_day = walker
+            break
+        walker = walker + _td(days=1)
+
+    is_cycle_open = (cycle_first_trading_day == run_now.date())
+    should_capture_monthly = is_cycle_open
     if not should_capture_monthly:
         try:
             existing_monthly = get_em_snapshot(monthly_key, ticker=ticker, em_type="monthly")
@@ -260,7 +269,7 @@ def capture_snapshot():
             existing_monthly = None
         if not (existing_monthly and existing_monthly.get("expected_move_pts")):
             should_capture_monthly = True
-            _logger.info(f"No monthly EM snap found for {monthly_key} — backfilling from today's open")
+            _logger.info(f"No OpEx-cycle EM snap found for {monthly_key} — backfilling from today's open")
 
     if should_capture_monthly:
         monthly_exp = find_monthly_expiration(avail, run_now.date())
@@ -269,9 +278,9 @@ def capture_snapshot():
             if monthly_em and monthly_em.get("expected_move_pts"):
                 try:
                     save_em_snapshot(monthly_em, monthly_key, ticker=ticker, em_type="monthly")
-                    _logger.info(f"Monthly EM saved (key={monthly_key}): ±{monthly_em['expected_move_pts']:.2f} pts (exp: {monthly_exp})")
+                    _logger.info(f"OpEx-cycle EM saved (key={monthly_key}): ±{monthly_em['expected_move_pts']:.2f} pts (exp: {monthly_exp})")
                 except Exception as e:
-                    _logger.warning(f"Monthly EM save failed: {e}")
+                    _logger.warning(f"OpEx-cycle EM save failed: {e}")
 
     # =========================================================================
     # WEEKLY SPREAD FINDER SETUP (Monday open only)

@@ -1071,17 +1071,20 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
 
         st.divider()
 
-        # Monthly — frozen from the first trading day of the month. Same
-        # no-live-fallback rule as weekly.
+        # OpEx Cycle — frozen on the first trading day after each 3rd-Friday
+        # standard OpEx (the Monday-after, normally). Uses the next 3rd Friday
+        # as the straddle expiration so the frozen value always represents a
+        # live, forward-looking contract for the whole cycle. Same no-live-
+        # fallback rule as weekly.
         monthly_is_frozen = monthly_em_snap is not None
         if not monthly_exp:
-            monthly_sub = "No monthly expiration found"
+            monthly_sub = "No monthly OpEx expiration found"
         elif monthly_is_frozen:
-            monthly_sub = f"Frozen 1st trading day ({monthly_date_key}) | Exp: {monthly_exp}"
+            monthly_sub = f"Frozen post-OpEx ({monthly_date_key}) | Exp: {monthly_exp}"
         else:
-            monthly_sub = f"Pending 1st-trading-day capture ({monthly_date_key}) | Exp: {monthly_exp}"
+            monthly_sub = f"Pending post-OpEx capture ({monthly_date_key}) | Exp: {monthly_exp}"
         monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": {}}
-        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="Monthly", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
+        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="OpEx Cycle", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
 
     # ── C4: IV surface visualization ──
     with tab_iv_surface:

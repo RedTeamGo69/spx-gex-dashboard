@@ -542,18 +542,32 @@ def _is_weekly_freeze_day(now_et):
 
 
 def _is_monthly_freeze_day(now_et):
-    """True if today is the first trading day of the month."""
-    first = now_et.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
-    # Walk forward from the 1st to find the first trading weekday
-    for offset in range(10):
-        candidate = first + timedelta(days=offset)
-        if candidate.weekday() >= 5:
-            continue
-        if not _is_trading_day(candidate):
-            continue
-        # This is the first trading day
-        today = now_et.date() if hasattr(now_et, 'date') else now_et
-        return candidate.date() == today
+    """
+    True if today is the first trading day of the current OpEx cycle — i.e.
+    the first trading day strictly after the most recent standard monthly
+    3rd-Friday OpEx. Normally that's the Monday after OpEx; if Monday is a
+    holiday it slips to Tuesday, etc.
+    """
+    from phase1.gex_history import get_monthly_em_date_key
+    from datetime import date as _date
+
+    today = now_et.date() if hasattr(now_et, 'date') else now_et
+
+    # get_monthly_em_date_key returns the *Monday* following the most recent
+    # 3rd Friday. Walk forward from that Monday to find the actual first
+    # trading day of the cycle (skipping holidays).
+    cycle_open_mon = _date.fromisoformat(get_monthly_em_date_key(now_et))
+    candidate = cycle_open_mon
+    for _ in range(7):  # at most a week of consecutive holidays
+        # _is_trading_day accepts a date or datetime; pass a datetime anchored
+        # at noon in the same tz as now_et so the market-calendar lookup works.
+        probe = now_et.replace(
+            year=candidate.year, month=candidate.month, day=candidate.day,
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        if _is_trading_day(probe):
+            return candidate == today
+        candidate = candidate + timedelta(days=1)
     return False
 
 
