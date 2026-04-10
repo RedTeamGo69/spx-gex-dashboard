@@ -315,14 +315,16 @@ def _render_multi_timeframe(all_options, target_exps, avail_exps, spot, levels, 
         return
 
     # Color mapping and opacity for timeframes (render order: back to front)
-    # Longest timeframe in back (most transparent), 0DTE on top (most opaque)
+    # Longest timeframe in back (most transparent), 0DTE on top (most opaque).
+    # "OpEx Cycle" covers exps from 8+ days out through the next 3rd-Friday
+    # OpEx — the institutional monthly gamma cluster.
     tf_style = {
-        "This Month": {"color": "#69f0ae", "opacity": 0.35},
+        "OpEx Cycle": {"color": "#69f0ae", "opacity": 0.35},
         "This Week":  {"color": "#ffd600", "opacity": 0.55},
         "0DTE":       {"color": "#ff6b6b", "opacity": 0.85},
     }
     # Render in back-to-front order so 0DTE is always visible on top
-    render_order = ["This Month", "This Week", "0DTE"]
+    render_order = ["OpEx Cycle", "This Week", "0DTE"]
 
     fig = go.Figure()
     for label in render_order:
