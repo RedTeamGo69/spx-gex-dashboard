@@ -9,7 +9,6 @@ from __future__ import annotations
 import os
 import json
 import logging
-import calendar as cal_mod
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -607,7 +606,7 @@ def main():
             "0DTE" + (f"  ({dte0})" if dte0 else "  (n/a)"),
             "Tomorrow" + (f"  ({dte1})" if dte1 else "  (n/a)"),
             "This week",
-            "This month",
+            "OpEx Cycle",
             "Custom",
         ], index=0)
 
@@ -620,9 +619,17 @@ def main():
             # days_to_fri == 0 on Friday itself, which is correct (include today)
             fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
             selected = [e for e in avail if today_str <= e <= fri]
-        elif "month" in mode:
-            ld = run_now.replace(day=cal_mod.monthrange(run_now.year, run_now.month)[1]).strftime("%Y-%m-%d")
-            selected = [e for e in avail if today_str <= e <= ld]
+        elif "OpEx" in mode:
+            # Select expirations from today through the next standard 3rd-Friday
+            # OpEx. find_monthly_expiration rolls to next month's OpEx once the
+            # current month's is behind us, so the bucket stays populated across
+            # the whole cycle instead of silently shrinking to empty in the
+            # second half of a calendar month (the old "This month" behavior).
+            cycle_end = find_monthly_expiration(future_exps, run_now.date())
+            if cycle_end:
+                selected = [e for e in avail if today_str <= e <= cycle_end]
+            else:
+                selected = []
         else:
             selected = st.multiselect("Pick expirations", future_exps, default=future_exps[:1])
 
