@@ -15,7 +15,7 @@ import streamlit as st
 from phase1.market_clock import now_ny
 from phase1.gex_history import (
     get_daily_summary, get_history,
-    get_backend as get_history_backend, check_db_connection,
+    check_db_connection,
     save_em_snapshot, get_em_snapshot,
 )
 
@@ -25,8 +25,6 @@ from ui_sidebar import _fmt_gex_short
 
 def _render_history_tab(current_spot, ticker="SPX"):
     """C1: Render historical GEX trend chart."""
-    backend = get_history_backend()
-
     # ── Save status diagnostic ──
     save_ok = st.session_state.get("last_save_ok")
     save_time = st.session_state.get("last_save_time", "–")
@@ -41,32 +39,23 @@ def _render_history_tab(current_spot, ticker="SPX"):
         status_icon = "⏳"
         status_text = "No save attempted yet"
 
-    if backend == "postgres":
-        st.caption(f"💾 Neon Postgres — history persists across sessions &nbsp;|&nbsp; {status_icon} {status_text}")
-        if save_ok is False:
-            st.error(f"⚠️ Save error: {st.session_state.get('last_save_error', 'unknown')}")
-    else:
-        st.warning(
-            "⚡ **Session-only storage** — history is lost on page refresh. "
-            "To persist history across sessions, add `DATABASE_URL` to your Streamlit secrets "
-            "(Settings → Secrets on Streamlit Cloud) with your Neon Postgres connection string."
-        )
-        st.caption(f"{status_icon} {status_text}")
+    st.caption(f"💾 Neon Postgres — history persists across sessions &nbsp;|&nbsp; {status_icon} {status_text}")
+    if save_ok is False:
+        st.error(f"⚠️ Save error: {st.session_state.get('last_save_error', 'unknown')}")
 
     # ── DB Diagnostic ──
-    if backend == "postgres":
-        with st.expander("🔧 Database Diagnostic"):
-            if st.button("Check DB Connection", key="check_db"):
-                diag = check_db_connection()
-                if diag["ok"]:
-                    st.success(f"Connected! **{diag['total_rows']}** rows stored. Date range: {diag['date_range']}")
-                    if diag["recent"]:
-                        st.markdown("**Most recent snapshots:**")
-                        for ts, s, zg in diag["recent"]:
-                            st.caption(f"  {ts} — Spot: {s}, ZG: {zg}")
-                    st.caption(f"Connection: `{diag['conn_str_prefix']}`")
-                else:
-                    st.error(f"DB Error: {diag.get('error', 'unknown')}")
+    with st.expander("🔧 Database Diagnostic"):
+        if st.button("Check DB Connection", key="check_db"):
+            diag = check_db_connection()
+            if diag["ok"]:
+                st.success(f"Connected! **{diag['total_rows']}** rows stored. Date range: {diag['date_range']}")
+                if diag["recent"]:
+                    st.markdown("**Most recent snapshots:**")
+                    for ts, s, zg in diag["recent"]:
+                        st.caption(f"  {ts} — Spot: {s}, ZG: {zg}")
+                st.caption(f"Connection: `{diag['conn_str_prefix']}`")
+            else:
+                st.error(f"DB Error: {diag.get('error', 'unknown')}")
 
     # ── View toggle + charts (fragment — switching views doesn't rerun the page) ──
     @st.fragment

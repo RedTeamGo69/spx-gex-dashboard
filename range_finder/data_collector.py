@@ -2,21 +2,18 @@
 # data_collector.py
 # Weekly SPX Range Prediction Model — Data Collection Module
 #
-# Pulls and stores historical SPX OHLC, VIX, and FRED macro data.
-# All data is persisted to SQLite for use by downstream modules.
+# Pulls and stores historical SPX OHLC, VIX, and FRED macro data to Postgres
+# (via range_finder.db.get_connection()) for use by downstream modules.
 #
 # Data Sources:
 #   - yfinance  : SPX weekly OHLC, VIX weekly close
 #   - FRED API  : 10Y Treasury yield, 2Y Treasury yield, Fed Funds rate
-#   - SQLite    : local storage (weekly_data.db)
 # =============================================================================
 
 import math
 import os
-import sqlite3
 import logging
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
@@ -34,9 +31,6 @@ except Exception:
     pass
 if not FRED_API_KEY:
     FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
-
-# Database location — sits in the range_finder directory
-DB_PATH = Path(__file__).parent / "weekly_data.db"
 
 # How many years of history to pull on initial load
 HISTORY_YEARS = 6
@@ -64,10 +58,10 @@ log = logging.getLogger(__name__)
 # DATABASE SETUP
 # =============================================================================
 
-def init_db(db_path: Path = DB_PATH):
+def init_db():
     """
-    Create (or connect to) the database and initialize the schema.
-    Prefers Postgres (via DATABASE_URL) and falls back to SQLite.
+    Connect to Postgres (via DATABASE_URL) and ensure all range-finder tables
+    exist.
 
     Tables:
         weekly_spx  — SPX and VIX weekly OHLC + derived range metrics
@@ -139,7 +133,7 @@ def fetch_spx_vix(years: int = HISTORY_YEARS) -> pd.DataFrame:
     return df
 
 
-def save_spx_vix(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+def save_spx_vix(conn, df: pd.DataFrame) -> int:
     """
     Upsert weekly SPX/VIX rows into the database.
     Returns the number of rows written.
@@ -235,7 +229,7 @@ def fetch_fred_macro(years: int = HISTORY_YEARS) -> pd.DataFrame:
     return df
 
 
-def save_fred_macro(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+def save_fred_macro(conn, df: pd.DataFrame) -> int:
     """
     Upsert daily FRED macro rows into the database.
     Returns the number of rows written.
@@ -287,7 +281,7 @@ from range_finder.event_calendars import (  # noqa: F401
 # WEEKLY UPDATE  (call this every Friday evening)
 # =============================================================================
 
-def update_weekly(conn: sqlite3.Connection) -> None:
+def update_weekly(conn) -> None:
     """
     Incremental update — pulls the last 8 weeks of data and upserts.
     Use this every Friday after market close instead of the full initial load.
@@ -306,7 +300,7 @@ def update_weekly(conn: sqlite3.Connection) -> None:
 # =============================================================================
 
 def _safe(row: pd.Series, col: str):
-    """Return float or None — SQLite doesn't like numpy scalars or pd.NA."""
+    """Return float or None — psycopg2 doesn't like numpy scalars or pd.NA."""
     val = row.get(col)
     if val is None or pd.isna(val):
         return None
@@ -316,7 +310,7 @@ def _safe(row: pd.Series, col: str):
         return None
 
 
-def get_weekly_spx(conn: sqlite3.Connection, limit: int = None) -> pd.DataFrame:
+def get_weekly_spx(conn, limit: int = None) -> pd.DataFrame:
     """
     Convenience reader — returns weekly_spx as a DataFrame sorted by week_start.
     """
@@ -330,7 +324,7 @@ def get_weekly_spx(conn: sqlite3.Connection, limit: int = None) -> pd.DataFrame:
     return df
 
 
-def get_macro_daily(conn: sqlite3.Connection) -> pd.DataFrame:
+def get_macro_daily(conn) -> pd.DataFrame:
     """Returns macro_daily as a DataFrame indexed by date."""
     df = pd.read_sql_query(
         "SELECT * FROM macro_daily ORDER BY date ASC", conn, parse_dates=["date"]
@@ -339,7 +333,7 @@ def get_macro_daily(conn: sqlite3.Connection) -> pd.DataFrame:
     return df
 
 
-def get_event_flags(conn: sqlite3.Connection) -> pd.DataFrame:
+def get_event_flags(conn) -> pd.DataFrame:
     """Returns event_flags as a DataFrame indexed by week_start."""
     df = pd.read_sql_query(
         "SELECT * FROM event_flags ORDER BY week_start ASC", conn, parse_dates=["week_start"]
@@ -348,7 +342,7 @@ def get_event_flags(conn: sqlite3.Connection) -> pd.DataFrame:
     return df
 
 
-def print_summary(conn: sqlite3.Connection) -> None:
+def print_summary(conn) -> None:
     """Print a quick data health summary to console."""
     cur = conn.cursor()
 

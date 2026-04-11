@@ -48,7 +48,7 @@ from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
 from phase1.ai_briefing import build_briefing_context, generate_briefing
 from phase1.gex_history import (
     save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history,
-    get_backend as get_history_backend, check_db_connection,
+    check_db_connection,
     save_em_snapshot, get_em_snapshot,
     get_weekly_em_date_key, get_monthly_em_date_key,
 )
@@ -457,8 +457,8 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
 
 
 def _get_rf_conn():
-    """Get or create the range finder database connection (Postgres or SQLite)."""
-    from range_finder.db import get_connection, init_all_tables, get_backend
+    """Get or create the range finder Postgres connection."""
+    from range_finder.db import get_connection, init_all_tables
     conn = get_connection()
     init_all_tables(conn)
     return conn

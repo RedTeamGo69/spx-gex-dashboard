@@ -59,8 +59,8 @@ from theme import SF_BG, SF_BULL, SF_BEAR, SF_NEUT, SF_WARN, SF_CARD
 
 @st.cache_resource
 def _get_rf_conn():
-    """Get or create the range finder database connection (Postgres or SQLite)."""
-    from range_finder.db import get_connection, init_all_tables, get_backend
+    """Get or create the range finder Postgres connection."""
+    from range_finder.db import get_connection, init_all_tables
     conn = get_connection()
     init_all_tables(conn)
     return conn
@@ -140,7 +140,6 @@ def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> tuple[dict, s
 
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX", weekly_em: dict = None):
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
-    import sqlite3
     import yfinance as yf
     from phase1.market_clock import now_ny
 
@@ -243,10 +242,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         st.session_state[vix_key] = default_vix
 
     st.markdown(f"### {ticker} Weekly Credit Spread Finder")
-    from range_finder.db import get_backend as rf_get_backend
-    _rf_be = rf_get_backend()
-    _rf_be_icon = "💾" if _rf_be == "postgres" else "⚡"
-    st.caption(f"HAR regression range forecast + live GEX adjustment for optimal strike placement &nbsp;|&nbsp; {_rf_be_icon} {'Neon Postgres' if _rf_be == 'postgres' else 'Session-only (no DATABASE_URL)'}")
+    st.caption("HAR regression range forecast + live GEX adjustment for optimal strike placement &nbsp;|&nbsp; 💾 Neon Postgres")
 
     # ── Extract GEX context from current dashboard data ──
     gex_ctx = extract_gex_context(levels, spot, regime)

@@ -7,7 +7,6 @@
 # prediction intervals). Produces point estimates + 80% CI for spread placement.
 # =============================================================================
 
-import sqlite3
 import logging
 import math
 from datetime import datetime, timezone
@@ -490,7 +489,7 @@ from range_finder.model_persistence import MODEL_DIR  # noqa: F401
 # =============================================================================
 
 def run_full_pipeline(
-    conn: sqlite3.Connection,
+    conn,
     spx_close: float = None,
     next_week_start: str = None,
     preferred_model: str = "M3_extended",

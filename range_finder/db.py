@@ -1,27 +1,22 @@
 # =============================================================================
-# db.py — Dual-backend connection layer (Postgres / SQLite)
+# db.py — Postgres connection layer for range finder tables
 #
-# Auto-detects Neon Postgres via DATABASE_URL in Streamlit secrets or env vars.
-# Falls back to local SQLite for development.
-#
-# All range_finder modules receive a connection object from get_connection().
-# The PGConnectionWrapper translates SQLite-style '?' placeholders to '%s'
-# so existing queries work unchanged.
+# Postgres is required. DATABASE_URL must be set via Streamlit secrets or an
+# environment variable. The PGConnectionWrapper translates sqlite-style '?'
+# placeholders to '%s' so existing range_finder queries work unchanged —
+# that's purely a convenience for the query authors, NOT a sqlite fallback.
 # =============================================================================
 
 import os
-import re
-import sqlite3
 import logging
-from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
-# Backend detection (mirrors phase1/gex_history.py pattern)
+# Connection string resolution
 # ---------------------------------------------------------------------------
 
-_backend = "sqlite"
 _pg_conn_str = None
 
 try:
@@ -33,32 +28,43 @@ except Exception:
 if not _pg_conn_str:
     _pg_conn_str = os.environ.get("DATABASE_URL", "")
 
-if _pg_conn_str:
+
+def _require_postgres():
+    """Raise a clear error if DATABASE_URL is missing or psycopg2 is unavailable."""
+    if not _pg_conn_str:
+        raise RuntimeError(
+            "DATABASE_URL is not set. This app requires Postgres — set DATABASE_URL "
+            "in Streamlit secrets or as an environment variable."
+        )
     try:
         import psycopg2  # noqa: F401
-        _backend = "postgres"
-    except ImportError:
-        log.warning("DATABASE_URL set but psycopg2 not installed — falling back to SQLite")
-        _pg_conn_str = None
-        _backend = "sqlite"
+    except ImportError as e:
+        raise RuntimeError(
+            "psycopg2 is not installed. This app requires Postgres — "
+            "`pip install psycopg2-binary`."
+        ) from e
 
 
 def get_backend() -> str:
-    """Return the active backend name: 'postgres' or 'sqlite'."""
-    return _backend
+    """Return the active backend name. Always 'postgres' now that sqlite is removed."""
+    return "postgres"
 
 
 # ---------------------------------------------------------------------------
-# SQLite → Postgres query translation
+# Placeholder translation (sqlite-style '?' → Postgres '%s')
+#
+# This is NOT a sqlite compatibility shim — the range_finder modules simply
+# use '?' placeholders for historical reasons, and rewriting every query to
+# '%s' would be a lot of churn with no behavioral benefit. The wrapper below
+# does the translation on the fly.
 # ---------------------------------------------------------------------------
 
 def _translate_query(sql: str) -> str:
-    """Convert SQLite-style '?' placeholders to Postgres '%s'."""
     return sql.replace("?", "%s")
 
 
 def _to_float(v):
-    """Convert numpy/pandas types to plain Python float for psycopg2."""
+    """Convert numpy/pandas numeric types to plain Python floats for psycopg2."""
     if v is None:
         return None
     try:
@@ -79,10 +85,11 @@ class PGCursor:
 
     def execute(self, sql, params=None):
         sql = _translate_query(sql)
-        # Convert numpy/pandas types in params
         if params:
-            params = tuple(_to_float(p) if isinstance(p, (int, float)) or p is None
-                          else p for p in params)
+            params = tuple(
+                _to_float(p) if isinstance(p, (int, float)) or p is None else p
+                for p in params
+            )
         return self._cur.execute(sql, params)
 
     def executescript(self, sql):
@@ -108,13 +115,11 @@ class PGCursor:
 
 class PGConnectionWrapper:
     """
-    Wraps a psycopg2 connection to behave like sqlite3.Connection.
+    Wraps a psycopg2 connection to present the small sqlite-like surface that
+    the range_finder modules expect (execute / executescript / cursor / commit).
 
-    Key differences handled:
-    - ? → %s placeholder translation
-    - executescript → split-and-execute
-    - Auto-reconnect when Neon serverless drops idle connections
-    - pd.read_sql_query works natively with psycopg2 connections
+    Also handles Neon serverless dropping idle connections by lazily
+    reconnecting on the next use.
     """
 
     def __init__(self, conn_str: str):
@@ -123,19 +128,16 @@ class PGConnectionWrapper:
         self._connect()
 
     def _connect(self):
-        """Establish a fresh Postgres connection."""
         import psycopg2
         self._conn = psycopg2.connect(self._conn_str, sslmode="require")
         self._conn.autocommit = False
 
     def _ensure_alive(self):
-        """Reconnect if the underlying connection has been closed or dropped."""
         try:
             if self._conn is None or self._conn.closed:
                 log.info("Postgres connection lost — reconnecting...")
                 self._connect()
                 return
-            # Lightweight check — will raise if connection is dead
             self._conn.cursor().execute("SELECT 1")
         except Exception:
             log.info("Postgres connection stale — reconnecting...")
@@ -177,33 +179,16 @@ class PGConnectionWrapper:
 # Connection factory
 # ---------------------------------------------------------------------------
 
-_SQLITE_DB_PATH = Path(__file__).parent / "weekly_data.db"
-
-
 def get_connection():
-    """
-    Return a database connection — Postgres if available, else SQLite.
-
-    Postgres tables use the 'rf_' prefix to avoid collisions with
-    existing GEX dashboard tables.
-    """
-    if _backend == "postgres":
-        # PGConnectionWrapper handles connection lifecycle including
-        # auto-reconnect when Neon serverless drops idle connections
-        wrapped = PGConnectionWrapper(_pg_conn_str)
-        log.info("Range finder connected to Postgres")
-        return wrapped
-    else:
-        conn = sqlite3.connect(_SQLITE_DB_PATH, check_same_thread=False)
-        log.info(f"Range finder connected to SQLite: {_SQLITE_DB_PATH}")
-        return conn
+    """Return a Postgres connection wrapped for placeholder translation."""
+    _require_postgres()
+    wrapped = PGConnectionWrapper(_pg_conn_str)
+    log.info("Range finder connected to Postgres")
+    return wrapped
 
 
 def init_all_tables(conn) -> None:
-    """
-    Create all range finder tables if they don't exist.
-    Works on both Postgres and SQLite.
-    """
+    """Create all range finder tables if they don't exist (Postgres DDL)."""
     cur = conn.cursor()
 
     # --- weekly_spx ---
@@ -290,19 +275,16 @@ def init_all_tables(conn) -> None:
         )
     """)
 
-    # Schema migrations for new columns on existing databases
+    # Schema migrations for columns added after the initial release
     for col, ctype in [
         ("garch_vol", "REAL"),
         ("high_vol_regime", "INTEGER"),
         ("gex_normalized", "REAL"),
     ]:
         try:
-            if _backend == "postgres":
-                cur.execute(f"ALTER TABLE model_features ADD COLUMN IF NOT EXISTS {col} {ctype}")
-            else:
-                cur.execute(f"ALTER TABLE model_features ADD COLUMN {col} {ctype}")
+            cur.execute(f"ALTER TABLE model_features ADD COLUMN IF NOT EXISTS {col} {ctype}")
         except Exception:
-            pass  # SQLite: column already exists (benign)
+            pass
 
     # --- gex_inputs ---
     cur.execute("""
@@ -343,25 +325,15 @@ def init_all_tables(conn) -> None:
         )
     """)
 
-    # --- saved_models (replaces pickle files) ---
-    if _backend == "postgres":
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS saved_models (
-                model_name      TEXT PRIMARY KEY,
-                model_data      BYTEA NOT NULL,
-                fitted_at       TEXT,
-                updated_at      TEXT
-            )
-        """)
-    else:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS saved_models (
-                model_name      TEXT PRIMARY KEY,
-                model_data      BLOB NOT NULL,
-                fitted_at       TEXT,
-                updated_at      TEXT
-            )
-        """)
+    # --- saved_models (Postgres BYTEA — replaces pickle files) ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS saved_models (
+            model_name      TEXT PRIMARY KEY,
+            model_data      BYTEA NOT NULL,
+            fitted_at       TEXT,
+            updated_at      TEXT
+        )
+    """)
 
     # --- weekly_setup (Monday open freeze for spread finder) ---
     cur.execute("""
@@ -376,4 +348,4 @@ def init_all_tables(conn) -> None:
     """)
 
     conn.commit()
-    log.info(f"All range finder tables initialized ({_backend})")
+    log.info("All range finder tables initialized (postgres)")

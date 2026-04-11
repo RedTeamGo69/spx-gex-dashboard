@@ -1,11 +1,9 @@
 """
-Historical GEX snapshot tracking.
+Historical GEX snapshot tracking — Postgres only.
 
-Storage backends (auto-detected):
-1. Neon Postgres — when DATABASE_URL is set in st.secrets or env vars
-   Persistent across sessions and deploys (recommended for Streamlit Cloud)
-2. In-session fallback — st.session_state only
-   Data lost on page refresh (works everywhere, zero config)
+DATABASE_URL must be set via Streamlit secrets or as an environment variable.
+psycopg2 must be installed. If either is missing the module raises a clear
+error at import / first-call time rather than silently degrading.
 """
 from __future__ import annotations
 
@@ -17,11 +15,11 @@ from zoneinfo import ZoneInfo
 NY_TZ = ZoneInfo("America/New_York")
 _logger = logging.getLogger(__name__)
 
-# ── Backend detection ──
-_backend = "session"  # default fallback
+
+# ── Connection string resolution ──
+
 _pg_conn_str = None
 
-# Check for Neon/Postgres connection string
 try:
     import streamlit as st
     _pg_conn_str = st.secrets.get("DATABASE_URL", "")
@@ -31,18 +29,27 @@ except Exception:
 if not _pg_conn_str:
     _pg_conn_str = os.environ.get("DATABASE_URL", "")
 
-if _pg_conn_str:
+
+def _require_postgres():
+    """Raise a clear error if DATABASE_URL is missing or psycopg2 is unavailable."""
+    if not _pg_conn_str:
+        raise RuntimeError(
+            "DATABASE_URL is not set. This app requires Postgres — set DATABASE_URL "
+            "in Streamlit secrets or as an environment variable."
+        )
     try:
-        import psycopg2
-        _backend = "postgres"
-    except ImportError:
-        _logger.warning("DATABASE_URL set but psycopg2 not installed. Falling back to session storage.")
-        _pg_conn_str = None
+        import psycopg2  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            "psycopg2 is not installed. This app requires Postgres — "
+            "`pip install psycopg2-binary`."
+        ) from e
 
 
-# ── Postgres backend ──
+# ── Postgres helpers ──
 
 def _pg_get_connection():
+    _require_postgres()
     import psycopg2
     conn = psycopg2.connect(_pg_conn_str, sslmode="require")
     conn.autocommit = True
@@ -200,73 +207,19 @@ def _pg_get_history(days, ticker="SPX"):
         conn.close()
 
 
-# ── Session-state backend ──
+# ── Initialize Postgres table on import (best-effort; clear error if misconfigured) ──
 
-def _session_get_store():
-    import streamlit as st
-    if "gex_history" not in st.session_state:
-        st.session_state["gex_history"] = []
-    return st.session_state["gex_history"]
-
-
-def _session_save_snapshot(row):
-    store = _session_get_store()
-    # Dedup by minute_key
-    if store and store[-1].get("minute_key") == row["minute_key"]:
-        return
-    store.append(row)
-    # Keep last 500 snapshots in memory
-    if len(store) > 500:
-        del store[:-500]
-
-
-def _session_get_daily_summary(days):
-    store = _session_get_store()
-    if not store:
-        return []
-    # Group by date, take first and last per day
-    first_by_date = {}
-    last_by_date = {}
-    for row in store:
-        d = row["date"]
-        if d not in first_by_date:
-            first_by_date[d] = row
-        last_by_date[d] = row
-    tagged = []
-    for d in sorted(first_by_date.keys(), reverse=True)[:days]:
-        first = {**first_by_date[d], "scan_type": "open"}
-        tagged.append(first)
-        if last_by_date[d] is not first_by_date[d]:
-            last = {**last_by_date[d], "scan_type": "close"}
-            tagged.append(last)
-    return tagged
-
-
-def _session_get_zero_gamma_trend(days):
-    store = _session_get_store()
-    return [(r["date"], r["zero_gamma"], r["spot"]) for r in store]
-
-
-def _session_get_history(days):
-    store = _session_get_store()
-    return list(reversed(store[-days * 50:]))
-
-
-# ── Initialize Postgres table if needed ──
-
-if _backend == "postgres":
-    try:
-        _pg_ensure_table()
-    except Exception as e:
-        _logger.warning(f"Failed to initialize Postgres table: {e}. Falling back to session storage.")
-        _backend = "session"
+try:
+    _pg_ensure_table()
+except Exception as e:
+    _logger.warning(f"Failed to initialize Postgres table on import: {e}")
 
 
 # ── Public API ──
 
 def get_backend():
-    """Return the active backend name: 'postgres' or 'session'."""
-    return _backend
+    """Legacy compatibility shim. Always returns 'postgres' now."""
+    return "postgres"
 
 
 def _to_float(v):
@@ -307,18 +260,13 @@ def _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info
 
 
 def save_snapshot(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis=None, ticker="SPX"):
-    """Save a GEX snapshot. Deduplicates by (ticker, minute). Raises on error."""
+    """Save a GEX snapshot to Postgres. Deduplicates by (ticker, minute)."""
     row = _build_row(spot, levels, regime_info, stats, confidence_info, staleness_info, em_analysis, ticker=ticker)
-    if _backend == "postgres":
-        _pg_save_snapshot(row)
-    else:
-        _session_save_snapshot(row)
+    _pg_save_snapshot(row)
 
 
 def check_db_connection():
     """Diagnostic: test the Postgres connection and return status info."""
-    if _backend != "postgres":
-        return {"ok": False, "error": "Not using Postgres backend", "backend": _backend}
     try:
         conn = _pg_get_connection()
         cur = conn.cursor()
@@ -342,8 +290,6 @@ def check_db_connection():
 
 def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
     """Persist EM snapshot to Postgres so it survives across sessions on the same day."""
-    if _backend != "postgres":
-        return
     conn = _pg_get_connection()
     try:
         cur = conn.cursor()
@@ -418,8 +364,6 @@ def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
 
 def get_em_snapshot(date_str, ticker="SPX", em_type="daily"):
     """Retrieve persisted EM snapshot for a given ticker/type/date, if any."""
-    if _backend != "postgres":
-        return None
     try:
         conn = _pg_get_connection()
         cur = conn.cursor()
@@ -522,20 +466,14 @@ def get_monthly_em_date_key(now):
 
 def get_history(days=30, ticker="SPX"):
     """Get historical snapshots, most recent first."""
-    if _backend == "postgres":
-        return _pg_get_history(days, ticker=ticker)
-    return _session_get_history(days)
+    return _pg_get_history(days, ticker=ticker)
 
 
 def get_zero_gamma_trend(days=14, ticker="SPX"):
     """Get zero gamma values over time."""
-    if _backend == "postgres":
-        return _pg_get_zero_gamma_trend(days, ticker=ticker)
-    return _session_get_zero_gamma_trend(days)
+    return _pg_get_zero_gamma_trend(days, ticker=ticker)
 
 
 def get_daily_summary(days=30, ticker="SPX"):
     """Get first + last snapshot per day. Returns list of dicts."""
-    if _backend == "postgres":
-        return _pg_get_daily_summary(days, ticker=ticker)
-    return _session_get_daily_summary(days)
+    return _pg_get_daily_summary(days, ticker=ticker)

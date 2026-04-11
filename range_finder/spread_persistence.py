@@ -3,7 +3,6 @@
 # Spread plan DB logging, outcome tracking, and pretty-printing.
 # =============================================================================
 
-import sqlite3
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -19,7 +18,7 @@ def init_spread_log_table(conn) -> None:
 
 
 def log_spread_plan(
-    conn: sqlite3.Connection,
+    conn,
     plan,
     wing_width_used: int = None,
 ) -> None:
@@ -78,7 +77,7 @@ def log_spread_plan(
 
 
 def update_outcome(
-    conn: sqlite3.Connection,
+    conn,
     week_start: str,
     actual_high: float,
     actual_low: float,

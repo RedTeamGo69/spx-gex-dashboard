@@ -6,7 +6,6 @@
 # actionable credit spread parameters.
 # =============================================================================
 
-import sqlite3
 import logging
 import math
 from dataclasses import dataclass, field, asdict

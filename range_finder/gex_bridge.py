@@ -14,7 +14,6 @@
 # =============================================================================
 
 import math
-import sqlite3
 import logging
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
@@ -142,7 +141,7 @@ def regime_to_gex_dollars(gex_ctx: GEXContext) -> float:
 
 def save_gex_to_range_finder(
     gex_ctx: GEXContext,
-    conn: sqlite3.Connection = None,
+    conn = None,
 ) -> int:
     """
     Persist the live GEX data from the dashboard into the range finder's

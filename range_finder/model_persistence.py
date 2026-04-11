@@ -1,6 +1,7 @@
 # =============================================================================
 # model_persistence.py
-# HAR model serialization — save/load fitted models to Postgres or pickle.
+# HAR model serialization — save/load fitted models to Postgres (with an
+# on-disk pickle fallback if the DB save fails transiently).
 # =============================================================================
 
 import logging
@@ -12,7 +13,7 @@ import statsmodels.api as sm
 
 log = logging.getLogger(__name__)
 
-# Model save path
+# Pickle fallback path — used only if the DB save raises
 MODEL_DIR = Path(__file__).parent / "models"
 
 
@@ -23,7 +24,7 @@ def save_model(
     metrics: dict,
     conn=None,
 ):
-    """Save the fitted model + metadata to database (or pickle fallback)."""
+    """Save the fitted model + metadata to Postgres (on-disk pickle fallback)."""
     payload = {
         "result":       result,
         "feature_cols": feature_cols,
@@ -37,26 +38,15 @@ def save_model(
 
     if conn is not None:
         try:
-            from range_finder.db import get_backend
-            if get_backend() == "postgres":
-                import psycopg2
-                conn.execute("""
-                    INSERT INTO saved_models (model_name, model_data, fitted_at, updated_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT(model_name) DO UPDATE SET
-                        model_data = EXCLUDED.model_data,
-                        fitted_at  = EXCLUDED.fitted_at,
-                        updated_at = EXCLUDED.updated_at
-                """, (model_name, psycopg2.Binary(blob), payload["fitted_at"], now))
-            else:
-                conn.execute("""
-                    INSERT INTO saved_models (model_name, model_data, fitted_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(model_name) DO UPDATE SET
-                        model_data = excluded.model_data,
-                        fitted_at  = excluded.fitted_at,
-                        updated_at = excluded.updated_at
-                """, (model_name, blob, payload["fitted_at"], now))
+            import psycopg2
+            conn.execute("""
+                INSERT INTO saved_models (model_name, model_data, fitted_at, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT(model_name) DO UPDATE SET
+                    model_data = EXCLUDED.model_data,
+                    fitted_at  = EXCLUDED.fitted_at,
+                    updated_at = EXCLUDED.updated_at
+            """, (model_name, psycopg2.Binary(blob), payload["fitted_at"], now))
             conn.commit()
             log.info(f"Model saved to database: {model_name}")
             return
@@ -72,20 +62,13 @@ def save_model(
 
 
 def load_model(model_name: str, conn=None) -> dict:
-    """Load a previously saved model from database (or pickle fallback)."""
+    """Load a previously saved model from Postgres (on-disk pickle fallback)."""
     if conn is not None:
         try:
-            from range_finder.db import get_backend
-            if get_backend() == "postgres":
-                cur = conn.execute(
-                    "SELECT model_data, fitted_at FROM saved_models WHERE model_name = %s",
-                    (model_name,)
-                )
-            else:
-                cur = conn.execute(
-                    "SELECT model_data, fitted_at FROM saved_models WHERE model_name = ?",
-                    (model_name,)
-                )
+            cur = conn.execute(
+                "SELECT model_data, fitted_at FROM saved_models WHERE model_name = %s",
+                (model_name,)
+            )
             row = cur.fetchone()
             if row:
                 blob = row[0]

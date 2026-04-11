@@ -2,11 +2,10 @@
 # feature_builder.py
 # Weekly SPX Range Prediction Model — Feature Engineering Module
 #
-# Reads raw data from SQLite (populated by data_collector.py) and produces
+# Reads raw data from Postgres (populated by data_collector.py) and produces
 # a clean, model-ready feature matrix saved to the `model_features` table.
 # =============================================================================
 
-import sqlite3  # kept for type compatibility
 import logging
 import math
 from datetime import datetime, timedelta, timezone
@@ -215,7 +214,7 @@ def compute_har_features(weekly_df: pd.DataFrame) -> pd.DataFrame:
 # GEX PLACEHOLDER
 # =============================================================================
 
-def load_gex_inputs(conn: sqlite3.Connection) -> pd.DataFrame:
+def load_gex_inputs(conn) -> pd.DataFrame:
     """Load GEX values from the gex_inputs table if it exists."""
     try:
         df = pd.read_sql_query(
@@ -237,7 +236,7 @@ def create_gex_table(conn) -> None:
     pass  # Tables created in db.init_all_tables()
 
 
-def upsert_gex(conn: sqlite3.Connection, week_start: str, gex: float, notes: str = "") -> None:
+def upsert_gex(conn, week_start: str, gex: float, notes: str = "") -> None:
     """Insert or update a single GEX value for a given week."""
     now = datetime.now(timezone.utc).isoformat()
     conn.execute("""
@@ -256,7 +255,7 @@ def upsert_gex(conn: sqlite3.Connection, week_start: str, gex: float, notes: str
 # MAIN FEATURE BUILD
 # =============================================================================
 
-def build_features(conn: sqlite3.Connection, exclude_covid: bool = True) -> pd.DataFrame:
+def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     """
     Assemble the full model-ready feature matrix and save to model_features.
     Every feature is lagged so that at row t (target week), you only
@@ -398,7 +397,7 @@ def _gex_flag(gex_val) -> int | None:
     return 0
 
 
-def _save_features(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
+def _save_features(conn, df: pd.DataFrame) -> None:
     """Upsert the feature matrix into model_features."""
     now = datetime.now(timezone.utc).isoformat()
     cur = conn.cursor()
@@ -481,7 +480,7 @@ def _save_features(conn: sqlite3.Connection, df: pd.DataFrame) -> None:
 # READERS
 # =============================================================================
 
-def get_features(conn: sqlite3.Connection, min_date: str = None, exclude_covid: bool = False) -> pd.DataFrame:
+def get_features(conn, min_date: str = None, exclude_covid: bool = False) -> pd.DataFrame:
     """Load the full model_features table as a DataFrame."""
     query = "SELECT * FROM model_features ORDER BY week_start ASC"
     df = pd.read_sql_query(query, conn, parse_dates=["week_start"])
@@ -498,7 +497,7 @@ def get_features(conn: sqlite3.Connection, min_date: str = None, exclude_covid: 
     return df
 
 
-def get_feature_for_week(conn: sqlite3.Connection, week_start: str) -> pd.Series | None:
+def get_feature_for_week(conn, week_start: str) -> pd.Series | None:
     """Fetch the feature row for a specific week."""
     df = pd.read_sql_query(
         "SELECT * FROM model_features WHERE week_start = ?",

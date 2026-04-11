@@ -7,7 +7,6 @@
 # =============================================================================
 
 import logging
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -105,7 +104,7 @@ def _get_week_start(date_str: str) -> str:
     return monday.strftime("%Y-%m-%d")
 
 
-def build_event_flags(conn: sqlite3.Connection) -> int:
+def build_event_flags(conn) -> int:
     """
     Generate event flag rows for all weeks that have FOMC, CPI, or NFP events.
     Opex (monthly options expiration = 3rd Friday) is computed programmatically.
