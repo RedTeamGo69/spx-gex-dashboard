@@ -472,15 +472,51 @@ def _render_danger_zone():
       - every row in every Postgres table this app writes to
       - every st.session_state key that holds cached / historical state
       - phase1/.rate_cache.json and any pickled HAR models in range_finder/models/
+      - st.cache_data + st.cache_resource (so the main UI refetches empty data
+        instead of continuing to show pre-reset values from @st.cache_data)
 
     Gated behind:
       1. a collapsed expander (not visible unless the user opens it)
       2. a confirmation checkbox (the button stays disabled until ticked)
 
-    Clearing the session is a best-effort pass; any single failing table or
-    file does NOT abort the rest of the reset.
+    UX flow:
+      - User clicks the button → spinner runs during the reset
+      - Result is stashed in session_state["_last_reset_result"] and the
+        script reruns
+      - Next render: the expander shows a persistent success banner
+        (survives the rerun because the result is in session_state) until
+        the user clicks Dismiss
     """
     with st.expander("⚠️ Danger zone", expanded=False):
+        # ── Persistent success banner from the LAST reset (if any) ──
+        # We display this before the warning/checkbox so the user sees
+        # confirmation immediately after the rerun that followed their
+        # reset click. Stays visible until dismissed.
+        last_result = st.session_state.get("_last_reset_result")
+        if last_result:
+            st.success(
+                f"✅ Reset complete. Deleted **{last_result['total_rows']}** rows across "
+                f"**{len(last_result['ok_rows'])}** tables · cleared "
+                f"**{last_result['cleared_session_keys']}** session keys · "
+                f"removed **{len(last_result['cleared_files'])}** cache files."
+            )
+            st.caption(
+                "Verify: open the History tab (should be empty), Trade Log tab "
+                "(should be empty), and EM Tracker (should say 'data not available'). "
+                "The next cron run at 9:30 AM ET will start repopulating."
+            )
+            with st.expander("Reset details", expanded=False):
+                st.json({
+                    "tables_truncated": last_result["ok_rows"],
+                    "session_keys_cleared": last_result["cleared_session_keys"],
+                    "files_removed": last_result["cleared_files"],
+                    "tables_with_errors": last_result["bad_tables"],
+                })
+            if st.button("Dismiss", key="_dismiss_reset_result", use_container_width=True):
+                st.session_state.pop("_last_reset_result", None)
+                st.rerun()
+            st.divider()
+
         st.warning(
             "**Reset all data** — permanently deletes:\n\n"
             "- GEX snapshots (History tab, Daily Summary, Zero-Gamma trend)\n"
@@ -501,65 +537,83 @@ def _render_danger_zone():
             use_container_width=True,
             key="_danger_zone_reset_btn",
         ):
-            # ── Step 1: truncate every known Postgres table ──
-            try:
-                from phase1.gex_history import reset_all_data
-                results = reset_all_data()
-            except Exception as e:
-                st.error(f"Postgres reset failed: {e}")
-                return
-
-            # ── Step 2: clear every cached / historical session_state key ──
-            session_prefixes = (
-                "em_snapshot_",
-                "sf_", "_sf_", "_rtf_",
-                "monday_open_", "monday_vix_",
-            )
-            session_exact = {
-                "_ai_briefing", "_gemini_backoff_until",
-                "_last_snapshot_utc",
-                "last_save_ok", "last_save_time", "last_save_error",
-                "gex_history",  # legacy key from the old session fallback
-            }
-            cleared_session_keys = 0
-            for k in list(st.session_state.keys()):
-                if k in session_exact or any(k.startswith(p) for p in session_prefixes):
-                    st.session_state.pop(k, None)
-                    cleared_session_keys += 1
-
-            # ── Step 3: delete on-disk caches ──
-            import glob
-            cleared_files: list[str] = []
-            for fpath in ("phase1/.rate_cache.json",):
+            with st.spinner("Resetting — truncating tables, clearing caches..."):
+                # ── Step 1: truncate every known Postgres table ──
                 try:
-                    os.remove(fpath)
-                    cleared_files.append(fpath)
-                except FileNotFoundError:
+                    from phase1.gex_history import reset_all_data
+                    results = reset_all_data()
+                except Exception as e:
+                    st.error(f"Postgres reset failed: {e}")
+                    return
+
+                # ── Step 2: clear cached / historical session_state keys ──
+                session_prefixes = (
+                    "em_snapshot_",
+                    "sf_", "_sf_", "_rtf_",
+                    "monday_open_", "monday_vix_",
+                )
+                session_exact = {
+                    "_ai_briefing", "_gemini_backoff_until",
+                    "_last_snapshot_utc",
+                    "last_save_ok", "last_save_time", "last_save_error",
+                    "gex_history",  # legacy key from the old session fallback
+                }
+                cleared_session_keys = 0
+                # Preserve _last_reset_result (we set it below) and keep the
+                # confirmation checkbox out of the sweep — we clear it
+                # explicitly after.
+                for k in list(st.session_state.keys()):
+                    if k in ("_last_reset_result", "_danger_zone_confirm"):
+                        continue
+                    if k in session_exact or any(k.startswith(p) for p in session_prefixes):
+                        st.session_state.pop(k, None)
+                        cleared_session_keys += 1
+
+                # ── Step 3: delete on-disk caches ──
+                import glob
+                cleared_files: list[str] = []
+                for fpath in ("phase1/.rate_cache.json",):
+                    try:
+                        os.remove(fpath)
+                        cleared_files.append(fpath)
+                    except FileNotFoundError:
+                        pass
+                    except Exception as e:
+                        st.warning(f"Could not delete {fpath}: {e}")
+                for pkl in glob.glob("range_finder/models/*.pkl"):
+                    try:
+                        os.remove(pkl)
+                        cleared_files.append(pkl)
+                    except Exception as e:
+                        st.warning(f"Could not delete {pkl}: {e}")
+
+                # ── Step 4: clear Streamlit's own caches so the main UI
+                # stops showing pre-reset cached data from @st.cache_data
+                # and @st.cache_resource (db connections, etc.) ──
+                try:
+                    st.cache_data.clear()
+                except Exception:
                     pass
-                except Exception as e:
-                    st.warning(f"Could not delete {fpath}: {e}")
-            for pkl in glob.glob("range_finder/models/*.pkl"):
                 try:
-                    os.remove(pkl)
-                    cleared_files.append(pkl)
-                except Exception as e:
-                    st.warning(f"Could not delete {pkl}: {e}")
+                    st.cache_resource.clear()
+                except Exception:
+                    pass
 
-            # ── Step 4: report ──
-            ok_rows = {k: v for k, v in results.items() if isinstance(v, int)}
-            bad_tables = {k: v for k, v in results.items() if not isinstance(v, int)}
-            total_rows = sum(ok_rows.values())
-            st.success(
-                f"Reset complete. Deleted **{total_rows}** rows across "
-                f"**{len(ok_rows)}** tables · cleared **{cleared_session_keys}** session keys · "
-                f"removed **{len(cleared_files)}** cache files."
-            )
-            if ok_rows:
-                st.json({"tables": ok_rows, "session_keys_cleared": cleared_session_keys,
-                         "files_removed": cleared_files})
-            if bad_tables:
-                st.warning(f"Some tables could not be truncated (may not exist yet): {bad_tables}")
-            # Clear the confirmation checkbox state so the button disables itself
+                # ── Step 5: stash the result in session_state so the next
+                # render (after the rerun below) can display a persistent
+                # success banner. Without this, st.rerun() would wipe any
+                # st.success() call we made during this render. ──
+                ok_rows = {k: v for k, v in results.items() if isinstance(v, int)}
+                bad_tables = {k: v for k, v in results.items() if not isinstance(v, int)}
+                st.session_state["_last_reset_result"] = {
+                    "total_rows": sum(ok_rows.values()),
+                    "ok_rows": ok_rows,
+                    "bad_tables": bad_tables,
+                    "cleared_session_keys": cleared_session_keys,
+                    "cleared_files": cleared_files,
+                }
+
+            # Clear the confirmation checkbox so the button re-disables
             st.session_state.pop("_danger_zone_confirm", None)
             st.rerun()
 
