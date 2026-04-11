@@ -16,7 +16,6 @@ import pandas as pd
 import statsmodels.api as sm
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from range_finder.data_collector import DB_PATH, init_db
 from range_finder.feature_builder import (
     init_features_table,
     build_features,

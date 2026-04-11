@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Optional
 
-from range_finder.data_collector import init_db, DB_PATH
+from range_finder.data_collector import init_db
 from range_finder.feature_builder import (
     init_features_table, create_gex_table, upsert_gex,
     get_features, get_feature_for_week,
@@ -151,7 +151,7 @@ def save_gex_to_range_finder(
     model has fresh GEX data for the current week.
     """
     if conn is None:
-        conn = init_db(DB_PATH)
+        conn = init_db()
         create_gex_table(conn)
 
     # Determine current week start (Monday)

@@ -15,8 +15,6 @@ from typing import Optional
 
 import pandas as pd
 
-from range_finder.data_collector import DB_PATH, init_db
-
 # =============================================================================
 # LOGGING
 # =============================================================================

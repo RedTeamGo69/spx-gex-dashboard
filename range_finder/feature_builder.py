@@ -16,7 +16,6 @@ import pandas as pd
 import yfinance as yf
 
 from range_finder.data_collector import (
-    DB_PATH,
     get_weekly_spx,
     get_macro_daily,
     get_event_flags,
