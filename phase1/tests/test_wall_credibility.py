@@ -90,3 +90,44 @@ def test_zero_gamma_credibility_penalizes_large_range():
 
     assert out["zero_gamma"]["zg_range"] > 40
     assert out["zero_gamma"]["score"] < 85
+
+
+def test_build_wall_credibility_handles_none_sensitivity():
+    """Production passes sensitivity_df=None now that the sensitivity sweep
+    has been removed. The wall_credibility scorer must still return a valid
+    dict for all three levels, with the zero-gamma score gracefully degraded
+    rather than raising."""
+    levels = {
+        "call_wall": 5050.0,
+        "put_wall": 4950.0,
+        "zero_gamma": 5000.0,
+    }
+
+    strike_support_df = pd.DataFrame(
+        {
+            "strike": [4950, 5000, 5050],
+            "support_score": [72.0, 88.0, 81.0],
+            "support_label": ["Moderate", "High", "High"],
+            "supporting_expirations": [2, 3, 2],
+            "total_oi": [900, 1500, 1200],
+            "abs_net_gex": [800, 1200, 1000],
+        }
+    )
+
+    confidence_info = {"score": 88.0, "label": "High"}
+    staleness_info = {"freshness_score": 82.0, "freshness_label": "Moderate"}
+
+    out = build_wall_credibility(
+        levels=levels,
+        strike_support_df=strike_support_df,
+        sensitivity_df=None,
+        confidence_info=confidence_info,
+        staleness_info=staleness_info,
+    )
+
+    assert "call_wall" in out
+    assert "put_wall" in out
+    assert "zero_gamma" in out
+    assert out["zero_gamma"]["score"] is not None
+    # The graceful degradation path returns 45.0 with a "no analysis" reason.
+    assert any("sensitivity" in r.lower() for r in out["zero_gamma"]["reasons"])

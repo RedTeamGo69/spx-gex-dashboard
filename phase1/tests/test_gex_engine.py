@@ -32,17 +32,6 @@ def test_find_key_levels_empty_df_returns_spot():
     assert levels["zero_gamma"] == 5000
 
 
-def test_compute_gex_profile_curve_returns_dataframe():
-    all_options = [
-        (5000, 100, 0.20, 1, 1/365),
-        (5000, 100, 0.20, -1, 1/365),
-    ]
-    df = gex_engine.compute_gex_profile_curve(all_options, spot=5000, r=0.04)
-    assert "price" in df.columns
-    assert "total_gex" in df.columns
-    assert len(df) > 0
-
-
 def test_calculate_all_basic_fake_client():
     class FakeClient:
         def prefetch_chains(self, ticker, expirations):
@@ -78,12 +67,11 @@ def test_calculate_all_basic_fake_client():
 
     client = FakeClient()
 
-    gex_df, hm_gex, hm_iv, stats, all_options, strike_support_df, expiration_support_df = gex_engine.calculate_all(
+    gex_df, stats, all_options, strike_support_df, expiration_support_df = gex_engine.calculate_all(
         client=client,
         ticker="SPX",
         target_exps=["2026-03-20"],
         spot=5000,
-        heatmap_exps=["2026-03-20"],
         r=0.04,
     )
 
@@ -91,24 +79,8 @@ def test_calculate_all_basic_fake_client():
     assert stats["used_option_count"] == 2
     assert len(all_options) == 2
     assert not strike_support_df.empty
-    assert not expiration_support_df.empty    
+    assert not expiration_support_df.empty
 
-def test_compute_zero_gamma_sensitivity_returns_expected_columns():
-    all_options = [
-        (5000, 100, 0.20, 1, 1/365),
-        (5000, 100, 0.20, -1, 1/365),
-    ]
-
-    df = gex_engine.compute_zero_gamma_sensitivity(all_options, spot=5000, r=0.04)
-
-    assert "shock_pct" in df.columns
-    assert "shocked_spot" in df.columns
-    assert "zero_gamma" in df.columns
-    assert "spot_minus_zero_gamma" in df.columns
-    assert "regime" in df.columns
-    assert len(df) >= 3
-    assert "zero_gamma_type" in df.columns
-    assert "residual_abs_gex" in df.columns    
 
 def test_zero_gamma_sweep_details_flags_fallback_when_no_crossing():
     details = gex_engine.zero_gamma_sweep_details(

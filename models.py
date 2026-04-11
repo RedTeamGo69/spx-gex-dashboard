@@ -17,14 +17,9 @@ class GEXData:
     avail: list
     target_exps: list
     gex_df: Any  # pd.DataFrame
-    hm_gex: Any
-    hm_iv: Any
     stats: dict
     all_options: list
     levels: dict
-    profile_df: Any
-    sensitivity_df: Any
-    scenarios_df: Any
     staleness_info: dict
     confidence_info: dict
     wall_cred: dict

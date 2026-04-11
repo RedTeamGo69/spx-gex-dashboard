@@ -122,8 +122,8 @@ def capture_snapshot():
     target_exps = [e for e in avail if e >= today_str][:4]
 
     # ── Compute GEX ──
-    gex_df, _hm_gex, _hm_iv, stats, all_options, _strike_sup, _exp_sup = (
-        gex_engine.calculate_all(client, ticker, target_exps, spot, target_exps, r=rfr, now=run_now)
+    gex_df, stats, all_options, _strike_sup, _exp_sup = (
+        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now)
     )
 
     if gex_df.empty:
