@@ -1,14 +1,5 @@
 # SPX GEX Dashboard — Streamlit Deployment Guide
 
-## Quick Start (Local)
-
-```bash
-pip install -r requirements.txt
-streamlit run streamlit_app.py
-```
-
-Open http://localhost:8501 on your phone (same Wi-Fi) using your computer's local IP.
-
 ## Deploy to Streamlit Cloud (Free — Access from Anywhere)
 
 ### 1. Push to GitHub
@@ -35,8 +26,7 @@ your-repo/
 │   ├── wall_credibility.py
 │   ├── scenarios.py
 │   ├── expected_move.py
-│   ├── run_metadata.py
-│   └── dashboard.py
+│   └── run_metadata.py
 ```
 
 **Important:** Do NOT commit your API keys. Use Streamlit secrets instead.
@@ -65,23 +55,6 @@ Streamlit Cloud apps are public by default on the free tier. Options:
 - **Viewer auth:** Streamlit Cloud supports Google OAuth for viewer gating (paid teams plan)
 - **Self-host:** Deploy on a $5/mo VPS (DigitalOcean, Railway, Fly.io) behind basic auth
 - **Render.com:** Free tier with `streamlit run` as the start command
-
-## Local Network Access (Phone on Same Wi-Fi)
-
-```bash
-streamlit run streamlit_app.py --server.address 0.0.0.0
-```
-
-Then open `http://<your-computer-ip>:8501` on your phone.
-Find your IP with `ipconfig` (Windows) or `ifconfig` (Mac/Linux).
-
-## Environment Variables (Alternative to Secrets)
-
-```bash
-export TRADIER_TOKEN="your_token"
-export FRED_API_KEY="your_key"
-streamlit run streamlit_app.py
-```
 
 ## Features
 
