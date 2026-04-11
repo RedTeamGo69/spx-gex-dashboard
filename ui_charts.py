@@ -48,10 +48,11 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, month
                            annotation_font_color=COLORS["em_weekly"], annotation_font_size=7,
                            annotation_position="top right")
 
-    # Monthly EM levels (cyan longdash)
+    # OpEx-cycle EM levels (cyan longdash) — frozen on the Monday after each
+    # standard 3rd-Friday expiration, using the next 3rd Friday's straddle.
     m_em = monthly_em or {}
     if m_em.get("upper_level"):
-        for val, label in [(m_em["upper_level"], "mEM+"), (m_em["lower_level"], "mEM−")]:
+        for val, label in [(m_em["upper_level"], "OpEx+"), (m_em["lower_level"], "OpEx−")]:
             fig.add_hline(y=val, line_color=COLORS["em_monthly"], line_dash="longdash", line_width=1,
                            annotation_text=f"{label} ${val:.0f}",
                            annotation_font_color=COLORS["em_monthly"], annotation_font_size=7,
@@ -103,10 +104,11 @@ def build_profile_chart(profile_df, levels, spot, regime_info, em_analysis, week
                            annotation_text=label, annotation_font_color=COLORS["em_weekly"],
                            annotation_font_size=8)
 
-    # Monthly EM levels (cyan longdash)
+    # OpEx-cycle EM levels (cyan longdash) — frozen on the Monday after each
+    # standard 3rd-Friday expiration, using the next 3rd Friday's straddle.
     m_em = monthly_em or {}
     if m_em.get("upper_level"):
-        for val, label in [(m_em["upper_level"], "mEM+"), (m_em["lower_level"], "mEM−")]:
+        for val, label in [(m_em["upper_level"], "OpEx+"), (m_em["lower_level"], "OpEx−")]:
             fig.add_vline(x=val, line_color=COLORS["em_monthly"], line_dash="longdash", line_width=1,
                            annotation_text=label, annotation_font_color=COLORS["em_monthly"],
                            annotation_font_size=8)

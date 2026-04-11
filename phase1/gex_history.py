@@ -478,10 +478,46 @@ def get_weekly_em_date_key(now):
 
 
 def get_monthly_em_date_key(now):
-    """Return 1st of the current month as date key."""
-    if hasattr(now, 'date'):
-        return now.date().replace(day=1).strftime("%Y-%m-%d")
-    return now.replace(day=1).strftime("%Y-%m-%d")
+    """
+    Return the OpEx-cycle key: the Monday following the most recent standard
+    3rd-Friday OpEx (strictly before today). Stable across the whole cycle.
+
+    The cycle runs from the Monday-after-OpEx through the NEXT 3rd Friday.
+    On the 3rd Friday itself, the day is still in the *old* cycle (its
+    standard options settle that morning) — the new cycle begins the Monday
+    after. If that Monday is a market holiday the cron's freeze-day check
+    will fire on Tuesday instead, but the DB key remains the Monday date so
+    save and restore agree.
+    """
+    from datetime import date as _date, timedelta as _td
+    import calendar as _cal
+
+    today = now.date() if hasattr(now, 'date') else now
+
+    # Walk back from today through up to 3 months to find the most recent
+    # 3rd Friday that is strictly before today.
+    year, month = today.year, today.month
+    third_fri = None
+    for _ in range(4):
+        first_weekday = _cal.weekday(year, month, 1)  # 0=Mon
+        first_fri_day = 1 + (4 - first_weekday) % 7
+        candidate = _date(year, month, first_fri_day + 14)
+        if candidate < today:
+            third_fri = candidate
+            break
+        # Walk back one month
+        if month == 1:
+            year, month = year - 1, 12
+        else:
+            month -= 1
+
+    if third_fri is None:
+        # Extreme fallback (shouldn't happen in practice)
+        return today.replace(day=1).strftime("%Y-%m-%d")
+
+    # 3rd Friday is always a Friday, so Monday-after = +3 days.
+    cycle_open_mon = third_fri + _td(days=3)
+    return cycle_open_mon.strftime("%Y-%m-%d")
 
 
 def get_history(days=30, ticker="SPX"):

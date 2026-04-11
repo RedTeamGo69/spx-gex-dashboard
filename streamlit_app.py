@@ -337,11 +337,19 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
 @st.cache_resource(ttl=90, show_spinner=False)
 def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str, ticker: str = "SPX"):
     """
-    Compute GEX for 3 timeframe buckets: 0DTE, This Week, This Month.
+    Compute GEX for 3 timeframe buckets: 0DTE, This Week, OpEx Cycle.
     Returns dict of {label: gex_df}.
+
+    The "OpEx Cycle" bucket covers expirations 8+ days out through the next
+    standard 3rd-Friday OpEx -- i.e. everything further out than this week
+    but still within the current monthly cycle. This aligns with where the
+    bulk of institutional monthly gamma lives (the 3rd-Friday standard
+    expirations) rather than an arbitrary calendar-month cutoff that left
+    the bucket empty in the last week of each month.
     """
     from phase1.market_clock import now_ny, compute_time_to_expiry_years
     from phase1.config import T_FLOOR
+    from phase1.expected_move import find_monthly_expiration
 
     client = TradierDataClient(token=tradier_token)
     run_now = now_ny()
@@ -350,21 +358,30 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
 
     # Build non-overlapping expiration buckets using DTE
     from datetime import date as _date
-    import calendar as _cal
-    last_day = run_now.replace(day=_cal.monthrange(run_now.year, run_now.month)[1]).strftime("%Y-%m-%d")
     ref_date = run_now.date() if hasattr(run_now, 'date') else run_now
 
     sorted_exps = sorted([e for e in avail_exps if e >= today_str])
 
+    # Cycle cutoff = next standard 3rd-Friday OpEx. find_monthly_expiration
+    # already rolls to next month once this month's 3rd Friday is behind us.
+    cycle_end = find_monthly_expiration(sorted_exps, ref_date)
+    # Defensive fallback: if no 3rd-Friday exp is available (shouldn't happen
+    # with SPX), fall back to calendar month-end so we still show something.
+    if not cycle_end:
+        import calendar as _cal
+        cycle_end = run_now.replace(
+            day=_cal.monthrange(run_now.year, run_now.month)[1]
+        ).strftime("%Y-%m-%d")
+
     # Classify by days-to-expiration from today
     dte0_exps = []   # nearest single expiration
     week_exps = []   # 2–7 calendar days out (rest of this week)
-    month_exps = []  # 8+ days out through end of month
+    cycle_exps = []  # 8+ days out through the cycle-end (next 3rd Friday)
 
     for exp_str in sorted_exps:
         exp_date = _date.fromisoformat(exp_str)
         days_out = (exp_date - ref_date).days
-        if exp_str > last_day:
+        if exp_str > cycle_end:
             continue
         if not dte0_exps and days_out <= 1:
             # Nearest expiration (today or tomorrow = 0DTE)
@@ -372,7 +389,7 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
         elif days_out <= 7:
             week_exps.append(exp_str)
         else:
-            month_exps.append(exp_str)
+            cycle_exps.append(exp_str)
 
     # If no 0DTE found within 1 day, grab the very first available
     if not dte0_exps and sorted_exps:
@@ -382,7 +399,7 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
     buckets = {
         "0DTE": dte0_exps,
         "This Week": week_exps,
-        "This Month": month_exps,
+        "OpEx Cycle": cycle_exps,
     }
 
     results = {}
@@ -1071,17 +1088,20 @@ OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels a
 
         st.divider()
 
-        # Monthly — frozen from the first trading day of the month. Same
-        # no-live-fallback rule as weekly.
+        # OpEx Cycle — frozen on the first trading day after each 3rd-Friday
+        # standard OpEx (the Monday-after, normally). Uses the next 3rd Friday
+        # as the straddle expiration so the frozen value always represents a
+        # live, forward-looking contract for the whole cycle. Same no-live-
+        # fallback rule as weekly.
         monthly_is_frozen = monthly_em_snap is not None
         if not monthly_exp:
-            monthly_sub = "No monthly expiration found"
+            monthly_sub = "No monthly OpEx expiration found"
         elif monthly_is_frozen:
-            monthly_sub = f"Frozen 1st trading day ({monthly_date_key}) | Exp: {monthly_exp}"
+            monthly_sub = f"Frozen post-OpEx ({monthly_date_key}) | Exp: {monthly_exp}"
         else:
-            monthly_sub = f"Pending 1st-trading-day capture ({monthly_date_key}) | Exp: {monthly_exp}"
+            monthly_sub = f"Pending post-OpEx capture ({monthly_date_key}) | Exp: {monthly_exp}"
         monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": {}}
-        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="Monthly", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
+        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="OpEx Cycle", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
 
     # ── C4: IV surface visualization ──
     with tab_iv_surface:
