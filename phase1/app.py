@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from tkcalendar import Calendar as TkCalendar
 
-from phase1.config import HEATMAP_EXPS, build_config_snapshot
+from phase1.config import build_config_snapshot
 from phase1.market_clock import now_ny, get_calendar_snapshot
 from phase1.data_client import TradierDataClient
 from phase1.rates import fetch_risk_free_rate
@@ -17,7 +17,6 @@ import phase1.dashboard as dashboard
 from phase1.confidence import build_run_confidence
 from phase1.staleness import build_staleness_info
 from phase1.wall_credibility import build_wall_credibility
-from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import build_expected_move_analysis
 
 
@@ -25,7 +24,7 @@ def validate_runtime_inputs(tradier_token: str) -> bool:
     return bool(tradier_token and tradier_token != "YOUR_TOKEN_HERE")
 
 
-def select_heatmap_exps(avail: list[str], today_str: str, count: int = HEATMAP_EXPS) -> list[str]:
+def select_heatmap_exps(avail: list[str], today_str: str, count: int = 7) -> list[str]:
     return [e for e in avail if e >= today_str][:count]
 
 
@@ -293,15 +292,13 @@ def run_app(
         print("Cancelled.")
         return
 
-    heatmap_exps = select_heatmap_exps(avail, today_str, HEATMAP_EXPS)
     config_snapshot = build_config_snapshot()
 
     print(f"\nSelected: {date_label} ({len(target_exps)} exp)")
-    print(f"Heatmap: {len(heatmap_exps)} columns")
     print("Fetching chains...\n")
 
-    gex_df, hm_gex, hm_iv, stats, all_options, strike_support_df, expiration_support_df = gex_engine.calculate_all(
-        client, "SPX", target_exps, spot, heatmap_exps, r=rfr, now=run_now
+    gex_df, stats, all_options, strike_support_df, expiration_support_df = gex_engine.calculate_all(
+        client, "SPX", target_exps, spot, r=rfr, now=run_now
     )
 
     if gex_df.empty:
@@ -311,21 +308,16 @@ def run_app(
     print("\nComputing key levels...")
     levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
 
-    print("\nComputing GEX profile curve...")
-    profile_df = gex_engine.compute_gex_profile_curve(all_options, spot, r=rfr)
-
-    sensitivity_df = gex_engine.compute_zero_gamma_sensitivity(all_options, spot, r=rfr)
-    scenarios_df = run_scenario_engine(all_options, base_spot=spot, base_r=rfr)
     has_0dte = any(e == today_str for e in target_exps)
     staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
     wall_credibility_info = build_wall_credibility(
         levels=levels,
         strike_support_df=strike_support_df,
-        sensitivity_df=sensitivity_df,
+        sensitivity_df=None,
         confidence_info=confidence_info,
         staleness_info=staleness_info,
-    )    
+    )
 
     regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
 
@@ -416,7 +408,6 @@ def run_app(
         f"| PW {wall_credibility_info['put_wall']['score']:.1f} "
         f"| ZG {wall_credibility_info['zero_gamma']['score']:.1f}"
     )
-    print(f"  Scenarios:         {len(scenarios_df)}")        
     if stats.get("strike_support_avg") is not None:
         print(f"  Strike support:    {stats['strike_support_avg']:.1f} avg  |  Fragile: {stats['fragile_strike_count']}")
     if stats.get("expiration_support_avg") is not None:
@@ -448,30 +439,21 @@ def run_app(
         spot_info=spot_info,
         stats=stats,
         selected_exps=target_exps,
-        heatmap_exps=heatmap_exps,
+        heatmap_exps=[],
         config_snapshot=config_snapshot,
         confidence_info=confidence_info,
-        sensitivity_rows=sensitivity_df.to_dict(orient="records"),
         strike_support_rows=strike_support_df.to_dict(orient="records"),
         expiration_support_rows=expiration_support_df.to_dict(orient="records"),
         staleness_info=staleness_info,
         wall_credibility_info=wall_credibility_info,
-        scenario_rows=scenarios_df.to_dict(orient="records"),
         expected_move_info=em_analysis,
     )
 
     dashboard.build_dashboard(
         gex_df=gex_df,
-        hm_gex=hm_gex,
-        hm_iv=hm_iv,
         stats=stats,
         levels=levels,
-        profile_df=profile_df,
-        sensitivity_df=sensitivity_df,
-        strike_support_df=strike_support_df,
-        expiration_support_df=expiration_support_df,
         wall_credibility_info=wall_credibility_info,
-        scenarios_df=scenarios_df,
         spot=spot,
         spot_source=spot_source,
         date_label=date_label,

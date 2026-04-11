@@ -1,16 +1,11 @@
 """
 Zero-gamma sweep logic — finds the price where total GEX crosses zero.
 
-Includes coarse/fine sweep, profile curve computation, per-expiry zero-gamma
-decomposition, and sensitivity analysis under spot shocks.
+Includes coarse/fine sweep and per-expiry zero-gamma decomposition.
 """
 from __future__ import annotations
 
-import math
-
 import numpy as np
-import pandas as pd
-from scipy.stats import norm
 
 from phase1.config import (
     ZG_SWEEP_RANGE_PCT,
@@ -20,12 +15,9 @@ from phase1.config import (
     ZG_SWEEP_MIN_RANGE_PCT,
     ZG_SWEEP_MAX_RANGE_PCT,
     ZG_SWEEP_IV_SCALE,
-    PROFILE_RANGE_PCT,
-    PROFILE_STEP,
     DEFAULT_RISK_FREE_RATE,
 )
 from phase1.gex_engine import bs_gamma_vec
-from phase1.model_inputs import bs_gamma
 
 
 def _sweep_gex_at_prices(all_options, test_prices, r):
@@ -225,24 +217,6 @@ def zero_gamma_sweep(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
     return zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv)["zero_gamma"]
 
 
-def compute_gex_profile_curve(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
-    if not all_options:
-        return pd.DataFrame(columns=["price", "total_gex"])
-
-    range_pct = _compute_sweep_range_pct(atm_iv) if atm_iv else PROFILE_RANGE_PCT
-    lo = math.floor(spot * (1 - range_pct))
-    hi = math.ceil(spot * (1 + range_pct))
-    prices = np.arange(lo, hi + PROFILE_STEP, PROFILE_STEP, dtype=float)
-    total_gex = _sweep_gex_at_prices(all_options, prices, r)
-
-    return pd.DataFrame(
-        {
-            "price": prices,
-            "total_gex": total_gex,
-        }
-    )
-
-
 def _estimate_atm_iv(all_options, spot):
     """
     Estimate ATM IV from nearest options to spot using inverse-distance weighting.
@@ -303,52 +277,3 @@ def _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp=None):
         result["other_exp_zero_gamma"] = round(float(zg), 2)
 
     return result
-
-
-def compute_zero_gamma_sensitivity(all_options, spot, r=DEFAULT_RISK_FREE_RATE, shock_percents=None):
-    """
-    Recompute zero gamma under a few spot shocks to judge stability.
-    """
-    if shock_percents is None:
-        shock_percents = [-0.005, -0.0025, 0.0, 0.0025, 0.005]
-
-    rows = []
-    for shock in shock_percents:
-        shocked_spot = float(spot) * (1.0 + float(shock))
-
-        if all_options:
-            zg_details = zero_gamma_sweep_details(all_options, shocked_spot, r=r)
-            zg = zg_details["zero_gamma"]
-        else:
-            zg_details = {
-                "zero_gamma": round(shocked_spot, 2),
-                "is_true_crossing": False,
-                "zero_gamma_type": "Fallback node",
-                "method": "no_options",
-                "final_abs_gex": None,
-            }
-            zg = zg_details["zero_gamma"]
-
-        gap = round(shocked_spot - zg, 2)
-
-        if gap > 0:
-            regime = "Positive Gamma"
-        elif gap < 0:
-            regime = "Negative Gamma"
-        else:
-            regime = "At Zero Gamma"
-
-        rows.append(
-            {
-                "shock_pct": float(shock),
-                "shocked_spot": round(shocked_spot, 2),
-                "zero_gamma": round(float(zg), 2),
-                "spot_minus_zero_gamma": gap,
-                "regime": regime,
-                "zero_gamma_type": zg_details["zero_gamma_type"],
-                "zero_gamma_method": zg_details["method"],
-                "residual_abs_gex": zg_details["final_abs_gex"],
-            }
-        )
-
-    return pd.DataFrame(rows)

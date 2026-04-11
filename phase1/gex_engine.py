@@ -7,13 +7,12 @@ from scipy.stats import norm
 
 from phase1.config import (
     COMPUTATION_RANGE_PCT,
-    HEATMAP_STRIKES,
     T_FLOOR,
     HYBRID_IV_MODE,
     NY_TZ,
     DEFAULT_RISK_FREE_RATE,
 )
-from phase1.model_inputs import prepare_option_for_model, bs_gamma
+from phase1.model_inputs import prepare_option_for_model
 from phase1.market_clock import compute_time_to_expiry_years
 from phase1.liquidity import build_strike_support_df, build_expiration_support_df
 
@@ -83,14 +82,14 @@ def bs_gamma_vec(S_arr, K_arr, T_arr, r, sigma_arr):
     return gamma
 
 
-def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RISK_FREE_RATE, now=None):
+def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE, now=None):
     """
     Hybrid mode:
       - use direct IV if available
       - otherwise infer synthetic IV from vendor gamma if possible
 
     Returns:
-        gex_df, heatmap_gex, heatmap_iv, stats, all_options
+        gex_df, stats, all_options, strike_support_df, expiration_support_df
     """
     # Both bar chart and all_options use the same ±8% computation range
     # so the chart shows the full gamma landscape including deep OTM tails
@@ -101,15 +100,13 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     now_ny = now.astimezone(NY_TZ) if now.tzinfo is not None else now.replace(tzinfo=NY_TZ)
 
     agg = {}
-    per_exp_gex = {}
-    per_exp_iv = {}
 
     total_call_oi = 0.0
     total_put_oi = 0.0
     max_call_oi_strike = (0.0, 0)
     max_put_oi_strike = (0.0, 0)
 
-    all_exps = unique_preserve_order(target_exps + (heatmap_exps or []))
+    all_exps = unique_preserve_order(target_exps)
     first_exp_call_ivs = []
     first_exp_put_ivs = []
 
@@ -147,9 +144,6 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
             print(f"  [{i+1}/{len(all_exps)}] {exp}  — FAILED ({entry.get('error', 'unknown error')})")
             continue
 
-        exp_gex = {}
-        exp_iv = {}
-
         for raw_opt, sign in [(c, +1) for c in calls_raw] + [(p, -1) for p in puts_raw]:
             K = raw_opt["strike"]
             if K < lower or K > upper:
@@ -184,9 +178,6 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
             if volume > 0:
                 vol_gex = sign * volume * gamma_now * 100.0 * spot * spot
                 volume_gex_by_strike[K] = volume_gex_by_strike.get(K, 0.0) + vol_gex
-
-            exp_gex[K] = exp_gex.get(K, 0.0) + gex
-            exp_iv.setdefault(K, []).append(model_iv)
 
             if exp in target_exps:
                 if K not in agg:
@@ -238,10 +229,6 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
                     if norm_opt.get("synthetic_fit_rel_error") is not None:
                         synthetic_fit_rel_errors.append(norm_opt["synthetic_fit_rel_error"])
 
-        if heatmap_exps and exp in heatmap_exps:
-            per_exp_gex[exp] = exp_gex
-            per_exp_iv[exp] = {K: np.mean(vs) * 100.0 for K, vs in exp_iv.items()}
-
         print(f"  [{i+1}/{len(all_exps)}] {exp}  (T={T*365.25:.2f}d)  — {len(calls_raw)}C / {len(puts_raw)}P")
 
     rows = []
@@ -259,27 +246,6 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
         )
 
     gex_df = pd.DataFrame(rows)
-
-    all_strikes = sorted(agg.keys())
-    if all_strikes:
-        nearest_idx = min(range(len(all_strikes)), key=lambda idx: abs(all_strikes[idx] - spot))
-        half = HEATMAP_STRIKES // 2
-        start = max(0, nearest_idx - half)
-        end = min(len(all_strikes), start + HEATMAP_STRIKES)
-        start = max(0, end - HEATMAP_STRIKES)
-        hm_strikes = all_strikes[start:end]
-    else:
-        hm_strikes = []
-
-    hm_gex_data = {}
-    hm_iv_data = {}
-    for exp_str in sorted(per_exp_gex):
-        col = datetime.strptime(exp_str, "%Y-%m-%d").strftime("%b %d")
-        hm_gex_data[col] = [per_exp_gex[exp_str].get(K, 0.0) for K in hm_strikes]
-        hm_iv_data[col] = [per_exp_iv.get(exp_str, {}).get(K, 0.0) for K in hm_strikes]
-
-    heatmap_gex = pd.DataFrame(hm_gex_data, index=hm_strikes)
-    heatmap_iv = pd.DataFrame(hm_iv_data, index=hm_strikes)
 
     net_gex_total = gex_df["net_gex"].sum() if not gex_df.empty else 0.0
     pos_gex = gex_df[gex_df["net_gex"] > 0]
@@ -344,7 +310,7 @@ def calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=DEFAULT_RIS
     else:
         stats["expiration_support_avg"] = None
 
-    return gex_df, heatmap_gex, heatmap_iv, stats, all_options, strike_support_df, expiration_support_df
+    return gex_df, stats, all_options, strike_support_df, expiration_support_df
 
 
 # ── Zero-gamma, key levels, regime — re-exported from split modules ──
@@ -355,54 +321,9 @@ from phase1.zero_gamma import (  # noqa: F401
     _compute_sweep_range_pct,
     zero_gamma_sweep_details,
     zero_gamma_sweep,
-    compute_gex_profile_curve,
-    _estimate_atm_iv,
-    _compute_per_expiry_zero_gamma,
-    compute_zero_gamma_sensitivity,
 )
 from phase1.key_levels import (  # noqa: F401
     get_gamma_regime_text,
     _find_wall_cluster,
     find_key_levels,
 )
-
-def compute_strike_gex_from_all_options(all_options, spot, r=DEFAULT_RISK_FREE_RATE):
-    """
-    Recompute strike-by-strike GEX for a shocked spot / rate using the
-    normalized option universe stored in all_options.
-
-    all_options entries are:
-        (strike, oi, iv, sign, T[, exp])
-    """
-    if not all_options:
-        return pd.DataFrame(columns=["strike", "call_gex", "put_gex", "net_gex"])
-
-    agg = {}
-
-    for opt in all_options:
-        K, oi, iv, sign, T = opt[0], opt[1], opt[2], opt[3], opt[4]
-        gamma_now = bs_gamma(float(spot), float(K), float(T), float(r), float(iv))
-        gex = float(sign) * float(oi) * float(gamma_now) * 100.0 * float(spot) * float(spot)
-
-        if K not in agg:
-            agg[K] = {"call_gex": 0.0, "put_gex": 0.0}
-
-        if sign > 0:
-            agg[K]["call_gex"] += gex
-        else:
-            agg[K]["put_gex"] += gex
-
-    rows = []
-    for K in sorted(agg):
-        call_gex = float(agg[K]["call_gex"])
-        put_gex = float(agg[K]["put_gex"])
-        rows.append(
-            {
-                "strike": round(K, 2),
-                "call_gex": call_gex,
-                "put_gex": put_gex,
-                "net_gex": call_gex + put_gex,
-            }
-        )
-
-    return pd.DataFrame(rows)

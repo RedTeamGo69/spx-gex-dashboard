@@ -16,21 +16,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from theme import COLORS, SF_BG, SF_BULL, SF_BEAR, SF_NEUT, SF_WARN, SF_CARD
+from theme import COLORS
 from models import GEXData
-from ui_charts import build_gex_bar_chart, build_profile_chart
+from ui_charts import build_gex_bar_chart
 from ui_sidebar import (
-    render_expected_move_panel, render_key_levels, render_scenarios_table,
+    render_expected_move_panel, render_key_levels,
     render_wall_credibility, render_gex_stream, render_data_quality,
-    _fmt_gex_short,
-)
-from ui_spread_finder import (
-    _render_sf_spread_table, _render_gex_context_panel,
-    _render_sf_range_gauge, _render_sf_strike_map, _render_sf_strike_map_tier,
 )
 
 # ── Phase1 engine imports ──
-from phase1.config import HEATMAP_EXPS, NY_TZ, COMPUTATION_RANGE_PCT, build_config_snapshot
 from phase1.market_clock import now_ny, get_calendar_snapshot
 from phase1.data_client import TradierDataClient
 from phase1.rates import fetch_risk_free_rate
@@ -39,7 +33,6 @@ import phase1.gex_engine as gex_engine
 from phase1.confidence import build_run_confidence
 from phase1.staleness import build_staleness_info
 from phase1.wall_credibility import build_wall_credibility
-from phase1.scenarios import run_scenario_engine
 from phase1.expected_move import (
     build_expected_move_analysis, compute_em_for_expiration,
     find_weekly_expiration, find_monthly_expiration,
@@ -47,46 +40,7 @@ from phase1.expected_move import (
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
 from phase1.ai_briefing import build_briefing_context, generate_briefing
 from phase1.gex_history import (
-    save_snapshot, get_daily_summary, get_zero_gamma_trend, get_history,
-    check_db_connection,
-    save_em_snapshot, get_em_snapshot,
-    get_weekly_em_date_key, get_monthly_em_date_key,
-)
-
-# ── Range Finder imports ──
-from range_finder.gex_bridge import (
-    GEXContext, extract_gex_context, save_gex_to_range_finder,
-    adjust_spread_with_gex, regime_to_gex_flag,
-)
-from range_finder.data_collector import (
-    fetch_spx_vix as rf_fetch_spx_vix, save_spx_vix as rf_save_spx_vix,
-    fetch_fred_macro as rf_fetch_fred_macro, save_fred_macro as rf_save_fred_macro,
-    build_event_flags as rf_build_event_flags,
-    get_weekly_spx as rf_get_weekly_spx,
-)
-from range_finder.feature_builder import (
-    build_features as rf_build_features,
-    get_features as rf_get_features,
-    get_feature_for_week as rf_get_feature_for_week,
-)
-from range_finder.har_model import (
-    MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
-    time_series_split as rf_time_series_split,
-    fit_model as rf_fit_model, evaluate_oos as rf_evaluate_oos,
-    forecast_next_week as rf_forecast_next_week,
-    save_model as rf_save_model, load_model as rf_load_model,
-)
-from range_finder.spread_levels import (
-    build_spread_plan as rf_build_spread_plan,
-    build_spread_tiers as rf_build_spread_tiers,
-    log_spread_plan as rf_log_spread_plan,
-    update_outcome as rf_update_outcome,
-    update_expiration_outcome as rf_update_expiration_outcome,
-    get_spread_log as rf_get_spread_log,
-    STANDARD_WING_WIDTHS as RF_WING_WIDTHS,
-    TICKER_CONFIG as RF_TICKER_CONFIG,
-    SpreadPlan,
-    SpreadTier,
+    save_snapshot, get_weekly_em_date_key, get_monthly_em_date_key,
 )
 
 _logger = logging.getLogger(__name__)
@@ -253,23 +207,19 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     spot_source = spot_info["source"]
 
     target_exps = list(selected_exps)
-    heatmap_exps = [e for e in avail if e >= today_str][:HEATMAP_EXPS]
 
-    gex_df, hm_gex, hm_iv, stats, all_options, strike_support_df, exp_support_df = (
-        gex_engine.calculate_all(client, ticker, target_exps, spot, heatmap_exps, r=rfr, now=run_now)
+    gex_df, stats, all_options, strike_support_df, exp_support_df = (
+        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now)
     )
 
     levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
-    profile_df = gex_engine.compute_gex_profile_curve(all_options, spot, r=rfr)
-    sensitivity_df = gex_engine.compute_zero_gamma_sensitivity(all_options, spot, r=rfr)
-    scenarios_df = run_scenario_engine(all_options, base_spot=spot, base_r=rfr)
     has_0dte = any(e == today_str for e in target_exps)
     staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
     wall_cred = build_wall_credibility(
         levels=levels,
         strike_support_df=strike_support_df,
-        sensitivity_df=sensitivity_df,
+        sensitivity_df=None,
         confidence_info=confidence_info,
         staleness_info=staleness_info,
     )
@@ -309,14 +259,9 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         avail=avail,
         target_exps=target_exps,
         gex_df=gex_df,
-        hm_gex=hm_gex,
-        hm_iv=hm_iv,
         stats=stats,
         all_options=all_options,
         levels=levels,
-        profile_df=profile_df,
-        sensitivity_df=sensitivity_df,
-        scenarios_df=scenarios_df,
         staleness_info=staleness_info,
         confidence_info=confidence_info,
         wall_cred=wall_cred,
@@ -333,404 +278,12 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     )
 
 
-@st.cache_resource(ttl=90, show_spinner=False)
-def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: float, _run_id: str, ticker: str = "SPX"):
-    """
-    Compute GEX for 3 timeframe buckets: 0DTE, This Week, OpEx Cycle.
-    Returns dict of {label: gex_df}.
-
-    The "OpEx Cycle" bucket covers expirations 8+ days out through the next
-    standard 3rd-Friday OpEx -- i.e. everything further out than this week
-    but still within the current monthly cycle. This aligns with where the
-    bulk of institutional monthly gamma lives (the 3rd-Friday standard
-    expirations) rather than an arbitrary calendar-month cutoff that left
-    the bucket empty in the last week of each month.
-    """
-    from phase1.market_clock import now_ny, compute_time_to_expiry_years
-    from phase1.config import T_FLOOR
-    from phase1.expected_move import find_monthly_expiration
-
-    client = TradierDataClient(token=tradier_token)
-    run_now = now_ny()
-    today_str = run_now.strftime("%Y-%m-%d")
-    tomorrow_str = (run_now + timedelta(days=1)).strftime("%Y-%m-%d")
-
-    # Build non-overlapping expiration buckets using DTE
-    from datetime import date as _date
-    ref_date = run_now.date() if hasattr(run_now, 'date') else run_now
-
-    sorted_exps = sorted([e for e in avail_exps if e >= today_str])
-
-    # "This Week" ends at THIS Friday's close (matches the sidebar filter and
-    # the weekly EM freeze convention). On Friday itself days_to_fri == 0 and
-    # the bucket naturally collapses to just today's expiration.
-    days_to_fri = (4 - ref_date.weekday()) % 7
-    this_friday = ref_date + timedelta(days=days_to_fri)
-    this_friday_str = this_friday.strftime("%Y-%m-%d")
-
-    # Cycle cutoff = next standard 3rd-Friday OpEx. find_monthly_expiration
-    # already rolls to next month once this month's 3rd Friday is behind us.
-    cycle_end = find_monthly_expiration(sorted_exps, ref_date)
-
-    # If this week contains the upcoming 3rd-Friday OpEx (i.e. we're in OpEx
-    # week), the OpEx-cycle bucket would be empty because every exp through
-    # cycle_end is already in the This Week bucket. In that case, advance
-    # cycle_end to the NEXT 3rd Friday so the user sees the upcoming cycle's
-    # building gamma cluster rather than a blank bar. Pass (this_friday + 1d)
-    # as the reference so find_monthly_expiration's own rollover math picks
-    # the correct next OpEx.
-    if cycle_end and cycle_end <= this_friday_str:
-        next_cycle_ref = this_friday + timedelta(days=1)
-        rolled = find_monthly_expiration(sorted_exps, next_cycle_ref)
-        if rolled:
-            cycle_end = rolled
-
-    # Defensive fallback: if no 3rd-Friday exp is available at all (shouldn't
-    # happen with SPX), fall back to calendar month-end so we still show
-    # something.
-    if not cycle_end:
-        import calendar as _cal
-        cycle_end = run_now.replace(
-            day=_cal.monthrange(run_now.year, run_now.month)[1]
-        ).strftime("%Y-%m-%d")
-
-    # Classify expirations into non-overlapping buckets
-    dte0_exps = []   # nearest single expiration
-    week_exps = []   # after 0DTE, through THIS Friday
-    cycle_exps = []  # after this Friday, through cycle_end (next 3rd Friday)
-
-    for exp_str in sorted_exps:
-        exp_date = _date.fromisoformat(exp_str)
-        days_out = (exp_date - ref_date).days
-        if exp_str > cycle_end:
-            continue
-        if not dte0_exps and days_out <= 1:
-            # Nearest expiration (today or tomorrow = 0DTE)
-            dte0_exps.append(exp_str)
-        elif exp_str <= this_friday_str:
-            week_exps.append(exp_str)
-        else:
-            cycle_exps.append(exp_str)
-
-    # If no 0DTE found within 1 day, grab the very first available
-    if not dte0_exps and sorted_exps:
-        dte0_exps.append(sorted_exps[0])
-        week_exps = [e for e in week_exps if e != sorted_exps[0]]
-
-    buckets = {
-        "0DTE": dte0_exps,
-        "This Week": week_exps,
-        "OpEx Cycle": cycle_exps,
-    }
-
-    results = {}
-    for label, exps in buckets.items():
-        if not exps:
-            continue
-        all_opts = []
-        client.prefetch_chains(ticker, exps)
-        for exp in exps:
-            T, _ = compute_time_to_expiry_years(exp, ts=run_now.astimezone(NY_TZ) if run_now.tzinfo else run_now, floor=T_FLOOR)
-            entry = client.get_chain_cached(ticker, exp)
-            if entry.get("status") != "ok":
-                continue
-            from phase1.model_inputs import prepare_option_for_model
-            lower = spot * (1 - COMPUTATION_RANGE_PCT)
-            upper = spot * (1 + COMPUTATION_RANGE_PCT)
-            for raw_opt, sign in [(c, +1) for c in entry["calls"]] + [(p, -1) for p in entry["puts"]]:
-                K = raw_opt["strike"]
-                if K < lower or K > upper:
-                    continue
-                oi = raw_opt["openInterest"]
-                if oi <= 0:
-                    continue
-                prep = prepare_option_for_model(raw_opt, sign, T, spot, rfr)
-                if prep["accepted"]:
-                    norm = prep["normalized"]
-                    all_opts.append((K, oi, norm["iv"], sign, T))
-
-        if all_opts:
-            gex_df = gex_engine.compute_strike_gex_from_all_options(all_opts, spot, r=rfr)
-            results[label] = gex_df
-
-    return results
-
-
-def _get_rf_conn():
-    """Get or create the range finder Postgres connection."""
-    from range_finder.db import get_connection, init_all_tables
-    conn = get_connection()
-    init_all_tables(conn)
-    return conn
-
-
-def _render_danger_zone():
-    """
-    Sidebar "Reset all data" button.
-
-    Wiped on confirm:
-      - every row in every Postgres table this app writes to
-      - every st.session_state key that holds cached / historical state
-      - phase1/.rate_cache.json and any pickled HAR models in range_finder/models/
-      - st.cache_data + st.cache_resource (so the main UI refetches empty data
-        instead of continuing to show pre-reset values from @st.cache_data)
-
-    Gated behind:
-      1. a collapsed expander (not visible unless the user opens it)
-      2. a confirmation checkbox (the button stays disabled until ticked)
-
-    UX flow:
-      - User clicks the button → spinner runs during the reset
-      - Result is stashed in session_state["_last_reset_result"] and the
-        script reruns
-      - Next render: the expander shows a persistent success banner
-        (survives the rerun because the result is in session_state) until
-        the user clicks Dismiss
-    """
-    with st.expander("⚠️ Danger zone", expanded=False):
-        # ── Persistent success banner from the LAST reset (if any) ──
-        # We display this before the warning/checkbox so the user sees
-        # confirmation immediately after the rerun that followed their
-        # reset click. Stays visible until dismissed.
-        last_result = st.session_state.get("_last_reset_result")
-        if last_result:
-            st.success(
-                f"✅ Reset complete. Deleted **{last_result['total_rows']}** rows across "
-                f"**{len(last_result['ok_rows'])}** tables · cleared "
-                f"**{last_result['cleared_session_keys']}** session keys · "
-                f"removed **{len(last_result['cleared_files'])}** cache files."
-            )
-            st.caption(
-                "Verify: open the History tab (should be empty), Trade Log tab "
-                "(should be empty), and EM Tracker (should say 'data not available'). "
-                "The next cron run at 9:30 AM ET will start repopulating."
-            )
-            with st.expander("Reset details", expanded=False):
-                st.json({
-                    "tables_truncated": last_result["ok_rows"],
-                    "session_keys_cleared": last_result["cleared_session_keys"],
-                    "files_removed": last_result["cleared_files"],
-                    "tables_with_errors": last_result["bad_tables"],
-                })
-            if st.button("Dismiss", key="_dismiss_reset_result", use_container_width=True):
-                st.session_state.pop("_last_reset_result", None)
-                st.rerun()
-            st.divider()
-
-        st.warning(
-            "**Reset all data** — permanently deletes:\n\n"
-            "- GEX snapshots (History tab, Daily Summary, Zero-Gamma trend)\n"
-            "- EM snapshots (daily, weekly, OpEx cycle)\n"
-            "- Trade log & spread plans\n"
-            "- Fitted HAR models (will need refitting)\n"
-            "- Weekly/monthly range-finder inputs (SPX/VIX OHLC, macro, events, features)\n\n"
-            "The next scheduled cron run will start repopulating the tables from scratch."
-        )
-        confirm = st.checkbox(
-            "I understand this permanently deletes all GEX history, EM snapshots, trade log, and fitted models",
-            key="_danger_zone_confirm",
-        )
-        if st.button(
-            "🗑️ Reset all data",
-            disabled=not confirm,
-            type="secondary",
-            use_container_width=True,
-            key="_danger_zone_reset_btn",
-        ):
-            with st.spinner("Resetting — truncating tables, clearing caches..."):
-                # ── Step 1: truncate every known Postgres table ──
-                try:
-                    from phase1.gex_history import reset_all_data
-                    results = reset_all_data()
-                except Exception as e:
-                    st.error(f"Postgres reset failed: {e}")
-                    return
-
-                # ── Step 2: clear cached / historical session_state keys ──
-                session_prefixes = (
-                    "em_snapshot_",
-                    "sf_", "_sf_", "_rtf_",
-                    "monday_open_", "monday_vix_",
-                )
-                session_exact = {
-                    "_ai_briefing", "_gemini_backoff_until",
-                    "_last_snapshot_utc",
-                    "last_save_ok", "last_save_time", "last_save_error",
-                    "gex_history",  # legacy key from the old session fallback
-                }
-                cleared_session_keys = 0
-                # Preserve _last_reset_result (we set it below) and keep the
-                # confirmation checkbox out of the sweep — we clear it
-                # explicitly after.
-                for k in list(st.session_state.keys()):
-                    if k in ("_last_reset_result", "_danger_zone_confirm"):
-                        continue
-                    if k in session_exact or any(k.startswith(p) for p in session_prefixes):
-                        st.session_state.pop(k, None)
-                        cleared_session_keys += 1
-
-                # ── Step 3: delete on-disk caches ──
-                import glob
-                cleared_files: list[str] = []
-                for fpath in ("phase1/.rate_cache.json",):
-                    try:
-                        os.remove(fpath)
-                        cleared_files.append(fpath)
-                    except FileNotFoundError:
-                        pass
-                    except Exception as e:
-                        st.warning(f"Could not delete {fpath}: {e}")
-                for pkl in glob.glob("range_finder/models/*.pkl"):
-                    try:
-                        os.remove(pkl)
-                        cleared_files.append(pkl)
-                    except Exception as e:
-                        st.warning(f"Could not delete {pkl}: {e}")
-
-                # ── Step 4: clear Streamlit's own caches so the main UI
-                # stops showing pre-reset cached data from @st.cache_data
-                # and @st.cache_resource (db connections, etc.) ──
-                try:
-                    st.cache_data.clear()
-                except Exception:
-                    pass
-                try:
-                    st.cache_resource.clear()
-                except Exception:
-                    pass
-
-                # ── Step 5: stash the result in session_state so the next
-                # render (after the rerun below) can display a persistent
-                # success banner. Without this, st.rerun() would wipe any
-                # st.success() call we made during this render. ──
-                ok_rows = {k: v for k, v in results.items() if isinstance(v, int)}
-                bad_tables = {k: v for k, v in results.items() if not isinstance(v, int)}
-                st.session_state["_last_reset_result"] = {
-                    "total_rows": sum(ok_rows.values()),
-                    "ok_rows": ok_rows,
-                    "bad_tables": bad_tables,
-                    "cleared_session_keys": cleared_session_keys,
-                    "cleared_files": cleared_files,
-                }
-
-            # Clear the confirmation checkbox so the button re-disables
-            st.session_state.pop("_danger_zone_confirm", None)
-            st.rerun()
-
-
-def _render_trade_log_tab():
-    """Display the spread_log table with color-coded outcomes and summary stats."""
-    import pandas as pd
-    from datetime import date as _date_cls
-
-    conn = _get_rf_conn()
-    rows = rf_get_spread_log(conn)
-
-    if not rows:
-        st.info("No spread plans logged yet. Save a spread plan from the Spread Finder tab to get started.")
-        return
-
-    df = pd.DataFrame(rows)
-
-    # ── Summary stats (only rows with an outcome) ──
-    has_outcome = df[df["outcome"].notna() & (df["outcome"] != "")]
-    st.subheader("Summary")
-
-    if has_outcome.empty:
-        st.caption("No outcomes recorded yet — use the button below to update expired weeks.")
-    else:
-        n = len(has_outcome)
-        wins = (has_outcome["outcome"] == "full_profit").sum()
-        win_rate = wins / n * 100
-
-        call_breaches = has_outcome["call_breached"].fillna(0).sum()
-        put_breaches = has_outcome["put_breached"].fillna(0).sum()
-        call_rate = call_breaches / n * 100
-        put_rate = put_breaches / n * 100
-
-        # Average range error: |model effective_range_pct - actual_range_pct|
-        err_df = has_outcome.dropna(subset=["actual_range_pct", "effective_range_pct"])
-        if not err_df.empty:
-            avg_err = (err_df["actual_range_pct"].astype(float) - err_df["effective_range_pct"].astype(float)).abs().mean()
-            avg_err_str = f"{avg_err * 100:.2f}%"
-        else:
-            avg_err_str = "N/A"
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Win Rate", f"{win_rate:.1f}%", delta=f"{wins}/{n} weeks")
-        c2.metric("Avg Range Error", avg_err_str)
-        c3.metric("Call Breach Rate", f"{call_rate:.1f}%")
-        c4.metric("Put Breach Rate", f"{put_rate:.1f}%")
-
-    # ── Update button ──
-    st.divider()
-    today = _date_cls.today()
-    # Find rows where outcome is NULL and the week has expired (Friday = week_start + 4 days)
-    updatable = [
-        r for r in rows
-        if (not r.get("outcome"))
-        and r.get("call_short") is not None
-        and (datetime.strptime(r["week_start"], "%Y-%m-%d").date() + timedelta(days=5)) <= today
-    ]
-
-    if updatable:
-        latest = updatable[0]  # rows are already sorted DESC by week_start
-        st.caption(f"Most recent expired week without outcome: **{latest['week_start']}**")
-        if st.button("Update This Week's Outcome", key="tl_update_btn"):
-            with st.spinner(f"Fetching OHLC for {latest['week_start']}..."):
-                result = rf_update_expiration_outcome(latest["week_start"], conn)
-            if result in ("full_profit", "call_loss", "put_loss", "max_loss"):
-                st.success(f"Outcome for {latest['week_start']}: **{result}**")
-                st.rerun()
-            elif result == "no_data":
-                st.error("yfinance returned no data for that week. Market may have been closed.")
-            else:
-                st.error(f"Unexpected result: {result}")
-    else:
-        st.caption("All expired weeks have outcomes recorded.")
-
-    # ── Data table with color-coded outcome ──
-    st.divider()
-    st.subheader("Spread Log")
-
-    display_cols = [
-        "week_start", "spx_ref_close", "effective_range_pct",
-        "call_short", "put_short", "wing_width_used",
-        "actual_high", "actual_low", "actual_range_pct",
-        "call_breached", "put_breached", "outcome",
-    ]
-    # Only include columns that actually exist
-    display_cols = [c for c in display_cols if c in df.columns]
-    display_df = df[display_cols].copy()
-
-    # Format percentages for readability
-    for pct_col in ["effective_range_pct", "actual_range_pct"]:
-        if pct_col in display_df.columns:
-            display_df[pct_col] = display_df[pct_col].apply(
-                lambda x: f"{float(x)*100:.2f}%" if x is not None and x == x else ""
-            )
-
-    def _color_outcome(val):
-        colors = {
-            "full_profit": "background-color: #1b5e20; color: white",
-            "call_loss": "background-color: #e65100; color: white",
-            "put_loss": "background-color: #e65100; color: white",
-            "max_loss": "background-color: #b71c1c; color: white",
-        }
-        return colors.get(val, "")
-
-    styled = display_df.style.map(_color_outcome, subset=["outcome"] if "outcome" in display_df.columns else [])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Main app
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    # Lazy imports to avoid circular dependency (ui_history imports from streamlit_app)
+    # Lazy imports to avoid circular dependency (ui_spread_finder imports from streamlit_app)
     from ui_history import (
-        _render_history_tab, _render_em_tracker, _render_multi_timeframe,
-        _render_pin_detection, _render_iv_surface, _check_level_crossings,
         _is_weekly_freeze_day, _is_monthly_freeze_day,
         _apply_typed_em_snapshot, _apply_em_snapshot,
     )
@@ -1044,11 +597,7 @@ def main():
         st.divider()
         render_wall_credibility(data.wall_cred)
         st.divider()
-        render_scenarios_table(data.scenarios_df)
-        st.divider()
         render_data_quality(data.stats, data.staleness_info)
-        st.divider()
-        _render_danger_zone()
 
     # ── Expected Move panel (top of page) ──
     em_data = em_analysis.get("expected_move", {})
@@ -1215,9 +764,7 @@ def main():
             st.rerun()
 
     # ── Charts ──
-    tab_gex, tab_profile, tab_multi, tab_history, tab_em_track, tab_iv_surface, tab_spread_finder, tab_trade_log = st.tabs(
-        ["📊 Strike GEX", "📈 GEX Profile", "⏱️ Multi-TF", "📅 History", "🎯 EM Tracker", "🌊 IV Surface", "🎯 Spread Finder", "📋 Trade Log"]
-    )
+    tab_gex, tab_spread_finder = st.tabs(["📊 Strike GEX", "🎯 Spread Finder"])
 
     with tab_gex:
         # Weekly/monthly markers ONLY use the frozen snap — never the live EM.
@@ -1228,106 +775,12 @@ def main():
         fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
-    with tab_profile:
-        with st.expander("How to read this chart"):
-            st.markdown("""
-**GEX Profile Curve — Total Gamma Exposure vs. Price**
-
-This chart shows the **total dealer gamma exposure** at each price level, summed across all strikes and expirations.
-
-- **X-axis** = Underlying price (SPX/XSP level)
-- **Y-axis** = Total net GEX proxy (sum of dealer gamma at that price)
-- **White dashed line** = Current spot price
-
-**Key levels marked on the chart:**
-- **Zero-Gamma (Zero-G)** — Where the curve crosses zero. This is the most important level:
-  - **Above Zero-G:** Dealers are long gamma (positive GEX). They hedge by buying dips and selling rips, which *suppresses* volatility. Price tends to mean-revert.
-  - **Below Zero-G:** Dealers are short gamma (negative GEX). They hedge by selling dips and buying rips, which *amplifies* moves. Price trends harder.
-- **Call Wall** — Strike with the largest positive call gamma. Acts as a resistance/ceiling — dealer hedging pushes price back down as it approaches.
-- **Put Wall** — Strike with the largest positive put gamma. Acts as a support/floor — dealer hedging pushes price back up as it approaches.
-
-**How to use it:**
-- **Tall positive peak near spot** = Strong mean-reversion zone. Good for selling credit spreads — price is "sticky" here.
-- **Curve near zero or negative around spot** = Weak support. Price can move freely. Be cautious with tight spreads.
-- **Steep slope near spot** = Small price moves cause large changes in dealer hedging. Expect choppy, range-bound action.
-- **Flat curve** = Dealers have little gamma exposure. Price moves are driven by order flow, not hedging.
-
-**Important caveat:** This model assumes dealers are uniformly net short all options (the standard convention). \
-Actual dealer positioning varies by strike due to institutional overlays, collar programs, and retail put-selling. \
-OI is end-of-day data — intraday 0DTE flow is not captured. Use these levels as probabilistic guides, not certainties.
-""")
-        fig2 = build_profile_chart(data.profile_df, levels, spot, regime, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
-        st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
-
-    # ── C3: Multi-timeframe GEX comparison ──
-    with tab_multi:
-        _render_multi_timeframe(data.all_options, data.target_exps, data.avail, spot, levels, data.rfr, ticker=ticker)
-
-    # ── C1: Historical GEX trend ──
-    with tab_history:
-        _render_history_tab(spot, ticker=ticker)
-
-    # ── C5: Expected move consumption trackers (0DTE / Weekly / Monthly) ──
-    with tab_em_track:
-        # Daily (0DTE)
-        daily_cap = st.session_state.get(f"em_snapshot_time_daily_{ticker}")
-        daily_sub = f"Frozen at {daily_cap}" if daily_cap else None
-        _render_em_tracker(em_analysis, spot, prev_close, market_ctx, label="0DTE", subtitle=daily_sub)
-
-        st.divider()
-
-        # Weekly — frozen from Monday's open only. We never show a drifting
-        # "live estimate" here; an absent snap means the chart/tracker simply
-        # reports the snap is pending (e.g. Monday pre-9:30 before cron).
-        weekly_is_frozen = weekly_em_snap is not None
-        if not weekly_exp:
-            weekly_sub = "No weekly expiration found"
-        elif weekly_is_frozen:
-            weekly_sub = f"Frozen Mon open ({weekly_date_key}) | Exp: {weekly_exp}"
-        else:
-            weekly_sub = f"Pending Monday capture ({weekly_date_key}) | Exp: {weekly_exp}"
-        weekly_em_for_render = {"expected_move": weekly_em_snap} if weekly_em_snap else {"expected_move": {}}
-        _render_em_tracker(weekly_em_for_render, spot, prev_close, market_ctx, label="Weekly", subtitle=weekly_sub, is_frozen=weekly_is_frozen)
-
-        st.divider()
-
-        # OpEx Cycle — frozen on the first trading day after each 3rd-Friday
-        # standard OpEx (the Monday-after, normally). Uses the next 3rd Friday
-        # as the straddle expiration so the frozen value always represents a
-        # live, forward-looking contract for the whole cycle. Same no-live-
-        # fallback rule as weekly.
-        monthly_is_frozen = monthly_em_snap is not None
-        if not monthly_exp:
-            monthly_sub = "No monthly OpEx expiration found"
-        elif monthly_is_frozen:
-            monthly_sub = f"Frozen post-OpEx ({monthly_date_key}) | Exp: {monthly_exp}"
-        else:
-            monthly_sub = f"Pending post-OpEx capture ({monthly_date_key}) | Exp: {monthly_exp}"
-        monthly_em_for_render = {"expected_move": monthly_em_snap} if monthly_em_snap else {"expected_move": {}}
-        _render_em_tracker(monthly_em_for_render, spot, prev_close, market_ctx, label="OpEx Cycle", subtitle=monthly_sub, is_frozen=monthly_is_frozen)
-
-    # ── C4: IV surface visualization ──
-    with tab_iv_surface:
-        _render_iv_surface(data.hm_iv, data.hm_gex, spot)
-
-    # ── C7: Spread Finder — Weekly credit spread placement ──
+    # ── Spread Finder — Weekly credit spread placement ──
     with tab_spread_finder:
         # Spread finder also uses the frozen weekly snap only — a drifting
         # live EM would invalidate the spread plan intra-week.
         _sf_weekly_em = weekly_em_snap or {}
         _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker, weekly_em=_sf_weekly_em)
-
-    with tab_trade_log:
-        _render_trade_log_tab()
-
-    # ── C2: Level crossing alerts ──
-    alerts = _check_level_crossings(spot, levels, em_analysis)
-    if alerts:
-        for icon, msg in alerts:
-            st.warning(f"{icon} {msg}")
-
-    # ── C6: Pin point detection ──
-    _render_pin_detection(data.stats, data.gex_df, spot)
 
     # ── Auto-refresh ──
     # Uses st.rerun with a placeholder countdown so the app remains

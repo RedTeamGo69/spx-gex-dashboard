@@ -41,7 +41,7 @@ def fmt_oi(v):
 
 
 # ── Chart builders — re-exported from dashboard_charts.py ──
-from phase1.dashboard_charts import build_bar_chart_json, build_profile_chart_json  # noqa: F401
+from phase1.dashboard_charts import build_bar_chart_json  # noqa: F401
 
 
 def build_status_html(stats, spot_info=None, run_metadata=None):
@@ -252,140 +252,6 @@ def build_stats_html(stats, levels, date_label, spot_source, spot, regime_info):
     """
 
 
-def gex_cell_color(v, abs_max):
-    if abs_max == 0:
-        return "#1a1a2e"
-    ratio = max(-1, min(1, v / abs_max))
-    if ratio >= 0:
-        g = int(50 + 155 * ratio)
-        return f"rgb(0, {g}, 0)"
-    r = int(50 + 205 * abs(ratio))
-    return f"rgb({r}, 0, 0)"
-
-
-def iv_cell_color(v, vmin, vmax):
-    if vmax <= vmin or v == 0:
-        return "#1a1a2e"
-    ratio = (v - vmin) / (vmax - vmin)
-    g = int(40 + 180 * ratio)
-    return f"rgb(0, {g}, 0)"
-
-
-def build_heatmap_html(hm_df, spot, title, is_iv=False):
-    if hm_df is None or hm_df.empty:
-        return f"<div class='hm-title'>{title}</div><div class='empty-note'>No data</div>"
-
-    hm = hm_df.iloc[::-1]
-    strikes = hm.index.values
-    cols = hm.columns.tolist()
-    vals = hm.values
-    nr, nc = vals.shape
-
-    if is_iv:
-        nonzero = vals[vals > 0]
-        vmin = nonzero.min() if len(nonzero) > 0 else 0
-        vmax = nonzero.max() if len(nonzero) > 0 else 1
-    else:
-        abs_max = max(np.abs(vals[vals != 0]).max(), 1) if np.any(vals != 0) else 1
-
-    html = f'<div class="hm-title">{title}</div><table class="hm-table"><tr><th>Strike</th>'
-    for c in cols:
-        html += f"<th>{c}</th>"
-    html += "</tr>"
-
-    for r in range(nr):
-        strike = strikes[r]
-        is_spot = abs(strike - spot) < 3
-        ss = "color:#ffd600;font-weight:bold" if is_spot else "color:#aaa"
-        html += f'<tr><td class="hm-strike" style="{ss}">{strike:.0f}</td>'
-        for c in range(nc):
-            v = vals[r, c]
-            bg = iv_cell_color(v, vmin, vmax) if is_iv else gex_cell_color(v, abs_max)
-            txt = (f"+{v:.1f}%" if v > 0 else "") if is_iv else fmt_gex_val(v)
-            html += f'<td class="hm-cell" style="background:{bg}">{txt}</td>'
-        html += "</tr>"
-
-    html += "</table>"
-    return html
-
-def build_sensitivity_html(sensitivity_df):
-    if sensitivity_df is None or sensitivity_df.empty:
-        return "<div class='hm-title'>Zero Gamma Sensitivity</div><div class='empty-note'>No data</div>"
-
-    html = '<div class="hm-title">Zero Gamma Sensitivity</div>'
-    html += '<table class="hm-table">'
-    html += "<tr><th>Shock</th><th>Spot</th><th>Zero Γ</th><th>Gap</th><th>Type</th><th>Regime</th></tr>"
-
-    for _, row in sensitivity_df.iterrows():
-        shock_text = f"{row['shock_pct']*100:+.2f}%"
-        gap = row["spot_minus_zero_gamma"]
-        gap_color = "#00c853" if gap > 0 else "#ff5252" if gap < 0 else "#00e5ff"
-
-        ztype = row.get("zero_gamma_type", "Unknown")
-        html += (
-            "<tr>"
-            f"<td>{shock_text}</td>"
-            f"<td>{row['shocked_spot']:.2f}</td>"
-            f"<td>{row['zero_gamma']:.2f}</td>"
-            f"<td style='color:{gap_color};font-weight:bold'>{gap:+.2f}</td>"
-            f"<td>{ztype}</td>"
-            f"<td>{row['regime']}</td>"
-            "</tr>"
-        )
-
-    html += "</table>"
-    return html
-
-def build_strike_support_html(strike_support_df, max_rows=8):
-    if strike_support_df is None or strike_support_df.empty:
-        return "<div class='hm-title'>Strike Support</div><div class='empty-note'>No data</div>"
-
-    top = strike_support_df.head(max_rows)
-
-    html = '<div class="hm-title">Strike Support</div>'
-    html += '<table class="hm-table">'
-    html += "<tr><th>Strike</th><th>Score</th><th>Label</th><th>Exps</th><th>OI</th></tr>"
-
-    for _, row in top.iterrows():
-        label = row["support_label"]
-        color = "#00c853" if label == "High" else "#ffd600" if label == "Moderate" else "#ff5252"
-        html += (
-            "<tr>"
-            f"<td>{int(row['strike'])}</td>"
-            f"<td style='color:{color};font-weight:bold'>{row['support_score']:.1f}</td>"
-            f"<td style='color:{color};font-weight:bold'>{label}</td>"
-            f"<td>{int(row['supporting_expirations'])}</td>"
-            f"<td>{fmt_oi(row['total_oi'])}</td>"
-            "</tr>"
-        )
-
-    html += "</table>"
-    return html
-
-def build_expiration_support_html(expiration_support_df):
-    if expiration_support_df is None or expiration_support_df.empty:
-        return "<div class='hm-title'>Expiration Support</div><div class='empty-note'>No data</div>"
-
-    html = '<div class="hm-title">Expiration Support</div>'
-    html += '<table class="hm-table">'
-    html += "<tr><th>Exp</th><th>Score</th><th>Label</th><th>Strikes</th><th>OI</th></tr>"
-
-    for _, row in expiration_support_df.iterrows():
-        label = row["support_label"]
-        color = "#00c853" if label == "High" else "#ffd600" if label == "Moderate" else "#ff5252"
-        html += (
-            "<tr>"
-            f"<td>{row['expiration']}</td>"
-            f"<td style='color:{color};font-weight:bold'>{row['support_score']:.1f}</td>"
-            f"<td style='color:{color};font-weight:bold'>{label}</td>"
-            f"<td>{int(row['strikes_used'])}</td>"
-            f"<td>{fmt_oi(row['total_oi'])}</td>"
-            "</tr>"
-        )
-
-    html += "</table>"
-    return html
-
 def build_wall_credibility_html(wall_credibility_info):
     if not wall_credibility_info:
         return "<div class='hm-title'>Wall Credibility</div><div class='empty-note'>No data</div>"
@@ -433,40 +299,14 @@ def build_wall_credibility_html(wall_credibility_info):
 
     return html
 
-def build_scenarios_html(scenarios_df):
-    if scenarios_df is None or scenarios_df.empty:
-        return "<div class='hm-title'>Scenario Engine</div><div class='empty-note'>No data</div>"
-
-    html = '<div class="hm-title">Scenario Engine</div>'
-    html += '<table class="hm-table">'
-    html += "<tr><th>Scenario</th><th>Call W</th><th>Put W</th><th>Zero Γ</th><th>Regime</th></tr>"
-
-    for _, row in scenarios_df.iterrows():
-        regime = row["gamma_regime"]
-        regime_color = "#00c853" if regime == "Positive Gamma" else "#ff5252" if regime == "Negative Gamma" else "#00e5ff"
-
-        html += (
-            "<tr>"
-            f"<td>{row['scenario']}</td>"
-            f"<td>{row['call_wall']:.0f}</td>"
-            f"<td>{row['put_wall']:.0f}</td>"
-            f"<td>{row['zero_gamma']:.2f}</td>"
-            f"<td style='color:{regime_color};font-weight:bold'>{regime}</td>"
-            "</tr>"
-        )
-
-    html += "</table>"
-    return html
-
 # ── Expected move HTML — re-exported from dashboard_em.py ──
 from phase1.dashboard_em import (  # noqa: F401
     build_expected_move_html,
     _em_level_shapes_bar,
-    _em_level_shapes_profile,
 )
 
 
-def build_dashboard(gex_df, hm_gex, hm_iv, stats, levels, profile_df, sensitivity_df, strike_support_df, expiration_support_df, wall_credibility_info, scenarios_df, spot, spot_source, date_label, num_exps, spot_info=None, run_metadata=None, expected_move_info=None):
+def build_dashboard(gex_df, stats, levels, wall_credibility_info, spot, spot_source, date_label, num_exps, spot_info=None, run_metadata=None, expected_move_info=None):
     df = gex_df.copy().sort_values("strike").reset_index(drop=True)
     if df.empty:
         print("No data to plot.")
@@ -493,33 +333,18 @@ def build_dashboard(gex_df, hm_gex, hm_iv, stats, levels, profile_df, sensitivit
     regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
 
     bar_chart_json = build_bar_chart_json(df, strikes, net_gex, levels, spot)
-    profile_chart_json = build_profile_chart_json(profile_df, levels, spot, regime_info)
     stats_html = build_stats_html(stats, levels, date_label, spot_source, spot, regime_info)
     status_html = build_status_html(stats, spot_info=spot_info, run_metadata=run_metadata)
     wall_credibility_html = build_wall_credibility_html(wall_credibility_info)
-    scenarios_html = build_scenarios_html(scenarios_df)
-    strike_support_html = build_strike_support_html(strike_support_df)
-    expiration_support_html = build_expiration_support_html(expiration_support_df)
-    gex_hm_html = build_heatmap_html(hm_gex, spot, "Net GEX Heatmap", is_iv=False)
-    sensitivity_html = build_sensitivity_html(sensitivity_df)
-    iv_hm_html = build_heatmap_html(hm_iv, spot, "IV Heatmap", is_iv=True)
     expected_move_html = build_expected_move_html(expected_move_info)
 
-    # Inject expected-move levels into both charts
+    # Inject expected-move levels into the bar chart
     em_bar_shapes, em_bar_annots = _em_level_shapes_bar(expected_move_info)
-    em_prof_shapes, em_prof_annots = _em_level_shapes_profile(expected_move_info)
-
     if em_bar_shapes:
         fig1 = json.loads(bar_chart_json)
         fig1["layout"]["shapes"].extend(em_bar_shapes)
         fig1["layout"]["annotations"].extend(em_bar_annots)
         bar_chart_json = json.dumps(fig1)
-
-    if em_prof_shapes:
-        fig2 = json.loads(profile_chart_json)
-        fig2["layout"]["shapes"].extend(em_prof_shapes)
-        fig2["layout"]["annotations"].extend(em_prof_annots)
-        profile_chart_json = json.dumps(fig2)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -549,37 +374,9 @@ def build_dashboard(gex_df, hm_gex, hm_iv, stats, levels, profile_df, sensitivit
     font-size: 15px;
     font-weight: bold;
   }}
-  #tab-bar {{
-    display: flex;
-    gap: 6px;
-    padding: 6px 10px 4px 10px;
-    border-bottom: 1px solid #333;
-  }}
-  .tab-btn {{
-    background: #22263f;
-    color: #cfd3ff;
-    border: 1px solid #454b7a;
-    border-radius: 7px;
-    padding: 6px 10px;
-    font-size: 12px;
-    cursor: pointer;
-  }}
-  .tab-btn.active {{
-    background: #35408c;
-    color: white;
-    border-color: #6f7cff;
-  }}
-  .chart-panel {{
+  #chart1 {{
     width: 100%;
-    height: calc(100vh - 72px);
-    display: none;
-  }}
-  .chart-panel.active {{
-    display: block;
-  }}
-  #chart1, #chart2 {{
-    width: 100%;
-    height: 100%;
+    height: calc(100vh - 32px);
   }}
   #right {{
     width: 360px;
@@ -649,17 +446,6 @@ def build_dashboard(gex_df, hm_gex, hm_iv, stats, levels, profile_df, sensitivit
     border: 1px solid #222;
     text-align: center;
   }}
-  .hm-cell {{
-    color: white;
-    font-weight: bold;
-    font-size: 8.5px;
-  }}
-  .hm-strike {{
-    color: #aaa;
-    font-size: 9px;
-    background: #222;
-    text-align: center;
-  }}
   .empty-note {{
     color: #999;
     font-size: 10px;
@@ -671,19 +457,7 @@ def build_dashboard(gex_df, hm_gex, hm_iv, stats, levels, profile_df, sensitivit
 
 <div id="left">
   <div id="left-header">SPX Gamma Exposure — {exp_text}</div>
-
-  <div id="tab-bar">
-    <button class="tab-btn active" onclick="showTab('gexTab', this)">Strike GEX</button>
-    <button class="tab-btn" onclick="showTab('profileTab', this)">GEX Profile</button>
-  </div>
-
-  <div id="gexTab" class="chart-panel active">
-    <div id="chart1"></div>
-  </div>
-
-  <div id="profileTab" class="chart-panel">
-    <div id="chart2"></div>
-  </div>
+  <div id="chart1"></div>
 </div>
 
 <div id="right">
@@ -691,36 +465,11 @@ def build_dashboard(gex_df, hm_gex, hm_iv, stats, levels, profile_df, sensitivit
   {expected_move_html}
   {status_html}
   {wall_credibility_html}
-  {scenarios_html}
-  {strike_support_html}
-  {expiration_support_html}
-  {gex_hm_html}
-  {sensitivity_html}
-  {iv_hm_html}
 </div>
 
 <script>
-  function showTab(tabId, btn) {{
-    document.querySelectorAll('.chart-panel').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-    document.getElementById(tabId).classList.add('active');
-    btn.classList.add('active');
-
-    setTimeout(function() {{
-      Plotly.Plots.resize('chart1');
-      Plotly.Plots.resize('chart2');
-    }}, 60);
-  }}
-
   var fig1 = {bar_chart_json};
   Plotly.newPlot('chart1', fig1.data, fig1.layout, {{
-    responsive: true,
-    displayModeBar: false,
-    scrollZoom: false
-  }});
-
-  var fig2 = {profile_chart_json};
-  Plotly.newPlot('chart2', fig2.data, fig2.layout, {{
     responsive: true,
     displayModeBar: false,
     scrollZoom: false
