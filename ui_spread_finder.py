@@ -138,6 +138,123 @@ def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> tuple[dict, s
     return quotes, target_exp
 
 
+def _build_spread_finder_excel(
+    *,
+    forecast: dict,
+    plan,
+    spread_tiers: list,
+    gex_ctx,
+    gex_adj: dict,
+    metrics: dict,
+    spx_ref: float,
+    vix: float,
+    ticker: str,
+    week_start: str,
+    chain_exp: str | None,
+) -> bytes:
+    """Build an .xlsx workbook of the current spread-finder forecast and tiers.
+
+    Only call this after the forecast/plan/tiers have actually been generated
+    (the render function already gates on that via an early return when no
+    model is loaded), so every field referenced here is guaranteed populated.
+    """
+    from io import BytesIO
+
+    # ── Summary sheet ──
+    summary_rows = [
+        ("Ticker",                    ticker),
+        ("Week start (Mon)",          week_start),
+        ("Chain expiration",          chain_exp or "n/a"),
+        ("Generated at",              getattr(plan, "generated_at", "")),
+        ("SPX reference close",       round(spx_ref, 2)),
+        ("VIX level",                 round(vix, 2)),
+        ("", ""),
+        ("Point estimate %",          round(forecast["point_pct"] * 100, 4)),
+        (f"PI upper % ({forecast['confidence_level']}% CI)",
+                                      round(forecast["upper_pct"] * 100, 4)),
+        (f"PI lower % ({forecast['confidence_level']}% CI)",
+                                      round(forecast["lower_pct"] * 100, 4)),
+        ("VIX-implied weekly %",      round(forecast["vix_implied_pct"] * 100, 4)),
+        ("Model vs VIX %",            round(forecast["model_vs_vix"] * 100, 4)),
+        ("", ""),
+        ("Effective range %",         round(plan.effective_range_pct * 100, 4)),
+        ("Effective upper px",        round(plan.effective_upper_px, 2)),
+        ("Effective lower px",        round(plan.effective_lower_px, 2)),
+        ("Buffer %",                  round(plan.buffer_pct * 100, 4)),
+        ("Buffer pts",                round(plan.buffer_pts, 2)),
+        ("Buffer reason",             plan.buffer_reason),
+        ("Recommended wing width",    plan.recommended_width),
+        ("", ""),
+        ("GEX regime",                gex_ctx.gamma_regime),
+        ("GEX flag",                  gex_adj.get("gex_regime_flag")),
+        ("Zero gamma",                round(gex_ctx.zero_gamma, 2)),
+        ("Call wall",                 round(gex_ctx.call_wall, 2)),
+        ("Put wall",                  round(gex_ctx.put_wall, 2)),
+        ("Net GEX ($)",               gex_ctx.net_gex),
+        ("", ""),
+        ("Model OOS R²",              round(metrics["oos_r2"], 6)),
+        ("Model MAE %",               round(metrics["mae_pct"] * 100, 4)),
+        ("", ""),
+        ("Event: FOMC",               plan.has_fomc),
+        ("Event: CPI",                plan.has_cpi),
+        ("Event: NFP",                plan.has_nfp),
+        ("Event: OPEX",               plan.has_opex),
+        ("Event count",               plan.event_count),
+    ]
+    summary_df = pd.DataFrame(summary_rows, columns=["Field", "Value"])
+
+    # ── Spread tiers sheet: one row per (tier, side, wing width) ──
+    tier_rows = []
+    for tier in spread_tiers:
+        for side in list(tier.call_spreads or []) + list(tier.put_spreads or []):
+            tier_rows.append({
+                "Tier":             tier.label,
+                "Risk level":       tier.risk_level,
+                "Range %":          round(tier.range_pct * 100, 4),
+                "Side":             side.side,
+                "Wing width":       side.wing_width,
+                "Short strike":     side.short_strike,
+                "Long strike":      side.long_strike,
+                "Short % OTM":      round(side.short_pct * 100, 4),
+                "Est credit":       round(side.estimated_credit, 2),
+                "Credit source":    side.credit_source,
+                "Max profit":       round(side.max_profit, 2),
+                "Max loss":         round(side.max_loss, 2),
+                "Breakeven":        round(side.breakeven, 2),
+                "Credit ratio":     round(side.credit_ratio, 4),
+                "Meets min credit": side.meets_min_credit,
+                "Below min width":  getattr(side, "below_min_width", False),
+            })
+    tiers_df = pd.DataFrame(tier_rows)
+
+    # ── Warnings sheet (only if the plan produced any) ──
+    warnings_df = pd.DataFrame(
+        {"Warning": list(getattr(plan, "warnings", []) or [])}
+    )
+
+    # ── Write workbook ──
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+        if not tiers_df.empty:
+            tiers_df.to_excel(writer, sheet_name="Spread Tiers", index=False)
+        if not warnings_df.empty:
+            warnings_df.to_excel(writer, sheet_name="Warnings", index=False)
+
+        # Auto-size columns for readability
+        for sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            for col_cells in ws.columns:
+                max_len = max(
+                    (len(str(cell.value)) for cell in col_cells if cell.value is not None),
+                    default=10,
+                )
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 2, 40)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX", weekly_em: dict = None):
     """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
     import yfinance as yf
@@ -509,6 +626,37 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         f"{metrics['oos_r2']:.4f}",
         f"MAE: {metrics['mae_pct']*100:.2f}%",
     )
+
+    # ── Excel export ──
+    # Reaching this point guarantees the forecast/plan/tiers have all been
+    # generated (the no-model branch above returns early), so the workbook
+    # is always populated with real data — never a blank template.
+    _xlsx_col, _ = st.columns([1, 4])
+    with _xlsx_col:
+        try:
+            _xlsx_bytes = _build_spread_finder_excel(
+                forecast    = forecast,
+                plan        = plan,
+                spread_tiers= spread_tiers,
+                gex_ctx     = gex_ctx,
+                gex_adj     = gex_adj,
+                metrics     = metrics,
+                spx_ref     = spx_close_input,
+                vix         = vix_input,
+                ticker      = ticker,
+                week_start  = week_start,
+                chain_exp   = chain_exp,
+            )
+            st.download_button(
+                label       = "Export to Excel",
+                data        = _xlsx_bytes,
+                file_name   = f"spread_finder_{ticker}_{week_start}.xlsx",
+                mime        = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key         = f"_sf_xlsx_{ticker}_{week_start}",
+            )
+        except Exception as _xlsx_err:
+            st.caption(f"Excel export unavailable: {_xlsx_err}")
 
     st.markdown("---")
 
