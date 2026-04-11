@@ -361,21 +361,43 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
 
     sorted_exps = sorted([e for e in avail_exps if e >= today_str])
 
+    # "This Week" ends at THIS Friday's close (matches the sidebar filter and
+    # the weekly EM freeze convention). On Friday itself days_to_fri == 0 and
+    # the bucket naturally collapses to just today's expiration.
+    days_to_fri = (4 - ref_date.weekday()) % 7
+    this_friday = ref_date + timedelta(days=days_to_fri)
+    this_friday_str = this_friday.strftime("%Y-%m-%d")
+
     # Cycle cutoff = next standard 3rd-Friday OpEx. find_monthly_expiration
     # already rolls to next month once this month's 3rd Friday is behind us.
     cycle_end = find_monthly_expiration(sorted_exps, ref_date)
-    # Defensive fallback: if no 3rd-Friday exp is available (shouldn't happen
-    # with SPX), fall back to calendar month-end so we still show something.
+
+    # If this week contains the upcoming 3rd-Friday OpEx (i.e. we're in OpEx
+    # week), the OpEx-cycle bucket would be empty because every exp through
+    # cycle_end is already in the This Week bucket. In that case, advance
+    # cycle_end to the NEXT 3rd Friday so the user sees the upcoming cycle's
+    # building gamma cluster rather than a blank bar. Pass (this_friday + 1d)
+    # as the reference so find_monthly_expiration's own rollover math picks
+    # the correct next OpEx.
+    if cycle_end and cycle_end <= this_friday_str:
+        next_cycle_ref = this_friday + timedelta(days=1)
+        rolled = find_monthly_expiration(sorted_exps, next_cycle_ref)
+        if rolled:
+            cycle_end = rolled
+
+    # Defensive fallback: if no 3rd-Friday exp is available at all (shouldn't
+    # happen with SPX), fall back to calendar month-end so we still show
+    # something.
     if not cycle_end:
         import calendar as _cal
         cycle_end = run_now.replace(
             day=_cal.monthrange(run_now.year, run_now.month)[1]
         ).strftime("%Y-%m-%d")
 
-    # Classify by days-to-expiration from today
+    # Classify expirations into non-overlapping buckets
     dte0_exps = []   # nearest single expiration
-    week_exps = []   # 2–7 calendar days out (rest of this week)
-    cycle_exps = []  # 8+ days out through the cycle-end (next 3rd Friday)
+    week_exps = []   # after 0DTE, through THIS Friday
+    cycle_exps = []  # after this Friday, through cycle_end (next 3rd Friday)
 
     for exp_str in sorted_exps:
         exp_date = _date.fromisoformat(exp_str)
@@ -385,7 +407,7 @@ def fetch_multi_tf_gex(tradier_token: str, avail_exps: tuple, spot: float, rfr: 
         if not dte0_exps and days_out <= 1:
             # Nearest expiration (today or tomorrow = 0DTE)
             dte0_exps.append(exp_str)
-        elif days_out <= 7:
+        elif exp_str <= this_friday_str:
             week_exps.append(exp_str)
         else:
             cycle_exps.append(exp_str)
