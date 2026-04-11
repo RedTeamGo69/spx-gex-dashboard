@@ -640,7 +640,16 @@ def main():
             days_to_fri = (4 - run_now.weekday()) % 7
             # days_to_fri == 0 on Friday itself, which is correct (include today)
             fri = (run_now + timedelta(days=days_to_fri)).strftime("%Y-%m-%d")
-            selected = [e for e in avail if today_str <= e <= fri]
+            # Friday-after-close edge case: Tradier drops today's expired 0DTE
+            # from the expirations list once it's settled, so every entry in
+            # future_exps is already past this Friday. In that case the naive
+            # [today_str .. fri] window is empty — roll forward a week so the
+            # user sees next week's expirations instead of "No expirations
+            # selected". Same handling for any day where every future exp is
+            # already past this Friday.
+            if future_exps and future_exps[0] > fri:
+                fri = (run_now + timedelta(days=days_to_fri + 7)).strftime("%Y-%m-%d")
+            selected = [e for e in future_exps if e <= fri]
         elif "OpEx" in mode:
             # Select expirations from today through the next standard 3rd-Friday
             # OpEx. find_monthly_expiration rolls to next month's OpEx once the
@@ -649,11 +658,20 @@ def main():
             # second half of a calendar month (the old "This month" behavior).
             cycle_end = find_monthly_expiration(future_exps, run_now.date())
             if cycle_end:
-                selected = [e for e in avail if today_str <= e <= cycle_end]
+                selected = [e for e in future_exps if e <= cycle_end]
             else:
                 selected = []
         else:
             selected = st.multiselect("Pick expirations", future_exps, default=future_exps[:1])
+
+        # Final safety net: if the chosen mode somehow produced an empty list
+        # but there ARE future expirations available, fall back to the nearest
+        # one rather than killing the page with st.stop(). Covers any residual
+        # edge case (e.g. OpEx day post-close where the 3rd-Friday exp has been
+        # removed from Tradier's list).
+        if not selected and future_exps:
+            selected = [future_exps[0]]
+            st.caption(f"(No exps matched the selected window — falling back to {future_exps[0]})")
 
         if not selected:
             st.warning("No expirations selected.")
