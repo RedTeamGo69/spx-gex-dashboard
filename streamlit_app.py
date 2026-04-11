@@ -464,6 +464,106 @@ def _get_rf_conn():
     return conn
 
 
+def _render_danger_zone():
+    """
+    Sidebar "Reset all data" button.
+
+    Wiped on confirm:
+      - every row in every Postgres table this app writes to
+      - every st.session_state key that holds cached / historical state
+      - phase1/.rate_cache.json and any pickled HAR models in range_finder/models/
+
+    Gated behind:
+      1. a collapsed expander (not visible unless the user opens it)
+      2. a confirmation checkbox (the button stays disabled until ticked)
+
+    Clearing the session is a best-effort pass; any single failing table or
+    file does NOT abort the rest of the reset.
+    """
+    with st.expander("⚠️ Danger zone", expanded=False):
+        st.warning(
+            "**Reset all data** — permanently deletes:\n\n"
+            "- GEX snapshots (History tab, Daily Summary, Zero-Gamma trend)\n"
+            "- EM snapshots (daily, weekly, OpEx cycle)\n"
+            "- Trade log & spread plans\n"
+            "- Fitted HAR models (will need refitting)\n"
+            "- Weekly/monthly range-finder inputs (SPX/VIX OHLC, macro, events, features)\n\n"
+            "The next scheduled cron run will start repopulating the tables from scratch."
+        )
+        confirm = st.checkbox(
+            "I understand this permanently deletes all GEX history, EM snapshots, trade log, and fitted models",
+            key="_danger_zone_confirm",
+        )
+        if st.button(
+            "🗑️ Reset all data",
+            disabled=not confirm,
+            type="secondary",
+            use_container_width=True,
+            key="_danger_zone_reset_btn",
+        ):
+            # ── Step 1: truncate every known Postgres table ──
+            try:
+                from phase1.gex_history import reset_all_data
+                results = reset_all_data()
+            except Exception as e:
+                st.error(f"Postgres reset failed: {e}")
+                return
+
+            # ── Step 2: clear every cached / historical session_state key ──
+            session_prefixes = (
+                "em_snapshot_",
+                "sf_", "_sf_", "_rtf_",
+                "monday_open_", "monday_vix_",
+            )
+            session_exact = {
+                "_ai_briefing", "_gemini_backoff_until",
+                "_last_snapshot_utc",
+                "last_save_ok", "last_save_time", "last_save_error",
+                "gex_history",  # legacy key from the old session fallback
+            }
+            cleared_session_keys = 0
+            for k in list(st.session_state.keys()):
+                if k in session_exact or any(k.startswith(p) for p in session_prefixes):
+                    st.session_state.pop(k, None)
+                    cleared_session_keys += 1
+
+            # ── Step 3: delete on-disk caches ──
+            import glob
+            cleared_files: list[str] = []
+            for fpath in ("phase1/.rate_cache.json",):
+                try:
+                    os.remove(fpath)
+                    cleared_files.append(fpath)
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    st.warning(f"Could not delete {fpath}: {e}")
+            for pkl in glob.glob("range_finder/models/*.pkl"):
+                try:
+                    os.remove(pkl)
+                    cleared_files.append(pkl)
+                except Exception as e:
+                    st.warning(f"Could not delete {pkl}: {e}")
+
+            # ── Step 4: report ──
+            ok_rows = {k: v for k, v in results.items() if isinstance(v, int)}
+            bad_tables = {k: v for k, v in results.items() if not isinstance(v, int)}
+            total_rows = sum(ok_rows.values())
+            st.success(
+                f"Reset complete. Deleted **{total_rows}** rows across "
+                f"**{len(ok_rows)}** tables · cleared **{cleared_session_keys}** session keys · "
+                f"removed **{len(cleared_files)}** cache files."
+            )
+            if ok_rows:
+                st.json({"tables": ok_rows, "session_keys_cleared": cleared_session_keys,
+                         "files_removed": cleared_files})
+            if bad_tables:
+                st.warning(f"Some tables could not be truncated (may not exist yet): {bad_tables}")
+            # Clear the confirmation checkbox state so the button disables itself
+            st.session_state.pop("_danger_zone_confirm", None)
+            st.rerun()
+
+
 def _render_trade_log_tab():
     """Display the spread_log table with color-coded outcomes and summary stats."""
     import pandas as pd
@@ -893,6 +993,8 @@ def main():
         render_scenarios_table(data.scenarios_df)
         st.divider()
         render_data_quality(data.stats, data.staleness_info)
+        st.divider()
+        _render_danger_zone()
 
     # ── Expected Move panel (top of page) ──
     em_data = em_analysis.get("expected_move", {})
