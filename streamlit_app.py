@@ -178,6 +178,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
 
     rfr_info = fetch_risk_free_rate(fred_key)
     rfr = rfr_info["rate"]
+    rfr_curve = rfr_info.get("curve")  # None → flat-rate fallback path
 
     avail = client.get_expirations(ticker)
     if not avail:
@@ -192,6 +193,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         get_chain_cached_func=client.get_chain_cached,
         r=rfr,
         now=run_now,
+        r_curve=rfr_curve,
     )
     spot = spot_info["spot"]
     spot_source = spot_info["source"]
@@ -199,10 +201,12 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     target_exps = list(selected_exps)
 
     gex_df, stats, all_options, strike_support_df, exp_support_df = (
-        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now)
+        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now,
+                                 r_curve=rfr_curve)
     )
 
-    levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
+    levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr,
+                                         r_curve=rfr_curve)
     has_0dte = any(e == today_str for e in target_exps)
     staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)

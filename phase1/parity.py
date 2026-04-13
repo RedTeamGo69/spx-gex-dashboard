@@ -81,10 +81,23 @@ def parity_candidate_weight(strike, tradier_spot, combined_spread):
 
     return float(spread_component * distance_component)
 
-def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RATE, T=None):
+def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RATE,
+                                T=None, r_curve=None):
     """
     Core parity engine with diagnostics.
+
+    When r_curve is provided, the rate used for the parity discount factor
+    exp(-r*T) is interpolated from the curve at this expiration's own DTE,
+    replacing the flat scalar `r`. For short-dated parity checks this
+    barely matters (exp(-r*T) ≈ 1), but for the nearest 30-60 DTE chain
+    it removes ~1-2 points of implied-spot error per 10 bps of 1M-vs-3M
+    spread.
     """
+    # Resolve the tenor-appropriate rate for this expiration's T. When
+    # no curve is supplied or T is unknown, fall through to the flat `r`.
+    if r_curve and T and T > 0:
+        from phase1.rates import interpolate_rate as _interp_rate
+        r = _interp_rate(r_curve, T * 365.25, fallback=r)
     diagnostics = {
         "call_quality": summarize_quote_quality(calls or [], MAX_PARITY_SPREAD),
         "put_quality": summarize_quote_quality(puts or [], MAX_PARITY_SPREAD),
@@ -208,11 +221,12 @@ def _compute_implied_spot_core(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RA
     }  
 
 
-def compute_implied_spot(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RATE, T=None):
+def compute_implied_spot(calls, puts, tradier_spot, r=DEFAULT_RISK_FREE_RATE, T=None,
+                          r_curve=None):
     """
     Compatibility wrapper.
     """
-    core = _compute_implied_spot_core(calls, puts, tradier_spot, r=r, T=T)
+    core = _compute_implied_spot_core(calls, puts, tradier_spot, r=r, T=T, r_curve=r_curve)
     return core["spot"], core["source"]
 
 
@@ -223,6 +237,7 @@ def get_reference_spot_details(
     get_chain_cached_func,
     r=DEFAULT_RISK_FREE_RATE,
     now=None,
+    r_curve=None,
 ):
     """
     Full reference-spot decision engine.
@@ -265,7 +280,7 @@ def get_reference_spot_details(
     calls = entry["calls"]
     puts = entry["puts"]
 
-    core = _compute_implied_spot_core(calls, puts, tradier_spot, r=r, T=T)
+    core = _compute_implied_spot_core(calls, puts, tradier_spot, r=r, T=T, r_curve=r_curve)
 
     details["spot"] = round(float(core["spot"]), 2)
     details["source"] = core["source"]
@@ -284,6 +299,7 @@ def get_reference_spot(
     get_chain_cached_func,
     r=DEFAULT_RISK_FREE_RATE,
     now=None,
+    r_curve=None,
 ):
     details = get_reference_spot_details(
         ticker=ticker,
@@ -292,5 +308,6 @@ def get_reference_spot(
         get_chain_cached_func=get_chain_cached_func,
         r=r,
         now=now,
+        r_curve=r_curve,
     )
     return details["spot"], details["source"]

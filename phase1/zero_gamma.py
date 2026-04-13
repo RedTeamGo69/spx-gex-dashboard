@@ -18,9 +18,27 @@ from phase1.config import (
     DEFAULT_RISK_FREE_RATE,
 )
 from phase1.gex_engine import bs_gamma_vec
+from phase1.rates import interpolate_rate
+
+DAYS_PER_YEAR_CAL = 365.25  # calendar-day conversion for FRED rate lookup
 
 
-def _sweep_gex_at_prices(all_options, test_prices, r):
+def _build_per_option_rate(T_arr: np.ndarray, r_scalar: float, r_curve) -> np.ndarray | float:
+    """
+    When a term-structure curve is provided, interpolate a rate for each
+    option's own DTE. Returns either a (M,) array (curve path) or the
+    scalar r (flat-rate path) — bs_gamma_vec handles both.
+    """
+    if not r_curve:
+        return r_scalar
+    days = T_arr * DAYS_PER_YEAR_CAL
+    return np.array(
+        [interpolate_rate(r_curve, float(d), fallback=r_scalar) for d in days],
+        dtype=float,
+    )
+
+
+def _sweep_gex_at_prices(all_options, test_prices, r, r_curve=None):
     """
     Compute total signed GEX proxy at each test price.
 
@@ -40,7 +58,8 @@ def _sweep_gex_at_prices(all_options, test_prices, r):
     sign_arr = np.array([o[3] for o in all_options], dtype=float)
     T_arr = np.array([o[4] for o in all_options], dtype=float)
 
-    gamma_matrix = bs_gamma_vec(test_prices, K_arr, T_arr, r, iv_arr)
+    r_input = _build_per_option_rate(T_arr, r, r_curve)
+    gamma_matrix = bs_gamma_vec(test_prices, K_arr, T_arr, r_input, iv_arr)
     weights = sign_arr * oi_arr * 100.0
     total_gex = (gamma_matrix * weights).sum(axis=1) * (test_prices ** 2)
 
@@ -96,7 +115,8 @@ def _compute_sweep_range_pct(atm_iv=None):
     return ZG_SWEEP_RANGE_PCT
 
 
-def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
+def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None,
+                              r_curve=None):
     """
     Return rich diagnostics for zero-gamma solving.
 
@@ -106,6 +126,11 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv
 
     If atm_iv is provided and ZG_SWEEP_DYNAMIC is True, the sweep range
     scales with volatility for better coverage in high-vol environments.
+
+    r / r_curve: when r_curve is provided, each option uses the tenor-
+    appropriate rate from the curve instead of the flat `r` scalar. This
+    keeps the zero-gamma level consistent with the per-expiration BS
+    gamma computed upstream in gex_engine.calculate_all.
     """
     if not all_options:
         return {
@@ -125,14 +150,14 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv
     hi = float(spot) * (1 + range_pct)
 
     coarse_prices = np.arange(lo, hi + ZG_SWEEP_STEP, ZG_SWEEP_STEP, dtype=float)
-    coarse_gex = _sweep_gex_at_prices(all_options, coarse_prices, r)
+    coarse_gex = _sweep_gex_at_prices(all_options, coarse_prices, r, r_curve=r_curve)
     coarse_cross = _find_nearest_crossing_details(coarse_prices, coarse_gex, spot)
 
     if coarse_cross is not None:
         fine_lo = coarse_cross["crossing"] - ZG_SWEEP_STEP
         fine_hi = coarse_cross["crossing"] + ZG_SWEEP_STEP
         fine_prices = np.arange(fine_lo, fine_hi + ZG_FINE_STEP, ZG_FINE_STEP, dtype=float)
-        fine_gex = _sweep_gex_at_prices(all_options, fine_prices, r)
+        fine_gex = _sweep_gex_at_prices(all_options, fine_prices, r, r_curve=r_curve)
         fine_cross = _find_nearest_crossing_details(fine_prices, fine_gex, spot)
 
         if fine_cross is not None:
@@ -180,7 +205,7 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv
     fine_lo = fallback_center - ZG_SWEEP_STEP
     fine_hi = fallback_center + ZG_SWEEP_STEP
     fine_prices = np.arange(fine_lo, fine_hi + ZG_FINE_STEP, ZG_FINE_STEP, dtype=float)
-    fine_gex = _sweep_gex_at_prices(all_options, fine_prices, r)
+    fine_gex = _sweep_gex_at_prices(all_options, fine_prices, r, r_curve=r_curve)
 
     fine_cross = _find_nearest_crossing_details(fine_prices, fine_gex, spot)
     if fine_cross is not None:
@@ -213,8 +238,10 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv
     }
 
 
-def zero_gamma_sweep(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None):
-    return zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv)["zero_gamma"]
+def zero_gamma_sweep(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv=None,
+                     r_curve=None):
+    return zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv,
+                                    r_curve=r_curve)["zero_gamma"]
 
 
 def _estimate_atm_iv(all_options, spot):
@@ -237,7 +264,7 @@ def _estimate_atm_iv(all_options, spot):
     return float(sum(iv * w / w_sum for iv, w in zip(ivs, weights)))
 
 
-def _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp=None):
+def _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp=None, r_curve=None):
     """
     Compute zero-gamma separately for the nearest expiry (typically 0DTE) and
     the remaining expirations. This reveals whether intraday gamma is dominated
@@ -268,12 +295,12 @@ def _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp=None):
 
     if len(nearest_opts) >= 4:
         atm_iv = _estimate_atm_iv(nearest_opts, spot)
-        zg = zero_gamma_sweep(nearest_opts, spot, r=r, atm_iv=atm_iv)
+        zg = zero_gamma_sweep(nearest_opts, spot, r=r, atm_iv=atm_iv, r_curve=r_curve)
         result["nearest_exp_zero_gamma"] = round(float(zg), 2)
 
     if len(other_opts) >= 4:
         atm_iv = _estimate_atm_iv(other_opts, spot)
-        zg = zero_gamma_sweep(other_opts, spot, r=r, atm_iv=atm_iv)
+        zg = zero_gamma_sweep(other_opts, spot, r=r, atm_iv=atm_iv, r_curve=r_curve)
         result["other_exp_zero_gamma"] = round(float(zg), 2)
 
     return result

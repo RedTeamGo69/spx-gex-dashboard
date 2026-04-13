@@ -97,8 +97,10 @@ def test_zero_gamma_sweep_details_flags_fallback_when_no_crossing():
 def test_zero_gamma_sweep_details_detects_true_crossing(monkeypatch):
     import numpy as np
 
-    def fake_sweep(_all_options, prices, _r):
-        # _sweep_gex_at_prices returns total GEX (already Spot²-scaled)
+    def fake_sweep(_all_options, prices, _r, r_curve=None):
+        # _sweep_gex_at_prices returns total GEX (already Spot²-scaled).
+        # r_curve is accepted but ignored — this test pins the crossing
+        # location, not the rate path.
         return np.array([float(p - 100.0) for p in prices])
 
     import phase1.zero_gamma as zero_gamma_mod

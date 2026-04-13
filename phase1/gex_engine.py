@@ -15,6 +15,9 @@ from phase1.config import (
 from phase1.model_inputs import prepare_option_for_model
 from phase1.market_clock import compute_time_to_expiry_years
 from phase1.liquidity import build_strike_support_df, build_expiration_support_df
+from phase1.rates import interpolate_rate
+
+DAYS_PER_YEAR_CAL = 365.25  # calendar-day conversion for FRED rate lookup
 
 
 def fmt_gex(v):
@@ -55,6 +58,10 @@ def bs_gamma_vec(S_arr, K_arr, T_arr, r, sigma_arr):
     S_arr: (N,)
     K_arr: (M,)
     T_arr: (M,)
+    r:     scalar OR (M,) per-option rate array (for term-structure
+           interpolation — zero_gamma_sweep passes a curve-interpolated
+           rate per option so each option uses the rate appropriate for
+           its own DTE instead of a flat 3M scalar).
     sigma_arr: (M,)
 
     Returns: (N, M)
@@ -63,6 +70,11 @@ def bs_gamma_vec(S_arr, K_arr, T_arr, r, sigma_arr):
     K = np.asarray(K_arr, dtype=float)
     T = np.asarray(T_arr, dtype=float)
     sigma = np.asarray(sigma_arr, dtype=float)
+
+    # r can be scalar or an array aligned to K/T/sigma. We only filter it
+    # in the array case so the scalar fast-path stays untouched.
+    r_is_array = (np.ndim(r) > 0)
+    r_array = np.asarray(r, dtype=float) if r_is_array else None
 
     gamma = np.zeros((S.shape[0], K.shape[0]), dtype=float)
 
@@ -73,20 +85,33 @@ def bs_gamma_vec(S_arr, K_arr, T_arr, r, sigma_arr):
     K_v = K[opt_valid]
     T_v = T[opt_valid]
     sig_v = sigma[opt_valid]
+    r_v = r_array[opt_valid] if r_is_array else r
 
     sqrt_T = np.sqrt(T_v)
-    d1 = (np.log(S / K_v) + (r + 0.5 * sig_v**2) * T_v) / (sig_v * sqrt_T)
+    d1 = (np.log(S / K_v) + (r_v + 0.5 * sig_v**2) * T_v) / (sig_v * sqrt_T)
     g = norm.pdf(d1) / (S * sig_v * sqrt_T)
 
     gamma[:, opt_valid] = g
     return gamma
 
 
-def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE, now=None):
+def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
+                  now=None, r_curve=None):
     """
     Hybrid mode:
       - use direct IV if available
       - otherwise infer synthetic IV from vendor gamma if possible
+
+    Parameters:
+        r:       flat-rate back-compat scalar. Used as the fallback when
+                 `r_curve` is not provided (existing behavior — the same
+                 rate for every expiration).
+        r_curve: optional term-structure dict {dte_days: rate} from
+                 fetch_risk_free_rate()["curve"]. When provided, each
+                 expiration iteration looks up the rate for its own DTE
+                 via interpolate_rate(), so 0DTE uses ~1M, 45DTE uses
+                 something between 1M and 3M, etc. This removes the
+                 flat-3M bias that distorts OpEx-cycle BS gamma.
 
     Returns:
         gex_df, stats, all_options, strike_support_df, expiration_support_df
@@ -135,6 +160,12 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE, n
     for i, exp in enumerate(all_exps):
         T, _exp_close = compute_time_to_expiry_years(exp, ts=now_ny, floor=T_FLOOR)
 
+        # Per-expiration rate: when a curve is available, interpolate to
+        # this expiration's own DTE so BS gamma and any rate-sensitive
+        # downstream math use the right point on the term structure
+        # instead of the flat 3M scalar.
+        r_for_exp = interpolate_rate(r_curve, T * DAYS_PER_YEAR_CAL, fallback=r)
+
         entry = client.get_chain_cached(ticker, exp)
         calls_raw = entry["calls"]
         puts_raw = entry["puts"]
@@ -155,7 +186,7 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE, n
                 zero_oi_filtered_count += 1
                 continue
 
-            prep = prepare_option_for_model(raw_opt, sign, T, spot, r)
+            prep = prepare_option_for_model(raw_opt, sign, T, spot, r_for_exp)
             norm_opt = prep["normalized"]
 
             if not prep["accepted"]:

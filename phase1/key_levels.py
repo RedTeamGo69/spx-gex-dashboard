@@ -92,7 +92,16 @@ def _find_wall_cluster(df_subset, sort_col, ascending, cluster_radius=25, top_n=
     }
 
 
-def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
+def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE,
+                    r_curve=None):
+    """
+    Wall / zero-gamma level detection.
+
+    r and r_curve mirror calculate_all(): the curve (when provided) is
+    interpolated per-option inside zero_gamma_sweep so each expiration
+    uses its tenor-appropriate rate; the scalar `r` is the flat-rate
+    fallback.
+    """
     if gex_df.empty:
         return {
             "call_wall": spot,
@@ -122,7 +131,8 @@ def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
     if all_options:
         # Compute ATM IV for dynamic sweep range
         atm_iv = _estimate_atm_iv(all_options, spot)
-        zg_details = zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv)
+        zg_details = zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv,
+                                              r_curve=r_curve)
         zg = zg_details["zero_gamma"]
         print(
             f"  Zero gamma (sweep): ${zg:.2f} "
@@ -156,7 +166,8 @@ def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE):
         exps_in_options = set(o[5] for o in all_options if len(o) > 5)
         if exps_in_options:
             nearest_exp = min(exps_in_options)
-    per_exp_zg = _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp)
+    per_exp_zg = _compute_per_expiry_zero_gamma(all_options, spot, r, nearest_exp,
+                                                r_curve=r_curve)
 
     if per_exp_zg["nearest_exp_zero_gamma"] is not None:
         print(
