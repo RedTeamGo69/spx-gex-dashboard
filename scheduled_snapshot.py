@@ -125,7 +125,11 @@ def capture_snapshot():
 
     rfr_info = fetch_risk_free_rate(fred_key)
     rfr = rfr_info["rate"]
+    rfr_curve = rfr_info.get("curve")  # None → flat-rate fallback path
     _logger.info(f"Risk-free rate: {rfr:.4f} (source: {rfr_info['source']})")
+    if rfr_curve:
+        curve_summary = ", ".join(f"{int(k)}d={v*100:.2f}%" for k, v in sorted(rfr_curve.items()))
+        _logger.info(f"Risk-free curve: {curve_summary}")
 
     avail = client.get_expirations(ticker)
     if not avail:
@@ -140,6 +144,7 @@ def capture_snapshot():
         get_chain_cached_func=client.get_chain_cached,
         r=rfr,
         now=run_now,
+        r_curve=rfr_curve,
     )
     spot = spot_info["spot"]
     _logger.info(f"{ticker} Spot: {spot:.2f} (source: {spot_info['source']})")
@@ -149,7 +154,8 @@ def capture_snapshot():
 
     # ── Compute GEX ──
     gex_df, stats, all_options, _strike_sup, _exp_sup = (
-        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now)
+        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now,
+                                 r_curve=rfr_curve)
     )
 
     if gex_df.empty:
@@ -165,7 +171,8 @@ def capture_snapshot():
             _logger.error("GEX calculation returned empty — no data to save")
             sys.exit(1)
     else:
-        levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
+        levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr,
+                                             r_curve=rfr_curve)
         regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
     has_0dte = any(e == today_str for e in target_exps)
     staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
