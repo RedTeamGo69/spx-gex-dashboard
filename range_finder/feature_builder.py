@@ -338,9 +338,20 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     if not gex_df.empty:
         df = df.join(gex_df[["gex"]], how="left")
         df["gex_flag"] = df["gex"].apply(_gex_flag)
-        # Continuous GEX feature: normalized net GEX (divide by a reference scale
-        # so it's comparable across time; 1e9 is a reasonable scale for SPX GEX)
-        df["gex_normalized"] = df["gex"] / 1e9
+        # Continuous GEX feature: normalize raw GEX by spot² to cancel the
+        # spot² scaling embedded in the GEX formula
+        # (gex_engine.py:174 — sign × OI × gamma × 100 × spot²).
+        #
+        # Without this cancellation, as SPX rose from ~3000 to ~6800 over the
+        # last 6 years, the same underlying dealer gamma positioning would
+        # produce a ~5× larger gex_normalized value — turning this into a
+        # non-stationary "how high is SPX" proxy rather than a "what is the
+        # positioning" signal. Dividing by spot² (using the week's SPX open
+        # as the reference) gives a time-stationary feature that OLS can
+        # meaningfully regress on. Multiplied by 1e4 purely to bring the
+        # magnitude into the same order as the other features — OLS is
+        # scale-invariant so the exact constant doesn't affect the fit.
+        df["gex_normalized"] = df["gex"] / (weekly["spx_open"] ** 2) * 1e4
     else:
         df["gex"]            = np.nan
         df["gex_flag"]       = np.nan
