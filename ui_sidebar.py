@@ -213,14 +213,20 @@ def render_gex_stream(stats, levels, spot):
     """Sidebar GEX Stream panel — key metrics at a glance."""
     st.markdown("#### 📡 GEX Stream")
 
-    gex_ratio = stats.get("gex_ratio", 0)
+    gex_ratio = stats.get("gex_ratio")  # may be None — see gex_engine.py
     net_gex = stats.get("net_gex", 0)
     pc_ratio = stats.get("pc_ratio", 0)
     call_iv = stats.get("call_iv", 0)
     put_iv = stats.get("put_iv", 0)
 
-    # Color coding
-    gr_color = COLORS["positive"] if gex_ratio > 1 else COLORS["negative"]
+    # Color coding. gex_ratio is None in undefined cases: all-positive (+∞)
+    # paints positive, all-negative (0) paints negative, both-empty is muted.
+    if gex_ratio is None:
+        # We can't distinguish "+∞" from "empty chain" at this point, but
+        # the net_gex sign is a reliable proxy when there IS data.
+        gr_color = COLORS["positive"] if net_gex > 0 else COLORS["negative"]
+    else:
+        gr_color = COLORS["positive"] if gex_ratio > 1 else COLORS["negative"]
     ng_color = COLORS["positive"] if net_gex > 0 else COLORS["negative"]
     cw_c = COLORS["call_wall"]
     pw_c = COLORS["put_wall"]
@@ -231,15 +237,28 @@ def render_gex_stream(stats, levels, spot):
     # Format net GEX
     ng_fmt = stats.get("net_gex_fmt", f"{net_gex:.0f}")
 
-    # GEX Ratio sigma (rough heuristic: 1.0 = neutral)
-    gr_sigma = abs(gex_ratio - 1.0) / 0.5
-    gr_sigma_str = f"{gr_sigma:.1f}σ"
+    # GEX Ratio display. None is the "undefined" sentinel from gex_engine
+    # (all-positive regime → +∞, or empty chain). Disambiguate by checking
+    # net_gex sign: positive net_gex with None ratio means +∞; otherwise
+    # show "—" for truly undefined.
+    if gex_ratio is None:
+        if net_gex > 0:
+            gr_display = "∞"
+        elif net_gex < 0:
+            gr_display = "0.00"   # all-negative, fall through to the usual low-ratio display
+        else:
+            gr_display = "—"
+        gr_sigma_str = ""
+    else:
+        gr_display = f"{gex_ratio:.2f}"
+        gr_sigma = abs(gex_ratio - 1.0) / 0.5
+        gr_sigma_str = f"{gr_sigma:.1f}σ"
 
     stream_html = f"""
     <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
       <tr>
         <td style="color:{text_m};padding:3px 6px;">GEX Ratio</td>
-        <td style="color:{gr_color};font-weight:bold;text-align:right;padding:3px 6px;">{gex_ratio:.2f}</td>
+        <td style="color:{gr_color};font-weight:bold;text-align:right;padding:3px 6px;">{gr_display}</td>
         <td style="color:{text_m};font-size:10px;text-align:right;padding:3px 6px;">{gr_sigma_str}</td>
         <td style="color:{text_m};padding:3px 6px;">Net GEX</td>
         <td style="color:{ng_color};font-weight:bold;text-align:right;padding:3px 6px;">{ng_fmt}</td>
