@@ -66,60 +66,92 @@ def _get_rf_conn():
     return conn
 
 
-def _build_chain_quotes_for_spreads(data: GEXData, ticker: str) -> tuple[dict, str | None]:
-    """Build a strike→{call_bid, call_ask, put_bid, put_ask} lookup from cached chain data.
+def _spread_finder_target_friday(ref_date: "date_cls | None" = None) -> "date_cls":
+    """Return the calendar Friday of the week the Spread Finder is planning for.
 
-    Targets the next Friday expiration specifically, since the spread finder
-    builds weekly credit spreads that expire on Fridays.
+    The spread finder always forecasts and places trades for the week that
+    *starts on the next upcoming Monday* (or this Monday when today is
+    Sunday).  This convention is repeated in ``_render_spread_finder_tab``
+    below and in ``range_finder.har_model.run_full_pipeline``; we mirror it
+    here so the options-chain lookup and the week_start metadata always
+    agree on a single target expiration.
+    """
+    today = ref_date or date_cls.today()
+    days_ahead = (7 - today.weekday()) % 7 or 7
+    next_monday = today + timedelta(days=days_ahead)
+    return next_monday + timedelta(days=4)
 
-    Returns (quotes_dict, selected_expiration_str_or_None).
+
+def find_spread_finder_friday_exp(
+    avail: "list[str]",
+    ref_date: "date_cls | None" = None,
+) -> "str | None":
+    """Return the Tradier-listed expiration that matches the target Friday.
+
+    Prefers an exact ISO-date match against ``avail``; falls back to the
+    nearest listed expiration within 3 calendar days of the target (handles
+    holiday-shifted weeklies such as Good Friday).  Returns ``None`` when
+    no candidate is available.
+    """
+    target = _spread_finder_target_friday(ref_date)
+    target_iso = target.strftime("%Y-%m-%d")
+    if target_iso in avail:
+        return target_iso
+
+    window_start = (target - timedelta(days=3)).strftime("%Y-%m-%d")
+    window_end = (target + timedelta(days=3)).strftime("%Y-%m-%d")
+    candidates = [e for e in avail if window_start <= e <= window_end]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda e: abs((date_cls.fromisoformat(e) - target).days))
+    return candidates[0]
+
+
+def _build_chain_quotes_for_spreads(
+    data: GEXData,
+    ticker: str,
+    ref_date: "date_cls | None" = None,
+) -> tuple[dict, str | None]:
+    """Build a strike→{call_bid, call_ask, put_bid, put_ask} lookup from the
+    Friday chain that matches the Spread Finder's planned week.
+
+    The target expiration is anchored to *the week the spread finder is
+    forecasting* (see ``_spread_finder_target_friday``), not to "whichever
+    expiration the user happened to pick in the sidebar".  Before this was
+    added, a user who had ``0DTE`` or ``Tomorrow`` selected would see the
+    spread finder silently fall back to today's chain — producing $0.00
+    credits for far-OTM weekly strikes because it was pricing 0-DTE puts
+    instead of Friday weeklies.  The pre-fetch in ``fetch_all_data`` makes
+    sure the right chain is always in ``data.chain_cache`` regardless of
+    sidebar state, and this function just looks up that exact Friday.
+
+    Returns (quotes_dict, selected_expiration_str_or_None).  When the
+    correct Friday isn't available we return empty so ``build_spread_side``
+    falls back cleanly to its BSM estimator (the UI caption tells the user
+    we're on BSM rather than market quotes).
     """
     if not data.chain_cache:
         return {}, None
 
-    from datetime import date as date_cls, timedelta
+    # Resolve the expiration we SHOULD be looking at. Prefer the full
+    # expiration universe from data.avail so holiday-shifted Fridays can
+    # still match; fall back to whatever's already in the chain cache.
+    avail = list(getattr(data, "avail", None) or [])
+    if not avail:
+        avail = sorted({exp for (t, exp) in data.chain_cache if t == ticker})
 
-    # Find all cached expirations for this ticker, sorted by date
-    cached_exps = sorted(
-        exp for (t, exp) in data.chain_cache if t == ticker
-    )
-    if not cached_exps:
-        return {}, None
-
-    today = date_cls.today()
-    today_str = today.isoformat()
-    future_exps = [e for e in cached_exps if e >= today_str]
-
-    # Find the next Friday from today
-    days_until_friday = (4 - today.weekday()) % 7
-    if days_until_friday == 0 and today.weekday() == 4:
-        # Today is Friday — target next Friday for new trades
-        days_until_friday = 7
-    next_friday = today + timedelta(days=days_until_friday or 7)
-
-    # Look for a Friday expiration in the cached chains
-    target_exp = None
-    friday_exps = [
-        e for e in future_exps
-        if date_cls.fromisoformat(e).weekday() == 4  # Friday
-    ]
-    if friday_exps:
-        # Pick the nearest Friday (usually this coming Friday)
-        target_exp = min(friday_exps, key=lambda e: abs((date_cls.fromisoformat(e) - next_friday).days))
-
-    # Fallback: if no Friday expiration is cached, pick the closest to next Friday
-    if target_exp is None and future_exps:
-        target_exp = min(friday_exps if friday_exps else future_exps,
-                         key=lambda e: abs((date_cls.fromisoformat(e) - next_friday).days))
-
+    target_exp = find_spread_finder_friday_exp(avail, ref_date=ref_date)
     if target_exp is None:
         return {}, None
 
     entry = data.chain_cache.get((ticker, target_exp))
     if not entry or entry.get("status") != "ok":
+        # The right Friday isn't cached — don't silently substitute another
+        # expiration (that's exactly how we used to end up pricing weekly
+        # spreads off today's 0DTE chain).  Let the caller fall back to BSM.
         return {}, None
 
-    quotes = {}  # strike -> {call_bid, call_ask, put_bid, put_ask}
+    quotes: dict = {}  # strike -> {call_bid, call_ask, put_bid, put_ask}
 
     for opt in entry.get("calls", []):
         K = opt["strike"]
@@ -522,11 +554,15 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     metrics   = st.session_state[f"sf_model_metrics_{ticker}"]
 
     # ── Determine week start ──
-    from datetime import date as date_type
-    today = datetime.today()
-    days_ahead = (7 - today.weekday()) % 7 or 7
-    next_monday = today + timedelta(days=days_ahead)
+    # Anchored to NY wall clock (run_now = now_ny() above) so that the
+    # week_start convention here matches the Friday chain pre-fetch in
+    # streamlit_app.fetch_all_data — otherwise a UTC-hosted server could
+    # roll into "tomorrow" a few hours before NY does and end up looking
+    # at a different expiration than the one the pre-fetch cached.
+    days_ahead = (7 - run_now.weekday()) % 7 or 7
+    next_monday = run_now + timedelta(days=days_ahead)
     week_start = next_monday.strftime("%Y-%m-%d")
+    sf_ref_date = run_now.date()
 
     # ── Get feature row ──
     feature_row = rf_get_feature_for_week(conn, week_start)
@@ -560,7 +596,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         )
 
         # ── Extract chain quotes for market-based credit estimation ──
-        chain_quotes, chain_exp = _build_chain_quotes_for_spreads(data, ticker)
+        chain_quotes, chain_exp = _build_chain_quotes_for_spreads(
+            data, ticker, ref_date=sf_ref_date,
+        )
 
         # ── Build spread plan ──
         plan = rf_build_spread_plan(
