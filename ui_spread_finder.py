@@ -579,69 +579,53 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     if feature_row is None:
         feature_row = df_feat.iloc[-1]
 
-    # ── Cache key for spread computations ──
-    # These depend on reference price, VIX, ticker, and week — NOT on which
-    # risk tier is selected. Cache in session_state so switching tiers skips
-    # the expensive forecast → plan → tiers pipeline entirely.
-    _em_cache_sig = (
-        round((weekly_em or {}).get("upper_level", 0) or 0, 2),
-        round((weekly_em or {}).get("lower_level", 0) or 0, 2),
+    # ── Build forecast → plan → tiers from the latest GEX refresh ──
+    # We intentionally DO NOT cache these on a session-state key any more.
+    # Everything below is cheap arithmetic on top of the already-loaded HAR
+    # model (the only expensive step — rf_fit_model — is gated behind the
+    # "Forecast" button and cached separately via rf_load_model), so
+    # recomputing on every page rerun lets the spread finder pick up fresh
+    # chain bid/ask as soon as fetch_all_data refreshes data.chain_cache
+    # (i.e. on auto-refresh, "Refresh Now", or any normal rerun — no need
+    # to click "Forecast" again to get updated credits).
+    #
+    # Risk-tier switching stays snappy because the _risk_tier_fragment
+    # below is wrapped in @st.fragment and only re-reads the spread_tiers
+    # we stash in session_state — the outer recompute doesn't happen on
+    # tier toggles.
+    forecast = rf_forecast_next_week(
+        result, feature_row, feat_cols,
+        spx_close_input, alpha=RF_PI_ALPHA,
     )
-    _sf_cache_key = (ticker, round(spx_close_input, 2), round(vix_input, 2), week_start, _em_cache_sig)
-    _sf_prev_key = st.session_state.get(f"_sf_cache_key_{ticker}")
 
-    if _sf_prev_key == _sf_cache_key and f"_sf_spread_tiers_{ticker}" in st.session_state:
-        # Inputs unchanged — reuse cached results
-        forecast     = st.session_state[f"_sf_forecast_{ticker}"]
-        chain_quotes = st.session_state[f"_sf_chain_quotes_{ticker}"]
-        chain_exp    = st.session_state[f"_sf_chain_exp_{ticker}"]
-        plan         = st.session_state[f"_sf_plan_{ticker}"]
-        spread_tiers = st.session_state[f"_sf_spread_tiers_{ticker}"]
-        gex_adj      = st.session_state[f"_sf_gex_adj_{ticker}"]
-    else:
-        # ── Generate forecast ──
-        forecast = rf_forecast_next_week(
-            result, feature_row, feat_cols,
-            spx_close_input, alpha=RF_PI_ALPHA,
-        )
+    # Live chain quotes for the Spread Finder's planned Friday, read from
+    # data.chain_cache on every rerun (fetch_all_data repopulates that
+    # snapshot with fresh Tradier bid/ask on each refresh — see the
+    # pre-fetch block in streamlit_app.fetch_all_data).
+    chain_quotes, chain_exp = _build_chain_quotes_for_spreads(
+        data, ticker, ref_date=sf_ref_date,
+    )
 
-        # ── Extract chain quotes for market-based credit estimation ──
-        chain_quotes, chain_exp = _build_chain_quotes_for_spreads(
-            data, ticker, ref_date=sf_ref_date,
-        )
+    plan = rf_build_spread_plan(
+        forecast    = forecast,
+        feature_row = feature_row,
+        week_start  = week_start,
+        vix_level   = vix_input,
+        ticker      = ticker,
+        chain_quotes= chain_quotes,
+    )
 
-        # ── Build spread plan ──
-        plan = rf_build_spread_plan(
-            forecast    = forecast,
-            feature_row = feature_row,
-            week_start  = week_start,
-            vix_level   = vix_input,
-            ticker      = ticker,
-            chain_quotes= chain_quotes,
-        )
+    spread_tiers = rf_build_spread_tiers(
+        forecast     = forecast,
+        plan         = plan,
+        spx_ref      = spx_close_input,
+        vix_level    = vix_input,
+        chain_quotes = chain_quotes,
+        ticker       = ticker,
+        weekly_em    = weekly_em,
+    )
 
-        # ── Build risk tiers ──
-        spread_tiers = rf_build_spread_tiers(
-            forecast     = forecast,
-            plan         = plan,
-            spx_ref      = spx_close_input,
-            vix_level    = vix_input,
-            chain_quotes = chain_quotes,
-            ticker       = ticker,
-            weekly_em    = weekly_em,
-        )
-
-        # ── GEX enhancement ──
-        gex_adj = adjust_spread_with_gex(plan, gex_ctx)
-
-        # Cache results for tier switching
-        st.session_state[f"_sf_cache_key_{ticker}"]    = _sf_cache_key
-        st.session_state[f"_sf_forecast_{ticker}"]     = forecast
-        st.session_state[f"_sf_chain_quotes_{ticker}"] = chain_quotes
-        st.session_state[f"_sf_chain_exp_{ticker}"]    = chain_exp
-        st.session_state[f"_sf_plan_{ticker}"]         = plan
-        st.session_state[f"_sf_spread_tiers_{ticker}"] = spread_tiers
-        st.session_state[f"_sf_gex_adj_{ticker}"]      = gex_adj
+    gex_adj = adjust_spread_with_gex(plan, gex_ctx)
 
     # =========================================================================
     # METRIC CARDS
