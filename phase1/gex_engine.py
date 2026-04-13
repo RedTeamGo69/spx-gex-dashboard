@@ -152,9 +152,6 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
     zero_oi_filtered_count = 0
     synthetic_fit_rel_errors = []
 
-    # Volume-weighted GEX tracking (supplement for 0DTE where OI is stale)
-    volume_gex_by_strike = {}  # strike -> volume-weighted GEX (all exps)
-
     client.prefetch_chains(ticker, all_exps)
 
     for i, exp in enumerate(all_exps):
@@ -181,8 +178,22 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                 range_filtered_count += 1
                 continue
 
-            oi = raw_opt["openInterest"]
-            if oi <= 0 or np.isnan(oi):
+            oi_raw = raw_opt["openInterest"]
+            oi = 0.0 if (np.isnan(oi_raw) or oi_raw < 0) else float(oi_raw)
+            volume = float(raw_opt.get("volume", 0.0) or 0.0)
+
+            # Effective GEX weight = OI + today's volume.  Tradier reports
+            # open_interest as the previous day's settlement number, which
+            # is especially stale for 0DTE strikes where this morning's
+            # flow dwarfs yesterday's EOD OI.  Adding today's live volume
+            # "refreshes" the weight so the gamma picture reflects what is
+            # actually trading right now.  Far-OTM strikes with no flow
+            # are untouched (volume == 0 → weight collapses back to OI).
+            # NaN / negative OI from the vendor is treated as zero so
+            # strikes with zero OI but positive volume can still show up
+            # on 0DTE.
+            size = oi + volume
+            if size <= 0:
                 zero_oi_filtered_count += 1
                 continue
 
@@ -202,13 +213,7 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
 
             model_iv = norm_opt["iv"]
             gamma_now = norm_opt["gamma_now"]
-            gex = sign * oi * gamma_now * 100.0 * spot * spot
-
-            # Volume-weighted GEX: uses intraday volume instead of EOD OI
-            volume = raw_opt.get("volume", 0.0) or 0.0
-            if volume > 0:
-                vol_gex = sign * volume * gamma_now * 100.0 * spot * spot
-                volume_gex_by_strike[K] = volume_gex_by_strike.get(K, 0.0) + vol_gex
+            gex = sign * size * gamma_now * 100.0 * spot * spot
 
             if exp in target_exps:
                 if K not in agg:
@@ -231,8 +236,12 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                     if exp == target_exps[0]:
                         first_exp_put_ivs.append(model_iv)
 
-                # all_options gets the full wider range for sweep/profile/scenarios
-                all_options.append((K, oi, model_iv, sign, T, exp))
+                # all_options gets the full wider range for sweep/profile/scenarios.
+                # Use *size* (OI + volume) as the weight so zero-gamma sweeps and
+                # per-expiry GEX projections line up with the live volume-inclusive
+                # GEX computed above — otherwise the sweep would revert to OI-only
+                # and disagree with the bar chart on 0DTE.
+                all_options.append((K, size, model_iv, sign, T, exp))
                 used_option_count += 1
                 bid = raw_opt.get("bid", 0.0) or 0.0
                 ask = raw_opt.get("ask", 0.0) or 0.0
@@ -338,7 +347,6 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         "failed_exp_count": len(failed_expirations),
         "coverage_ratio": coverage_ratio,
         "hybrid_iv_mode": HYBRID_IV_MODE,
-        "volume_gex_by_strike": volume_gex_by_strike,
     }
 
     strike_support_df = build_strike_support_df(support_records, selected_exp_count=len(target_exps))
