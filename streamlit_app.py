@@ -237,6 +237,24 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
     dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
 
+    # Pre-fetch the Friday weekly chain the Spread Finder needs.
+    # The spread finder builds weekly credit spreads for a specific Friday
+    # expiration (the Friday of the week starting "next Monday").  If we
+    # rely only on whatever the user picked in the sidebar, users who have
+    # "0DTE"/"Tomorrow" selected end up with the spread finder silently
+    # pricing weekly spreads off today's 0-DTE chain — producing $0.00
+    # credits for far-OTM strikes because the options are effectively
+    # worthless at 0 DTE.  Fetching the target Friday unconditionally here
+    # guarantees live bid/ask for the expiration the model is actually
+    # forecasting, regardless of sidebar state.
+    try:
+        from ui_spread_finder import find_spread_finder_friday_exp
+        sf_friday_exp = find_spread_finder_friday_exp(avail, run_now.date())
+        if sf_friday_exp and (ticker, sf_friday_exp) not in client.chain_cache:
+            client.get_chain_cached(ticker, sf_friday_exp)
+    except Exception as _sf_err:
+        _logger.warning(f"Spread finder weekly chain pre-fetch failed: {_sf_err}")
+
     # Try Yahoo ES futures (cached with the rest)
     yahoo_es = None
     try:
