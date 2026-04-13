@@ -182,8 +182,10 @@ def update_expiration_outcome(week_start: str, conn) -> str:
     actual_low = float(raw["Low"].min())
     actual_range_pct = (actual_high - actual_low) / spx_ref if spx_ref else None
 
-    call_breached = int(actual_high > call_short) if call_short else 0
-    put_breached = int(actual_low < put_short) if put_short else 0
+    # Convention: touching the short strike counts as a breach (matches the
+    # manual update_outcome() path and real-world assignment risk at expiry).
+    call_breached = int(actual_high >= call_short) if call_short else 0
+    put_breached = int(actual_low <= put_short) if put_short else 0
 
     # Four-valued outcome
     if call_breached and put_breached:

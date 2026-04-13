@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -252,7 +253,12 @@ class TradierDataClient:
                 return result
             last_error = result.get("error")
             if attempt < retries:
-                time.sleep(sleep_sec * (attempt + 1))
+                # Exponential backoff with jitter. Parallel threads would
+                # otherwise retry in lockstep and re-hammer the API after a
+                # 429; jitter de-synchronizes them.
+                backoff = sleep_sec * (2 ** attempt)
+                jitter = random.uniform(0, sleep_sec)
+                time.sleep(backoff + jitter)
 
         return {
             "status": "failed",

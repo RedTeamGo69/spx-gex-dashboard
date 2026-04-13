@@ -5,6 +5,15 @@ on:
   # cron-job.org handles DST automatically via America/New_York timezone.
   # Can also be triggered manually from the GitHub Actions UI.
   workflow_dispatch:
+    inputs:
+      force_weekly_setup:
+        description: "Force weekly spread finder rebuild (refit HAR, even on non-Monday). Use after a DB wipe or to refresh after a code change."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   capture:
@@ -33,4 +42,5 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           TICKER: ${{ matrix.ticker }}
+          FORCE_WEEKLY_SETUP: ${{ inputs.force_weekly_setup || 'false' }}
         run: python scheduled_snapshot.py

@@ -49,9 +49,19 @@ def capture_snapshot():
     from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
     from phase1.gex_history import save_snapshot, save_em_snapshot
 
+    # FORCE_WEEKLY_SETUP=1 bypasses the market-hours / weekend / holiday gates
+    # so the workflow can be triggered manually (e.g. after a DB wipe) on any
+    # day at any time to rebuild features and refit the HAR model. When set,
+    # the GEX snapshot may be using stale Tradier quotes (API returns last
+    # tick), which is fine — the weekly setup cares about SPX/VIX history
+    # from yfinance, not the current GEX value.
+    force_weekly_setup = os.environ.get("FORCE_WEEKLY_SETUP", "").strip() in ("1", "true", "yes")
+
     run_now = now_ny()
     today_str = run_now.strftime("%Y-%m-%d")
     _logger.info(f"Starting scheduled snapshot for {ticker} at {run_now.strftime('%I:%M:%S %p ET')} on {today_str}")
+    if force_weekly_setup:
+        _logger.info("FORCE_WEEKLY_SETUP=1 — bypassing market-hours / weekend / holiday gates")
 
     # ── Market hours sanity check ──
     # cron-job.org fires at exactly 9:30 AM ET, but guard against accidental
@@ -60,12 +70,12 @@ def capture_snapshot():
     time_val = hour * 60 + minute  # minutes since midnight
     market_open  = 9 * 60 + 20     # 9:20 AM (small buffer)
     market_close = 10 * 60 + 15    # 10:15 AM (tolerate runner startup delay)
-    if time_val < market_open or time_val > market_close:
+    if not force_weekly_setup and (time_val < market_open or time_val > market_close):
         _logger.info(f"Outside morning capture window ({run_now.strftime('%I:%M %p ET')}) — skipping")
         sys.exit(0)
 
     # Skip weekends (shouldn't happen with Mon-Fri cron, but just in case)
-    if run_now.weekday() >= 5:
+    if not force_weekly_setup and run_now.weekday() >= 5:
         _logger.info("Weekend — skipping")
         sys.exit(0)
 
@@ -73,14 +83,14 @@ def capture_snapshot():
     from phase1.market_clock import get_session_state
     from phase1.config import CASH_CALENDAR
     session = get_session_state(CASH_CALENDAR, run_now)
-    if session.market_open is None:
+    if not force_weekly_setup and session.market_open is None:
         _logger.info(f"Market holiday ({today_str}) — skipping")
         sys.exit(0)
 
     # ── Wait for market open (9:30 AM ET) if triggered slightly early ──
     import time
     market_open_time = 9 * 60 + 30  # 9:30 AM in minutes
-    if time_val < market_open_time:
+    if not force_weekly_setup and time_val < market_open_time:
         while True:
             wait_now = now_ny()
             current_minutes = wait_now.hour * 60 + wait_now.minute
@@ -90,6 +100,22 @@ def capture_snapshot():
             wait_seconds = max(wait_seconds, 1)
             _logger.info(f"Waiting {wait_seconds}s for market open (currently {wait_now.strftime('%I:%M:%S %p ET')})...")
             time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
+
+    # ── Ensure all Postgres tables exist (idempotent — cheap CREATE IF NOT
+    # EXISTS). Runs every day so the range_finder tables are ready for any
+    # code path that might touch them, including Tue–Fri runs after a fresh
+    # database wipe. Phase1's own tables auto-init on module import. ──
+    try:
+        from range_finder.db import get_connection as _rf_get_connection
+        from range_finder.db import init_all_tables as _rf_init_all_tables
+        _rf_conn = _rf_get_connection()
+        _rf_init_all_tables(_rf_conn)
+        _logger.info("Range finder tables verified / created")
+    except Exception as e:
+        # Non-fatal: the GEX snapshot itself doesn't touch range_finder tables
+        # on non-Monday runs. We log and keep going so the daily GEX capture
+        # isn't held hostage by a range_finder init failure.
+        _logger.warning(f"Range finder table init failed (non-fatal): {e}")
 
     # ── Fetch market data ──
     client = TradierDataClient(token=tradier_token)
@@ -127,11 +153,20 @@ def capture_snapshot():
     )
 
     if gex_df.empty:
-        _logger.error("GEX calculation returned empty — no data to save")
-        sys.exit(1)
-
-    levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
-    regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
+        if force_weekly_setup:
+            _logger.warning(
+                "GEX calculation returned empty — skipping GEX snapshot save "
+                "but continuing with weekly setup (force mode)"
+            )
+            levels = {"zero_gamma": spot, "call_wall": None, "put_wall": None,
+                      "zero_gamma_is_true_crossing": False}
+            regime_info = {"regime": "Unknown", "color": "#888888"}
+        else:
+            _logger.error("GEX calculation returned empty — no data to save")
+            sys.exit(1)
+    else:
+        levels = gex_engine.find_key_levels(gex_df, spot, all_options=all_options, r=rfr)
+        regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
     has_0dte = any(e == today_str for e in target_exps)
     staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
     confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
@@ -283,10 +318,16 @@ def capture_snapshot():
                     _logger.warning(f"OpEx-cycle EM save failed: {e}")
 
     # =========================================================================
-    # WEEKLY SPREAD FINDER SETUP (Monday open only)
+    # WEEKLY SPREAD FINDER SETUP (Monday open, post-holiday Tuesday, or forced)
     # =========================================================================
-    if is_monday or is_tuesday_after_holiday:
-        _logger.info("Running weekly spread finder setup...")
+    # FORCE_WEEKLY_SETUP (set at top of function) lets a manual
+    # workflow_dispatch trigger a full rebuild on any day — useful for
+    # bootstrapping a fresh Postgres without waiting for Monday's cron.
+    if is_monday or is_tuesday_after_holiday or force_weekly_setup:
+        if force_weekly_setup and not (is_monday or is_tuesday_after_holiday):
+            _logger.info("FORCE_WEEKLY_SETUP=1 — running weekly spread finder setup on non-Monday")
+        else:
+            _logger.info("Running weekly spread finder setup...")
         try:
             _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
                                      levels, regime_info)
