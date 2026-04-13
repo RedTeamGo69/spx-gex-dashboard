@@ -262,6 +262,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         spy_quote=spy_quote,
         dte0_calls=dte0_calls,
         dte0_puts=dte0_puts,
+        dte0_exp=dte0_exp,
         market_open=bool(spot_info.get("market_open")),
         yahoo_es=yahoo_es,
         chain_cache=dict(client.chain_cache),
@@ -457,6 +458,11 @@ def main():
         es_low = None
         es_source = None
 
+    # es_prevclose is only available on the Yahoo path (manual-entry users
+    # don't enter a prior ES close). When present it removes the ES-SPX basis
+    # from the overnight move calculation. See phase1/futures_data.py.
+    es_prevclose = yahoo_es.get("prevclose") if (yahoo_es and not has_manual) else None
+
     futures_ctx = None
     if es_last and es_last > 0 and prev_close > 0:
         # XSP trades at 1/10 the scale of SPX. ES futures track SPX, so
@@ -466,11 +472,16 @@ def main():
             es_last_scaled = es_last / 10.0
             es_high_scaled = (es_high / 10.0) if es_high else None
             es_low_scaled = (es_low / 10.0) if es_low else None
+            es_prevclose_scaled = (es_prevclose / 10.0) if es_prevclose else None
             futures_ctx = build_futures_context(
-                es_last_scaled, es_high_scaled, es_low_scaled, prev_close, source=es_source
+                es_last_scaled, es_high_scaled, es_low_scaled, prev_close,
+                source=es_source, es_prevclose=es_prevclose_scaled,
             )
         else:
-            futures_ctx = build_futures_context(es_last, es_high, es_low, prev_close, source=es_source)
+            futures_ctx = build_futures_context(
+                es_last, es_high, es_low, prev_close,
+                source=es_source, es_prevclose=es_prevclose,
+            )
 
     # ── Build EM analysis (fresh each render, not cached) ──
     em_analysis = build_expected_move_analysis(
@@ -483,6 +494,7 @@ def main():
         spy_quote=data.spy_quote,
         market_open=data.market_open,
         futures_context=futures_ctx,
+        expiration=data.dte0_exp,
     )
 
     # ── Apply EM snapshot logic ──

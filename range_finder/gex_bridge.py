@@ -90,32 +90,30 @@ def regime_to_gex_flag(regime: str) -> int:
 
 def compute_continuous_gex_features(gex_ctx: GEXContext) -> dict:
     """
-    Compute continuous GEX features for the HAR model, replacing the binary
-    gex_flag with richer quantitative signals.
+    Compute continuous GEX context features for the notes field on
+    gex_inputs rows — purely descriptive, NOT fed to the HAR model.
+
+    The HAR model's gex_normalized feature is computed from raw dollar GEX
+    in feature_builder.compute_har_features path (see feature_builder.py
+    where gex is divided by spx_open²).
 
     Returns:
         gex_zg_distance_pct: (spot - zero_gamma) / spot — positive = positive gamma
         gex_wall_width_pct:  (call_wall - put_wall) / spot — wider = more room
-        gex_net_normalized:  net_gex / spot² — normalized for cross-time comparison
     """
     spot = gex_ctx.spot
     if spot <= 0:
         return {
             "gex_zg_distance_pct": 0.0,
             "gex_wall_width_pct": 0.0,
-            "gex_net_normalized": 0.0,
         }
 
     zg_distance = (spot - gex_ctx.zero_gamma) / spot
     wall_width = (gex_ctx.call_wall - gex_ctx.put_wall) / spot
-    net_gex = gex_ctx.net_gex if gex_ctx.net_gex is not None else 0.0
-    # Normalize by spot² to make comparable across time periods
-    net_normalized = net_gex / (spot * spot) if spot > 0 else 0.0
 
     return {
         "gex_zg_distance_pct": round(float(zg_distance), 6),
         "gex_wall_width_pct": round(float(wall_width), 6),
-        "gex_net_normalized": round(float(net_normalized), 6),
     }
 
 

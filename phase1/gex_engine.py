@@ -258,12 +258,28 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE, n
     coverage_total_chain_oi = coverage_total_used_oi + skipped_oi
     coverage_ratio = (coverage_total_used_oi / coverage_total_chain_oi) if coverage_total_chain_oi > 0 else 0.0
 
+    # gex_ratio = |Σ positive GEX / Σ negative GEX|
+    #   > 1.0 → positive GEX dominates (calls heavier than puts)
+    #   < 1.0 → negative GEX dominates (puts heavier than calls)
+    # Returns None in undefined cases so the UI can disambiguate. Prior
+    # code returned 0.0 for both "all positive GEX" (+∞) and "all negative
+    # GEX" (0), collapsing those opposite regimes into the same displayed
+    # value.
+    pos_sum = float(pos_gex["net_gex"].sum()) if not pos_gex.empty else 0.0
+    neg_sum = float(neg_gex["net_gex"].sum()) if not neg_gex.empty else 0.0
+    if pos_gex.empty and neg_gex.empty:
+        gex_ratio_val = None  # empty chain / bad data
+    elif neg_gex.empty or neg_sum == 0:
+        gex_ratio_val = None  # all positive — ratio is +∞, UI can show "∞"
+    elif pos_gex.empty or pos_sum == 0:
+        gex_ratio_val = 0.0   # all negative — semantically "no positive side"
+    else:
+        gex_ratio_val = abs(pos_sum / neg_sum)
+
     stats = {
         "net_gex": net_gex_total,
         "net_gex_fmt": fmt_gex(net_gex_total),
-        "gex_ratio": abs(pos_gex["net_gex"].sum() / neg_gex["net_gex"].sum())
-        if not neg_gex.empty and neg_gex["net_gex"].sum() != 0
-        else 0.0,
+        "gex_ratio": gex_ratio_val,
         "pc_ratio": total_put_oi / total_call_oi if total_call_oi > 0 else 0.0,
         "call_oi": fmt_oi(total_call_oi),
         "call_oi_strike": max_call_oi_strike[1],

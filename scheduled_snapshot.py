@@ -198,6 +198,7 @@ def capture_snapshot():
                 es_low=yahoo_es.get("low"),
                 spx_prevclose=prev_close,
                 source=yahoo_es.get("source", "yahoo"),
+                es_prevclose=yahoo_es.get("prevclose"),
             )
     except Exception as e:
         _logger.warning(f"ES futures fetch failed: {e}")
@@ -212,6 +213,8 @@ def capture_snapshot():
         spy_quote=None,
         market_open=True,
         futures_context=futures_ctx,
+        expiration=dte0_exp,
+        as_of=run_now.date(),
     )
 
     # ── Save GEX snapshot ──
