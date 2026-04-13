@@ -69,17 +69,20 @@ def _get_rf_conn():
 def _spread_finder_target_friday(ref_date: "date_cls | None" = None) -> "date_cls":
     """Return the calendar Friday of the week the Spread Finder is planning for.
 
-    The spread finder always forecasts and places trades for the week that
-    *starts on the next upcoming Monday* (or this Monday when today is
-    Sunday).  This convention is repeated in ``_render_spread_finder_tab``
-    below and in ``range_finder.har_model.run_full_pipeline``; we mirror it
-    here so the options-chain lookup and the week_start metadata always
-    agree on a single target expiration.
+    On Mon-Thu we're inside a live trading week — traders entering new
+    credit spreads want *this* week's Friday (the one that's 0-4 days
+    away).  On Fri-Sun the current week is effectively done, so we roll
+    forward to next Monday's week and pick its Friday.  The same rule is
+    applied in ``_render_spread_finder_tab`` when deriving ``week_start``
+    so both stay in sync.
     """
     today = ref_date or date_cls.today()
-    days_ahead = (7 - today.weekday()) % 7 or 7
-    next_monday = today + timedelta(days=days_ahead)
-    return next_monday + timedelta(days=4)
+    wd = today.weekday()
+    if wd <= 3:  # Mon-Thu → this week's Monday
+        monday = today - timedelta(days=wd)
+    else:        # Fri-Sun → next Monday
+        monday = today + timedelta(days=(7 - wd))
+    return monday + timedelta(days=4)
 
 
 def find_spread_finder_friday_exp(
@@ -559,9 +562,16 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # streamlit_app.fetch_all_data — otherwise a UTC-hosted server could
     # roll into "tomorrow" a few hours before NY does and end up looking
     # at a different expiration than the one the pre-fetch cached.
-    days_ahead = (7 - run_now.weekday()) % 7 or 7
-    next_monday = run_now + timedelta(days=days_ahead)
-    week_start = next_monday.strftime("%Y-%m-%d")
+    #
+    # Mon-Thu: plan THIS week's spreads (week_start = this Monday, expiring
+    # this Friday).  Fri-Sun: this week is done, so roll forward to next
+    # Monday's week.  This has to match _spread_finder_target_friday above.
+    _wd = run_now.weekday()
+    if _wd <= 3:                           # Mon-Thu
+        monday_dt = run_now - timedelta(days=_wd)
+    else:                                  # Fri-Sun
+        monday_dt = run_now + timedelta(days=(7 - _wd))
+    week_start = monday_dt.strftime("%Y-%m-%d")
     sf_ref_date = run_now.date()
 
     # ── Get feature row ──
