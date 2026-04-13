@@ -182,17 +182,18 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
             oi = 0.0 if (np.isnan(oi_raw) or oi_raw < 0) else float(oi_raw)
             volume = float(raw_opt.get("volume", 0.0) or 0.0)
 
-            # Effective GEX weight = OI + today's volume.  Tradier reports
-            # open_interest as the previous day's settlement number, which
-            # is especially stale for 0DTE strikes where this morning's
-            # flow dwarfs yesterday's EOD OI.  Adding today's live volume
-            # "refreshes" the weight so the gamma picture reflects what is
-            # actually trading right now.  Far-OTM strikes with no flow
-            # are untouched (volume == 0 → weight collapses back to OI).
-            # NaN / negative OI from the vendor is treated as zero so
-            # strikes with zero OI but positive volume can still show up
-            # on 0DTE.
-            size = oi + volume
+            # Effective GEX weight = max(OI, today's volume).  Tradier
+            # reports open_interest as the previous day's settlement number,
+            # which is especially stale for 0DTE strikes where this morning's
+            # flow dwarfs yesterday's EOD OI.  Using the max of the two
+            # "unstales" OI without double-counting: on strikes where
+            # today's volume is heavier than yesterday's settled OI (active
+            # 0DTE / freshly opened weeklies) we get credit for live flow,
+            # and on quiet far-OTM strikes the max collapses back to OI
+            # unchanged (volume == 0).  NaN / negative OI from the vendor
+            # is coerced to zero so a strike with OI=0 but positive volume
+            # can still show up.
+            size = max(oi, volume)
             if size <= 0:
                 zero_oi_filtered_count += 1
                 continue
@@ -237,10 +238,10 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                         first_exp_put_ivs.append(model_iv)
 
                 # all_options gets the full wider range for sweep/profile/scenarios.
-                # Use *size* (OI + volume) as the weight so zero-gamma sweeps and
-                # per-expiry GEX projections line up with the live volume-inclusive
-                # GEX computed above — otherwise the sweep would revert to OI-only
-                # and disagree with the bar chart on 0DTE.
+                # Use *size* (max of OI and volume) as the weight so zero-gamma
+                # sweeps and per-expiry GEX projections line up with the live
+                # volume-inclusive GEX computed above — otherwise the sweep would
+                # revert to OI-only and disagree with the bar chart on 0DTE.
                 all_options.append((K, size, model_iv, sign, T, exp))
                 used_option_count += 1
                 bid = raw_opt.get("bid", 0.0) or 0.0
