@@ -262,6 +262,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
         spy_quote=spy_quote,
         dte0_calls=dte0_calls,
         dte0_puts=dte0_puts,
+        dte0_exp=dte0_exp,
         market_open=bool(spot_info.get("market_open")),
         yahoo_es=yahoo_es,
         chain_cache=dict(client.chain_cache),
@@ -493,6 +494,7 @@ def main():
         spy_quote=data.spy_quote,
         market_open=data.market_open,
         futures_context=futures_ctx,
+        expiration=data.dte0_exp,
     )
 
     # ── Apply EM snapshot logic ──

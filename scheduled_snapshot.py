@@ -213,6 +213,8 @@ def capture_snapshot():
         spy_quote=None,
         market_open=True,
         futures_context=futures_ctx,
+        expiration=dte0_exp,
+        as_of=run_now.date(),
     )
 
     # ── Save GEX snapshot ──

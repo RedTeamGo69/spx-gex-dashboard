@@ -223,6 +223,8 @@ def build_expected_move_analysis(
     spy_quote: dict | None = None,
     market_open: bool = True,
     futures_context: dict | None = None,
+    expiration: str | None = None,
+    as_of: date | None = None,
 ) -> dict:
     """
     Full expected-move analysis combining all signals.
@@ -232,17 +234,37 @@ def build_expected_move_analysis(
         prev_close:       SPX previous close from Tradier quote
         zero_gamma:       Zero-gamma level from GEX engine
         gamma_regime:     "Positive Gamma" / "Negative Gamma" / "At Zero Gamma"
-        calls_0dte:       Call chain for the 0DTE expiration
-        puts_0dte:        Put chain for the 0DTE expiration
+        calls_0dte:       Call chain for the 0DTE expiration (the nearest
+                          available expiration — NOT necessarily 0DTE)
+        puts_0dte:        Put chain for the same expiration
         spy_quote:        Optional SPY full quote for pre-market proxy
         market_open:      Whether the cash market is currently open
         futures_context:  Optional dict from futures_data.build_futures_context()
+        expiration:       ISO date string of the expiration the straddle came
+                          from ("YYYY-MM-DD"). When provided, the straddle DTE
+                          is stored in em_info["straddle"]["dte"] so the UI
+                          can label the card correctly — on weekends and
+                          after-hours the "0DTE" straddle is actually a 1+ DTE
+                          straddle which carries √2-ish more vol than a true
+                          same-day straddle would.
+        as_of:            Reference date for DTE calculation. Defaults to today.
 
     Returns a comprehensive analysis dict.
     """
     # 1. ATM straddle and expected move
     straddle = find_atm_straddle(calls_0dte, puts_0dte, spot)
     em_info = compute_expected_move(straddle, spot)
+
+    # Annotate the straddle with its actual DTE so the UI knows whether
+    # it's a true same-day expected move or a longer-tenor fallback.
+    if em_info.get("straddle") and expiration:
+        try:
+            exp_date = date.fromisoformat(expiration)
+            ref = as_of or date.today()
+            em_info["straddle"]["dte"] = max((exp_date - ref).days, 0)
+            em_info["straddle"]["expiration"] = expiration
+        except (ValueError, TypeError):
+            pass
 
     # 2. Overnight move — primary from SPX prevclose
     overnight = compute_overnight_move(spot, prev_close, source="spx_vs_prevclose")

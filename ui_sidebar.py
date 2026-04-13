@@ -115,7 +115,22 @@ def render_expected_move_panel(em_analysis, ticker="SPX"):
         st.caption("Expected move data not available.")
         return
 
-    st.markdown("#### ⚡ Expected Move — 0DTE")
+    # Show the ACTUAL straddle DTE instead of always labeling "0DTE". On
+    # weekends and after-hours, the nearest expiration is 1+ days away, and
+    # the straddle reflects more vol than a true same-day EM would.
+    straddle_info = em_data.get("straddle") or {}
+    straddle_dte = straddle_info.get("dte")
+    if straddle_dte is None or straddle_dte == 0:
+        dte_label = "0DTE"
+    else:
+        dte_label = f"{straddle_dte}DTE"
+    st.markdown(f"#### ⚡ Expected Move — {dte_label}")
+    if straddle_dte and straddle_dte > 0:
+        st.caption(
+            f"⚠ Using {straddle_dte}DTE straddle (no same-day expiration "
+            f"available) — reflects ~√{straddle_dte}× more vol than a true "
+            f"0DTE would. Session classification is scaled accordingly."
+        )
 
     # Straddle & range
     straddle = em_data.get("straddle", {})
