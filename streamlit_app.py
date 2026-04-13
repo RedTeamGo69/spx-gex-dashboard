@@ -38,7 +38,6 @@ from phase1.expected_move import (
     find_weekly_expiration, find_monthly_expiration,
 )
 from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
-from phase1.ai_briefing import build_briefing_context, generate_briefing
 from phase1.gex_history import (
     save_snapshot, get_weekly_em_date_key, get_monthly_em_date_key,
 )
@@ -145,13 +144,11 @@ def get_credentials():
     """Pull API keys from Streamlit secrets, env vars, or sidebar input."""
     tradier_token = ""
     fred_key = ""
-    gemini_key = ""
 
     # Try st.secrets first (for Streamlit Cloud deployment)
     try:
         tradier_token = st.secrets.get("TRADIER_TOKEN", "")
         fred_key = st.secrets.get("FRED_API_KEY", "")
-        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
     except Exception:
         pass
 
@@ -160,15 +157,8 @@ def get_credentials():
         tradier_token = os.environ.get("TRADIER_TOKEN", "")
     if not fred_key:
         fred_key = os.environ.get("FRED_API_KEY", "")
-    if not gemini_key:
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
-    # Push Gemini key into env so the cached briefing function can read it
-    # without the key participating in cache hashing.
-    if gemini_key:
-        os.environ["GEMINI_API_KEY"] = gemini_key
-
-    return tradier_token, fred_key, gemini_key
+    return tradier_token, fred_key
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,7 +282,7 @@ def main():
     st.title("📊 Gamma Exposure Dashboard")
     st.caption(f"GEX Calculator {TOOL_VERSION} — Implied spot | Zero gamma sweep | Expected move | Hybrid IV")
 
-    tradier_token, fred_key, gemini_key = get_credentials()
+    tradier_token, fred_key = get_credentials()
 
     # ── Sidebar controls ──
     with st.sidebar:
@@ -584,9 +574,9 @@ def main():
         st.warning(f"🌙 **After hours** — {context_note}")
 
     # ── Sidebar detail panels ──
-    # Rendered here (before tabs/AI briefing/spread finder) so the sidebar
-    # refreshes immediately on every rerun instead of waiting for the slow
-    # HAR model and Gemini briefing to finish.
+    # Rendered here (before tabs/spread finder) so the sidebar refreshes
+    # immediately on every rerun instead of waiting for the slow HAR model
+    # to finish.
     with st.sidebar:
         st.divider()
         render_gex_stream(data.stats, levels, spot)
@@ -723,45 +713,6 @@ def main():
                 '</div>'
             )
             st.markdown(range_html, unsafe_allow_html=True)
-
-    # ── AI Trading Briefing ──
-    # Only generates on first load or manual "Regenerate" click to conserve
-    # Gemini API quota.  Auto-refresh cycles reuse the cached result.
-    with st.expander("🧠 AI Briefing", expanded=True):
-        if not gemini_key:
-            st.caption(
-                "Set `GEMINI_API_KEY` in Streamlit secrets or env var to enable "
-                "the AI briefing. Falls back to a templated briefing without a key."
-            )
-
-        # Generate only when no cached briefing exists in session state
-        if "_ai_briefing" not in st.session_state:
-            try:
-                _brief_ctx = build_briefing_context(data, em_analysis)
-                _brief_text, _brief_source = generate_briefing(_brief_ctx)
-                st.session_state["_ai_briefing"] = (_brief_text, _brief_source)
-            except Exception as _brief_err:
-                st.session_state["_ai_briefing"] = (
-                    f"Briefing unavailable: {_brief_err}", "error",
-                )
-
-        _brief_text, _brief_source = st.session_state["_ai_briefing"]
-        if _brief_source == "error":
-            st.caption(_brief_text)
-        else:
-            st.markdown(_brief_text)
-            _src_color = COLORS["text_muted"] if _brief_source == "gemini" else COLORS["warning"]
-            st.markdown(
-                f"<div style='font-size:10px;color:{_src_color};margin-top:6px;'>"
-                f"source: {_brief_source} · model: gemini-2.5-flash-lite"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-        if st.button("🔄 Regenerate briefing", key="regen_briefing"):
-            st.session_state.pop("_ai_briefing", None)
-            st.session_state.pop("_gemini_backoff_until", None)  # clear quota backoff
-            st.rerun()
 
     # ── Charts ──
     tab_gex, tab_spread_finder = st.tabs(["📊 Strike GEX", "🎯 Spread Finder"])
