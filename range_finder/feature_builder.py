@@ -184,27 +184,25 @@ def compute_har_features(weekly_df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute the three HAR components from the range_pct series.
 
-    har_d1  — prior week range_pct (lag 1)
-    har_w   — mean of lags 2..6  (the 'weekly' component, 5 values per HAR literature)
-    har_m   — mean of lags 2..21 (the 'monthly' component)
+    Follows the canonical Corsi (2009) HAR-RV structure adapted for weekly
+    data: each component ends at lag 1 so the forecast at week t uses only
+    information known at the close of week t-1. The components OVERLAP by
+    design — this is how standard HAR captures vol cascade across horizons.
+
+    har_d1 — range_pct at lag 1                  (prior week)
+    har_w  — mean of lags 1..5   (rolling 5)     (~1 month of weeks)
+    har_m  — mean of lags 1..20  (rolling 20)    (~5 months of weeks)
     """
     df = weekly_df[["range_pct"]].copy()
 
-    df["har_d1"] = df["range_pct"].shift(1)
+    # shift(1) ensures the lag-1 value is the most recent observation used.
+    lagged = df["range_pct"].shift(1)
 
-    df["har_w"] = (
-        df["range_pct"]
-        .shift(2)
-        .rolling(5, min_periods=3)
-        .mean()
-    )
+    df["har_d1"] = lagged
 
-    df["har_m"] = (
-        df["range_pct"]
-        .shift(2)
-        .rolling(20, min_periods=10)
-        .mean()
-    )
+    df["har_w"] = lagged.rolling(5, min_periods=3).mean()
+
+    df["har_m"] = lagged.rolling(20, min_periods=10).mean()
 
     return df[["har_d1", "har_w", "har_m"]]
 
