@@ -10,6 +10,19 @@ from phase1.config import (
     HYBRID_IV_MODE,
 )
 
+# Economic lower bound on accepted synthetic IV. BS gamma(sigma) is unimodal
+# so the inverter has two roots for any sub-peak target gamma: a small-sigma
+# root (economically meaningful for typical options) and a large-sigma root
+# (nonsensical). The inverter prefers the smaller root, which is correct
+# most of the time — but for a deep-OTM strike the "small" root can itself
+# be nonsensically tiny (e.g. 2% annualized IV on a 5% OTM weekly put).
+# Reject anything below this floor and fall through to the no-solution
+# path rather than accepting an IV that would fabricate a spurious gamma
+# contribution. The 0.05 floor is comfortably below any plausible SPX IV
+# (the historic VIX minimum is ~9%) while still generous enough that a
+# legitimate low-vol weekly doesn't get filtered.
+SYNTH_IV_ECONOMIC_FLOOR = 0.05
+
 
 def bs_gamma(S, K, T, r, sigma):
     """
@@ -119,6 +132,24 @@ def fit_synthetic_iv(target_gamma, S, K, T, r):
             "fitted_gamma": 0.0,
             "rel_error": None,
             "reason": "no_solution",
+        }
+
+    # Economic-sanity floor: reject implausibly low IVs even when the
+    # numeric fit is tight. BS gamma(σ) is small both at σ→0 AND at σ
+    # well past the peak, so the optimizer can land on a "tight-fit"
+    # sigma of 0.02-0.04 for deep OTM strikes when the vendor gamma
+    # itself is near zero. That's not a vol estimate — it's numerical
+    # noise. Kicking those back to the no-solution path avoids feeding
+    # nonsense IVs into stats.call_iv / stats.put_iv and contaminating
+    # the ATM IV average.
+    if iv < SYNTH_IV_ECONOMIC_FLOOR:
+        return {
+            "accepted": False,
+            "iv": float(iv),
+            "target_gamma": float(target_gamma),
+            "fitted_gamma": float(bs_gamma(S, K, T, r, iv)),
+            "rel_error": None,
+            "reason": "below_economic_floor",
         }
 
     fitted_gamma = float(bs_gamma(S, K, T, r, iv))
