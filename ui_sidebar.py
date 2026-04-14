@@ -78,14 +78,40 @@ def _render_classification(classification, level_ctx):
 
     if classification.get("classification"):
         bias = classification.get("bias", "")
-        if bias in ("range-bound", "mean-revert"):
-            cls_icon = "🟢"
-        elif bias in ("directional", "continued-trend"):
-            cls_icon = "🔴"
-        else:
-            cls_icon = "🟡"
+        signal_strength = classification.get("signal_strength", "weak")
+        bucket_acc = classification.get("bucket_accuracy")
 
-        st.markdown(f"### {cls_icon} {classification['classification']}")
+        # Visual weight is now driven by calibrated signal strength, not
+        # by the classification's gut-feel bias. Weak signals get a grey
+        # icon regardless of bias so the sidebar stops giving a decisive
+        # green/red rendering to a near-coin-flip bucket.
+        if signal_strength == "strong":
+            if bias in ("range-bound", "mean-revert"):
+                cls_icon = "🟢"
+            elif bias in ("directional", "continued-trend"):
+                cls_icon = "🔴"
+            else:
+                cls_icon = "🟡"
+        elif signal_strength == "moderate":
+            cls_icon = "🟡"
+        else:
+            # Weak or unknown strength — explicitly un-decisive rendering
+            cls_icon = "⚪"
+
+        # Tag the classification label with its calibrated accuracy so
+        # the trader can see the confidence at a glance.
+        if bucket_acc is not None:
+            acc_tag = f" _(hist {bucket_acc*100:.0f}%)_"
+        else:
+            acc_tag = ""
+        st.markdown(f"### {cls_icon} {classification['classification']}{acc_tag}")
+
+        if signal_strength == "weak":
+            st.caption(
+                "⚠️ **Weak signal** — calibrated accuracy barely above random. "
+                "Do not size based on this classification alone."
+            )
+
         if classification.get("description"):
             st.caption(classification["description"])
         if classification.get("historical_tendencies"):

@@ -716,12 +716,25 @@ def main():
 
         cls_name = classification.get("classification", "–")
         cls_bias = classification.get("bias", "")
-        if cls_bias in ("range-bound", "mean-revert"):
-            cls_color = COLORS["positive"]
-        elif cls_bias in ("directional", "continued-trend"):
-            cls_color = COLORS["negative"]
-        else:
+        cls_signal = classification.get("signal_strength", "weak")
+        cls_acc = classification.get("bucket_accuracy")
+
+        # Color is gated on calibrated signal strength so weak buckets
+        # (55% accuracy — barely above random) stop rendering with a
+        # decisive green/red that implies a reliable read.
+        if cls_signal == "strong":
+            if cls_bias in ("range-bound", "mean-revert"):
+                cls_color = COLORS["positive"]
+            elif cls_bias in ("directional", "continued-trend"):
+                cls_color = COLORS["negative"]
+            else:
+                cls_color = COLORS["warning"]
+        elif cls_signal == "moderate":
             cls_color = COLORS["warning"]
+        else:
+            cls_color = COLORS["text_muted"]
+
+        cls_acc_label = f"hist {cls_acc*100:.0f}%" if cls_acc is not None else ""
 
         em_bar_html = (
             '<div class="em-bar">'
@@ -729,7 +742,7 @@ def main():
             f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data.get("lower_level", 0) or 0:.0f} &ndash; ${em_data.get("upper_level", 0) or 0:.0f}</div></div>'
             f'<div class="em-item"><div class="lbl">{on_label}</div><div class="val" style="color:{on_color};">{on_arrow} {display_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{display_pct:+.2f}%</div></div>'
             f'<div class="em-item"><div class="lbl">Vol Budget Used</div><div class="val" style="color:{ratio_color};">{ratio_pct}</div></div>'
-            f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div></div>'
+            f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div><div class="lbl" style="color:{cls_color};">{cls_acc_label}</div></div>'
             '</div>'
         )
         st.markdown(em_bar_html, unsafe_allow_html=True)

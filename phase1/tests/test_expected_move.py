@@ -130,6 +130,47 @@ def test_classify_session_moderate_ratio():
 def test_classify_session_handles_none():
     result = classify_session(None, 10.0, "Positive Gamma")
     assert result["classification"] is None
+    assert result["bucket_accuracy"] is None
+    assert result["signal_strength"] is None
+
+
+def test_classify_session_low_bucket_marked_weak():
+    """Low-bucket classifications should report weak signal strength
+    (55% bucket accuracy is below the 58% "moderate" threshold)."""
+    result = classify_session(
+        expected_move_pts=46.0,
+        overnight_move_pts=5.0,
+        gamma_regime="Positive Gamma",
+    )
+    assert result["classification"] == "Pin Day"
+    assert result["bucket_accuracy"] == 0.55
+    assert result["signal_strength"] == "weak"
+
+
+def test_classify_session_high_bucket_marked_strong():
+    """High-bucket classifications (73%) clear the 65% strong-signal
+    threshold, so they should be rendered with full visual weight."""
+    result = classify_session(
+        expected_move_pts=46.0,
+        overnight_move_pts=42.0,
+        gamma_regime="Positive Gamma",
+    )
+    assert result["classification"] == "Exhaustion Day"
+    assert result["bucket_accuracy"] == 0.73
+    assert result["signal_strength"] == "strong"
+
+
+def test_classify_session_moderate_bucket_reports_coin_flip():
+    """Moderate move ratios have no measured edge — bucket_accuracy
+    should reflect the coin-flip baseline, not the low-bucket value."""
+    result = classify_session(
+        expected_move_pts=46.0,
+        overnight_move_pts=25.0,
+        gamma_regime="Positive Gamma",
+    )
+    assert result["move_ratio_label"] == "moderate"
+    assert result["bucket_accuracy"] == 0.50
+    assert result["signal_strength"] == "weak"
 
 
 def test_build_expected_move_analysis_full():
