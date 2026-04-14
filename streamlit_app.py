@@ -7,13 +7,9 @@ Deploy:        Push to GitHub → connect at share.streamlit.io
 from __future__ import annotations
 
 import os
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from theme import COLORS

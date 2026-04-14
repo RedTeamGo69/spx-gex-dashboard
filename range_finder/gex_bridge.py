@@ -13,7 +13,6 @@
 #   3. Use GEX walls as additional guardrails for strike placement
 # =============================================================================
 
-import math
 import logging
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass

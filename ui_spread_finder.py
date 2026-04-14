@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from datetime import date as date_cls, datetime, timedelta
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -24,7 +23,6 @@ from range_finder.data_collector import (
     fetch_spx_vix as rf_fetch_spx_vix, save_spx_vix as rf_save_spx_vix,
     fetch_fred_macro as rf_fetch_fred_macro, save_fred_macro as rf_save_fred_macro,
     build_event_flags as rf_build_event_flags,
-    get_weekly_spx as rf_get_weekly_spx,
 )
 from range_finder.feature_builder import (
     build_features as rf_build_features,
@@ -42,8 +40,6 @@ from range_finder.spread_levels import (
     build_spread_plan as rf_build_spread_plan,
     build_spread_tiers as rf_build_spread_tiers,
     log_spread_plan as rf_log_spread_plan,
-    update_outcome as rf_update_outcome,
-    STANDARD_WING_WIDTHS as RF_WING_WIDTHS,
     TICKER_CONFIG as RF_TICKER_CONFIG,
     SpreadPlan,
     SpreadTier,
@@ -532,15 +528,13 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 # the module-level MODEL_SPECS dict.
                 feat_cols = list(RF_MODEL_SPECS[model_choice])
 
-                # Mirror run_full_pipeline's dynamic GEX injection: when the
-                # user has built up enough weekly GEX history via the Save
-                # GEX button (>20 non-null rows of gex_normalized), fold it
-                # into M4_full as a real training feature.  This is the
-                # whole reason M4_full is called "full" — without this the
-                # UI-fitted M4 is just M3 + term structure + yield spread,
-                # ignoring all the GEX snapshots you've been accumulating.
-                # The CLI batch function run_full_pipeline already does
-                # this; we were just missing it in the Streamlit path.
+                # Dynamic GEX injection: when the user has built up enough
+                # weekly GEX history via the Save GEX button (>20 non-null
+                # rows of gex_normalized), fold it into M4_full as a real
+                # training feature. This is the whole reason M4_full is
+                # called "full" — without this the UI-fitted M4 is just
+                # M3 + term structure + yield spread, ignoring all the
+                # GEX snapshots you've been accumulating.
                 if model_choice == "M4_full":
                     gex_col = "gex_normalized"
                     if gex_col in df_feat.columns and df_feat[gex_col].notna().sum() > 20:

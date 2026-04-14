@@ -388,7 +388,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     )
     from range_finder.feature_builder import build_features
     from range_finder.gex_bridge import (
-        GEXContext, extract_gex_context, save_gex_to_range_finder,
+        extract_gex_context, save_gex_to_range_finder,
     )
     from range_finder.har_model import (
         time_series_split, fit_model, evaluate_oos,

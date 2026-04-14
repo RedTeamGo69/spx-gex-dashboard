@@ -8,12 +8,9 @@
 
 import logging
 import math
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
-
-import pandas as pd
 
 # =============================================================================
 # LOGGING
@@ -45,15 +42,6 @@ EVENT_BUFFER_MULTIPLIERS = {
 # Continuous GEX buffer: scale buffer proportionally to normalized GEX magnitude
 # gex_normalized > 0 means positive gamma (tighten), < 0 means negative (widen)
 GEX_CONTINUOUS_SCALE = 0.002  # buffer adjustment per unit of gex_normalized
-
-MIN_SPREAD_WIDTH = {
-    "normal":     20,
-    "event_1":    25,
-    "event_2":    30,
-    "fomc_week":  35,
-}
-
-STANDARD_WING_WIDTHS = [15, 20, 25, 30, 40, 50]
 
 MIN_CREDIT_RATIO = 0.05   # 5% — realistic for far-OTM weekly credit spreads
 

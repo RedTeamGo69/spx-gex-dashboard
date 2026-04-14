@@ -9,7 +9,6 @@
 import logging
 import math
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,6 @@ from range_finder.data_collector import (
     get_weekly_spx,
     get_macro_daily,
     get_event_flags,
-    init_db,
 )
 
 # =============================================================================

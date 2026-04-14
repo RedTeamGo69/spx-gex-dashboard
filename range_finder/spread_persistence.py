@@ -6,8 +6,6 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-import yfinance as yf
-
 log = logging.getLogger(__name__)
 
 
@@ -74,6 +72,10 @@ def update_expiration_outcome(week_start: str, conn) -> str:
     Uses daily bars for the expired week to compute actual_high, actual_low,
     then compares against call_short / put_short to determine the outcome.
     """
+    import yfinance as yf  # Lazy-imported so the module stays loadable
+                           # without yfinance installed; callers that
+                           # invoke this function are assumed to have
+                           # the full data stack available.
     row = conn.execute(
         "SELECT call_short, put_short, spx_ref_close, wing_width_used "
         "FROM spread_log WHERE week_start = ?",
@@ -114,8 +116,8 @@ def update_expiration_outcome(week_start: str, conn) -> str:
     actual_low = float(raw["Low"].min())
     actual_range_pct = (actual_high - actual_low) / spx_ref if spx_ref else None
 
-    # Convention: touching the short strike counts as a breach (matches the
-    # manual update_outcome() path and real-world assignment risk at expiry).
+    # Convention: touching the short strike counts as a breach (real-world
+    # assignment risk at expiry).
     call_breached = int(actual_high >= call_short) if call_short else 0
     put_breached = int(actual_low <= put_short) if put_short else 0
 
