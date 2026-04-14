@@ -151,6 +151,15 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
     range_filtered_count = 0
     zero_oi_filtered_count = 0
     synthetic_fit_rel_errors = []
+    # Volume-amplification tracking: sum of OI vs sum of max(OI, volume)
+    # across the strikes that actually entered the GEX aggregation. The
+    # ratio tells the UI how much of today's GEX magnitude comes from
+    # intraday flow vs settled open interest — on high-churn 0DTE days
+    # this can be 2-4×, which means the wall magnitudes are systematically
+    # overstated vs what a pure-OI computation would show.
+    total_used_oi_only = 0.0
+    total_used_max = 0.0
+    vol_dominated_strikes = 0  # count of strikes where volume > OI
 
     client.prefetch_chains(ticker, all_exps)
 
@@ -216,6 +225,15 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                 zero_oi_filtered_count += 1
                 continue
 
+            # Track size vs OI-only so the UI can flag over-painting
+            # from heavy intraday churn. Only accumulate after the
+            # acceptance check below fires, see the `if prep["accepted"]`
+            # branch. We stash the values now and commit them once the
+            # strike is actually used.
+            _this_strike_oi = oi
+            _this_strike_size = size
+            _this_strike_volume_dominates = volume > oi
+
             prep = prepare_option_for_model(raw_opt, sign, T, spot, r_for_exp)
             norm_opt = prep["normalized"]
 
@@ -262,6 +280,12 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                 # revert to OI-only and disagree with the bar chart on 0DTE.
                 all_options.append((K, size, model_iv, sign, T, exp))
                 used_option_count += 1
+                # Commit the per-strike amplification counters (now that the
+                # strike has actually been accepted into the aggregation).
+                total_used_oi_only += _this_strike_oi
+                total_used_max     += _this_strike_size
+                if _this_strike_volume_dominates:
+                    vol_dominated_strikes += 1
                 bid = raw_opt.get("bid", 0.0) or 0.0
                 ask = raw_opt.get("ask", 0.0) or 0.0
                 spread = float(ask - bid) if bid > 0 and ask > 0 and ask >= bid else np.nan
@@ -367,6 +391,31 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         "expired_exp_count": int(expired_exp_count),
         "coverage_ratio": coverage_ratio,
         "hybrid_iv_mode": HYBRID_IV_MODE,
+        # Volume amplification diagnostics
+        # ------------------------------------------------------------
+        # GEX weights use max(OI, volume) to "unstale" yesterday's
+        # settled OI on churny 0DTE strikes. When volume dominates
+        # across many strikes, the aggregated GEX magnitude is
+        # systematically higher than a pure-OI computation would show
+        # (wall magnitudes over-painted, zero-gamma shifted toward the
+        # higher-volume side). These three fields let the UI surface
+        # that so the trader knows the magnitudes are inflated.
+        #
+        #   vol_amplification_ratio   : sum(max(OI,vol)) / sum(OI)
+        #                               > 1.0 means volume is boosting
+        #                               the GEX scale above OI-only.
+        #   vol_dominated_strike_count: # strikes where volume > OI
+        #   vol_dominated_pct         : that count as a fraction of
+        #                               total used strikes.
+        "vol_amplification_ratio": (
+            float(total_used_max / total_used_oi_only)
+            if total_used_oi_only > 0 else None
+        ),
+        "vol_dominated_strike_count": int(vol_dominated_strikes),
+        "vol_dominated_pct": (
+            float(vol_dominated_strikes / used_option_count)
+            if used_option_count > 0 else 0.0
+        ),
     }
 
     strike_support_df = build_strike_support_df(support_records, selected_exp_count=len(target_exps))

@@ -356,3 +356,36 @@ def render_data_quality(stats, staleness_info):
     zero_oi = stats.get("zero_oi_filtered_count", 0)
     if range_filt or zero_oi:
         st.caption(f"Filtered: {range_filt:,} out-of-range strikes, {zero_oi:,} zero-OI contracts")
+
+    # Volume amplification disclosure
+    # --------------------------------------------------------------
+    # GEX weights are max(OI, volume), which "unstales" EOD-reported
+    # OI but overstates magnitude on churny 0DTE days where intraday
+    # volume swamps settled OI. Surface the amplification ratio so
+    # the trader knows when wall magnitudes are inflated. A ratio of
+    # 1.0 means size==OI everywhere (no amplification). 2.0 means
+    # the GEX scale is 2× what a pure-OI computation would produce.
+    vol_ratio = stats.get("vol_amplification_ratio")
+    vol_pct = stats.get("vol_dominated_pct", 0.0) or 0.0
+    if vol_ratio is not None and vol_ratio > 1.10:
+        # Only warn when amplification is material (>10% lift).
+        if vol_ratio >= 1.75:
+            va_color = COLORS["negative"]
+            va_word = "heavy"
+        elif vol_ratio >= 1.30:
+            va_color = COLORS["warning"]
+            va_word = "elevated"
+        else:
+            va_color = COLORS["text_secondary"]
+            va_word = "mild"
+        st.markdown(
+            f"<div style='font-size:11px;color:{COLORS['text_muted']};margin-top:6px;'>"
+            f"⚠ Volume amplification: "
+            f"<span style='color:{va_color};font-weight:bold;'>"
+            f"{vol_ratio:.2f}× ({va_word})</span> — "
+            f"{vol_pct*100:.0f}% of strikes have today's volume > settled OI. "
+            f"Wall magnitudes are inflated vs an OI-only computation; "
+            f"wall <em>locations</em> are still reliable."
+            f"</div>",
+            unsafe_allow_html=True,
+        )
