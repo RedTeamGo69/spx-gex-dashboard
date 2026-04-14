@@ -490,9 +490,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # ── Step 3: Save live GEX ──
     if do_save_gex:
         try:
-            gex_flag = save_gex_to_range_finder(gex_ctx, conn)
+            gex_flag = save_gex_to_range_finder(gex_ctx, conn, ticker=ticker)
             regime_label = {1: "positive", 0: "neutral", -1: "negative"}.get(gex_flag, "unknown")
-            st.success(f"GEX saved: regime={regime_label}, flag={gex_flag}")
+            st.success(f"GEX saved: regime={regime_label}, flag={gex_flag} (ticker={ticker})")
         except Exception as e:
             st.error(f"GEX save failed: {e}")
 

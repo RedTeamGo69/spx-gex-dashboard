@@ -148,10 +148,16 @@ def regime_to_gex_dollars(gex_ctx: GEXContext) -> float:
 def save_gex_to_range_finder(
     gex_ctx: GEXContext,
     conn = None,
+    ticker: str = "SPX",
 ) -> int:
     """
     Persist the live GEX data from the dashboard into the range finder's
     gex_inputs table. Returns the gex_flag value written.
+
+    gex_inputs is keyed on (week_start, ticker), so XSP and SPX runs
+    write to distinct rows and don't stomp on each other. The HAR
+    feature builder only consumes SPX rows (see load_gex_inputs),
+    but we still persist XSP rows for audit/debug purposes.
 
     This is called after each GEX dashboard run so the range finder
     model has fresh GEX data for the current week.
@@ -171,6 +177,7 @@ def save_gex_to_range_finder(
     continuous = compute_continuous_gex_features(gex_ctx)
 
     notes = (
+        f"ticker={ticker} | "
         f"regime={gex_ctx.gamma_regime} | "
         f"zero_gamma={gex_ctx.zero_gamma:.0f} | "
         f"call_wall={gex_ctx.call_wall:.0f} | "
@@ -180,10 +187,10 @@ def save_gex_to_range_finder(
         f"wall_w={continuous['gex_wall_width_pct']:.4f}"
     )
 
-    upsert_gex(conn, week_start, gex_dollars, notes=notes)
+    upsert_gex(conn, week_start, gex_dollars, notes=notes, ticker=ticker)
 
     log.info(
-        f"GEX bridge: saved for {week_start} — "
+        f"GEX bridge: saved for {week_start} {ticker} — "
         f"gex=${gex_dollars:,.0f}, flag={gex_flag}, regime={gex_ctx.gamma_regime}"
     )
     return gex_flag

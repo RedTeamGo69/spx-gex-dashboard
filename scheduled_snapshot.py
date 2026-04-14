@@ -430,7 +430,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     _logger.info("  3/4 Saving GEX to range finder...")
     try:
         gex_ctx = extract_gex_context(levels, spot, regime_info)
-        save_gex_to_range_finder(gex_ctx, conn)
+        save_gex_to_range_finder(gex_ctx, conn, ticker=ticker)
     except Exception as e:
         _logger.warning(f"  GEX save failed: {e}")
 
