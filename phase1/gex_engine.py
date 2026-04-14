@@ -154,8 +154,26 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
 
     client.prefetch_chains(ticker, all_exps)
 
+    expired_exp_count = 0
+
     for i, exp in enumerate(all_exps):
-        T, _exp_close = compute_time_to_expiry_years(exp, ts=now_ny, floor=T_FLOOR)
+        T, exp_close = compute_time_to_expiry_years(exp, ts=now_ny, floor=T_FLOOR)
+
+        # Skip expirations that have already closed for the day.  After
+        # 4:00 PM ET on an expiration day, compute_time_to_expiry_years
+        # returns T = 0 and then floors it at T_FLOOR (~1 minute in years).
+        # Black-Scholes ATM gamma goes as 1/sqrt(T), so that tiny floor
+        # produces a gamma value ~100x larger than a live 4DTE expiration's
+        # gamma — a single expired 0DTE strike near spot then swamps every
+        # other expiration in the aggregation, making after-hours "This
+        # week" / "OpEx Cycle" / "Custom" views look like the only thing
+        # that exists is the dead 0DTE session.  Expired options have zero
+        # gamma left for dealers to hedge (the contracts have settled), so
+        # drop them from the current GEX picture entirely.
+        if exp_close is not None and exp_close <= now_ny:
+            expired_exp_count += 1
+            print(f"  [{i+1}/{len(all_exps)}] {exp}  — skipped (expired at {exp_close.strftime('%H:%M %Z')})")
+            continue
 
         # Per-expiration rate: when a curve is available, interpolate to
         # this expiration's own DTE so BS gamma and any rate-sensitive
@@ -346,6 +364,7 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         "zero_oi_filtered_count": int(zero_oi_filtered_count),
         "failed_expirations": failed_expirations,
         "failed_exp_count": len(failed_expirations),
+        "expired_exp_count": int(expired_exp_count),
         "coverage_ratio": coverage_ratio,
         "hybrid_iv_mode": HYBRID_IV_MODE,
     }
