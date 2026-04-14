@@ -536,6 +536,15 @@ def main():
     # ── Weekly & Monthly EM ──
     run_now = now_ny()
     temp_client = TradierDataClient(token=tradier_token)
+    # Seed the temp client's chain cache with the snapshot we captured
+    # inside fetch_all_data so weekly/monthly EM lookups reuse the chains
+    # we already paid for instead of hitting Tradier again. Without this,
+    # every rerun pays for 2+ extra option-chain fetches (one per
+    # compute_em_for_expiration call) even when fetch_all_data has already
+    # pre-warmed the target expirations (see the "pre-fetch" block near
+    # the top of fetch_all_data).
+    if data.chain_cache:
+        temp_client.chain_cache.update(data.chain_cache)
 
     # Weekly EM: straddle from this Friday's expiration, frozen Monday at open
     weekly_exp = find_weekly_expiration(data.avail, run_now.date())
