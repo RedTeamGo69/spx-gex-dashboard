@@ -335,6 +335,13 @@ def init_all_tables(conn) -> None:
         )
     """)
 
+    # One-time cleanup: M5_garch was removed from MODEL_SPECS because it
+    # was strictly dominated by M6_regime on live data.  Drop any orphan
+    # saved fit for it so it doesn't sit in the DB as dead state — the
+    # dashboard can't reach it anyway now that it's off the dropdown.
+    # DELETE is idempotent; safe to run on every init_all_tables call.
+    cur.execute("DELETE FROM saved_models WHERE model_name = 'M5_garch'")
+
     # --- weekly_setup (Monday open freeze for spread finder) ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS weekly_setup (

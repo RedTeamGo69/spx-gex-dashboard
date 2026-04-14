@@ -80,11 +80,12 @@ MODEL_SPECS = {
         # (continuous feature, replacing the old binary gex_flag)
     ],
 
-    "M5_garch": HAR_CORE + [
-        "vix_close",
-        "vix_implied_range",
-        "garch_vol",
-    ],
+    # M5_garch (HAR + VIX + weekly GARCH(1,1) fit) was removed — it was
+    # strictly dominated by M6_regime on both OOS R² and MAE on live data,
+    # and the marginal signal from adding GARCH on top of HAR core was not
+    # worth the extra `arch` dependency or the user-facing clutter.  The
+    # `garch_vol` column in the features table is left in place so old
+    # rows remain loadable; nothing reads it any more.
 
     "M6_regime": HAR_CORE + [
         "vix_close",
@@ -335,11 +336,12 @@ def compare_enhancements(
 
     local_specs = {k: list(v) for k, v in MODEL_SPECS.items()}
 
-    # Enhancement configurations to test
+    # Enhancement configurations to test.  "GARCH added" (M5_garch) was
+    # removed along with the spec itself — it was strictly dominated by
+    # M6_regime on live data and wasn't worth carrying in the comparison.
     enhancements = {
         "Baseline (OLS)":     {"spec": baseline_spec, "use_wls": False},
         "Baseline (WLS)":     {"spec": baseline_spec, "use_wls": True},
-        "GARCH added":        {"spec": "M5_garch",    "use_wls": False},
         "Regime + interact":  {"spec": "M6_regime",   "use_wls": False},
         "Full enhanced":      {"spec": "M6_regime",   "use_wls": True},
     }

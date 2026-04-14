@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--skip-fred", action="store_true",
                         help="Skip FRED macro fetch (yield_spread/fed_funds features will be NULL)")
     parser.add_argument("--model", default="M3_extended",
-                        choices=["M1_baseline", "M2_vix", "M3_extended", "M4_full", "M5_garch", "M6_regime"],
+                        choices=["M1_baseline", "M2_vix", "M3_extended", "M4_full", "M6_regime"],
                         help="Which model spec to fit and save (default: M3_extended)")
     parser.add_argument("--years", type=int, default=6,
                         help="Years of history to fetch (default: 6)")
