@@ -429,7 +429,18 @@ def main():
             st.stop()
 
     if data.gex_df.empty:
-        st.warning("No GEX data returned. The selected expirations may have no usable contracts.")
+        # After hours, selecting "0DTE" when today's expiration has already
+        # closed produces an empty frame — the gex engine now drops expired
+        # expirations rather than pretend their T_FLOOR gamma is real.  Give
+        # a friendlier nudge toward "Tomorrow" / "This week" in that case.
+        expired_cnt = (data.stats or {}).get("expired_exp_count", 0)
+        if expired_cnt and expired_cnt == len(data.target_exps):
+            st.info(
+                "All selected expirations have already settled for the day. "
+                "Switch to **Tomorrow** or **This week** for forward-looking GEX."
+            )
+        else:
+            st.warning("No GEX data returned. The selected expirations may have no usable contracts.")
         st.stop()
 
     # ── Build futures context: manual overrides > Yahoo auto ──

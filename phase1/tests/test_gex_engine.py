@@ -1,6 +1,9 @@
+from datetime import datetime
+
 import pandas as pd
 
 import phase1.gex_engine as gex_engine
+from phase1.config import NY_TZ
 
 
 def test_bs_gamma_vec_returns_expected_shape():
@@ -67,12 +70,18 @@ def test_calculate_all_basic_fake_client():
 
     client = FakeClient()
 
+    # Pin `now` to a date before the 2026-03-20 expiration so the
+    # expired-exp filter in calculate_all doesn't drop it when the test
+    # is run on a wall clock that's past March 2026.
+    fake_now = datetime(2026, 3, 10, 10, 0, tzinfo=NY_TZ)
+
     gex_df, stats, all_options, strike_support_df, expiration_support_df = gex_engine.calculate_all(
         client=client,
         ticker="SPX",
         target_exps=["2026-03-20"],
         spot=5000,
         r=0.04,
+        now=fake_now,
     )
 
     assert not gex_df.empty
