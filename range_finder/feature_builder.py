@@ -282,9 +282,20 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     gex_df = load_gex_inputs(conn)
 
     # --- VIX implied range ---
-    # VIX / sqrt(52) = 1-SD weekly range (encloses ~68% of moves)
-    # Divided by 100 to convert from percentage points to decimal
-    weekly["vix_implied_range"] = (weekly["vix_close"] / math.sqrt(52)) / 100
+    # VIX is annualized 1-SD vol in percent. De-annualize by sqrt(52) for the
+    # weekly 1-SD, then scale by the Brownian high-low range factor
+    # E[H-L] = 2·sigma·sqrt(2/pi) ≈ 1.5958·sigma (Feller 1951 / Parkinson 1980)
+    # so the column is directly comparable to realized range_pct = (H-L)/open.
+    # Previously this was just 1-SD weekly vol (biased ~37% low as a range
+    # predictor); the fix rescales it so UI comparisons like model_vs_vix and
+    # the "trust the model" warning in spread_levels.py stop firing spuriously
+    # on nearly every week. OLS is scale-invariant so re-fitting the HAR
+    # model just rescales its coefficient on this feature — predictive power
+    # is unchanged.
+    _BM_RANGE_FACTOR = 2.0 * math.sqrt(2.0 / math.pi)
+    weekly["vix_implied_range"] = (
+        (weekly["vix_close"] / math.sqrt(52)) / 100 * _BM_RANGE_FACTOR
+    )
 
     # --- SPX return lags ---
     weekly["spx_return_lag1"] = weekly["spx_return"].shift(1)
