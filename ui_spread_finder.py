@@ -529,7 +529,37 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     if do_forecast:
         with st.spinner(f"4/4 — Fitting {model_choice}..."):
             try:
-                feat_cols = RF_MODEL_SPECS[model_choice]
+                # Start from the static feature list but COPY it — we may
+                # append `gex_normalized` below and we don't want to mutate
+                # the module-level MODEL_SPECS dict.
+                feat_cols = list(RF_MODEL_SPECS[model_choice])
+
+                # Mirror run_full_pipeline's dynamic GEX injection: when the
+                # user has built up enough weekly GEX history via the Save
+                # GEX button (>20 non-null rows of gex_normalized), fold it
+                # into M4_full as a real training feature.  This is the
+                # whole reason M4_full is called "full" — without this the
+                # UI-fitted M4 is just M3 + term structure + yield spread,
+                # ignoring all the GEX snapshots you've been accumulating.
+                # The CLI batch function run_full_pipeline already does
+                # this; we were just missing it in the Streamlit path.
+                if model_choice == "M4_full":
+                    gex_col = "gex_normalized"
+                    if gex_col in df_feat.columns and df_feat[gex_col].notna().sum() > 20:
+                        if gex_col not in feat_cols:
+                            feat_cols.append(gex_col)
+                            st.caption(
+                                f"ℹ️ M4_full: using {int(df_feat[gex_col].notna().sum())} "
+                                f"weeks of stored GEX history as a training feature."
+                            )
+                    else:
+                        _weeks = int(df_feat[gex_col].notna().sum()) if gex_col in df_feat.columns else 0
+                        st.caption(
+                            f"ℹ️ M4_full: only {_weeks} weeks of GEX history — need >20 to "
+                            f"fold `gex_normalized` into the fit. Keep clicking **Save GEX** "
+                            f"each week; in the meantime M4 runs without the GEX feature."
+                        )
+
                 avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
 
                 X_train, X_test, y_train, y_test = rf_time_series_split(
