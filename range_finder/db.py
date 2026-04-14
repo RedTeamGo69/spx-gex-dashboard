@@ -261,7 +261,6 @@ def init_all_tables(conn) -> None:
             hv10                REAL,
             hv20                REAL,
             hv_ratio            REAL,
-            garch_vol           REAL,
             high_vol_regime     INTEGER,
             gex                 REAL,
             gex_flag            INTEGER,
@@ -281,7 +280,6 @@ def init_all_tables(conn) -> None:
 
     # Schema migrations for columns added after the initial release
     for col, ctype in [
-        ("garch_vol", "REAL"),
         ("high_vol_regime", "INTEGER"),
         ("gex_normalized", "REAL"),
     ]:
@@ -289,6 +287,14 @@ def init_all_tables(conn) -> None:
             cur.execute(f"ALTER TABLE model_features ADD COLUMN IF NOT EXISTS {col} {ctype}")
         except Exception:
             pass
+
+    # Drop the orphan garch_vol column on legacy databases. compute_garch_vol
+    # was removed along with M5_garch; the column was written on every
+    # feature rebuild but never read. Idempotent — safe to run every init.
+    try:
+        cur.execute("ALTER TABLE model_features DROP COLUMN IF EXISTS garch_vol")
+    except Exception:
+        pass
 
     # --- gex_inputs ---
     # Composite PK (week_start, ticker) so SPX and XSP runs don't stomp on

@@ -79,9 +79,10 @@ MODEL_SPECS = {
     # M5_garch (HAR + VIX + weekly GARCH(1,1) fit) was removed — it was
     # strictly dominated by M6_regime on both OOS R² and MAE on live data,
     # and the marginal signal from adding GARCH on top of HAR core was not
-    # worth the extra `arch` dependency or the user-facing clutter.  The
-    # `garch_vol` column in the features table is left in place so old
-    # rows remain loadable; nothing reads it any more.
+    # worth the extra `arch` dependency or the user-facing clutter. The
+    # garch_vol column and the compute_garch_vol feature builder were
+    # deleted in a follow-up cleanup; db.init_all_tables now issues a
+    # DROP COLUMN IF EXISTS for the legacy column.
 
     "M6_regime": HAR_CORE + [
         "vix_close",
