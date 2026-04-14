@@ -11,12 +11,6 @@ import yfinance as yf
 log = logging.getLogger(__name__)
 
 
-def init_spread_log_table(conn) -> None:
-    """Ensure spread_log table exists.
-    Now handled by db.init_all_tables() — kept for backwards compatibility."""
-    pass  # Tables created in db.init_all_tables()
-
-
 def log_spread_plan(
     conn,
     plan,

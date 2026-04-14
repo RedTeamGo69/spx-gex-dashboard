@@ -35,18 +35,6 @@ log = logging.getLogger(__name__)
 
 
 # =============================================================================
-# DATABASE — add model_features table
-# =============================================================================
-
-def init_features_table(conn) -> None:
-    """
-    Ensure the model_features table exists.
-    Now handled by db.init_all_tables() — this is kept for backwards compatibility.
-    """
-    pass  # Tables created in db.init_all_tables()
-
-
-# =============================================================================
 # DAILY SPX — needed for HV calculation
 # =============================================================================
 
@@ -234,12 +222,6 @@ def load_gex_inputs(conn, ticker: str = "SPX") -> pd.DataFrame:
     except Exception:
         log.info("gex_inputs table not found — GEX features will be NULL")
         return pd.DataFrame(columns=["gex"])
-
-
-def create_gex_table(conn) -> None:
-    """Ensure the gex_inputs table exists.
-    Now handled by db.init_all_tables() — kept for backwards compatibility."""
-    pass  # Tables created in db.init_all_tables()
 
 
 def upsert_gex(conn, week_start: str, gex: float, notes: str = "",

@@ -20,10 +20,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from range_finder.data_collector import init_db
-from range_finder.feature_builder import (
-    init_features_table, create_gex_table, upsert_gex,
-    get_features, get_feature_for_week,
-)
+from range_finder.feature_builder import upsert_gex
 from range_finder.spread_levels import SpreadPlan
 
 log = logging.getLogger(__name__)
@@ -164,7 +161,6 @@ def save_gex_to_range_finder(
     """
     if conn is None:
         conn = init_db()
-        create_gex_table(conn)
 
     # Determine current week start (Monday)
     today = datetime.now(timezone.utc)

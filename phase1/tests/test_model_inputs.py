@@ -3,7 +3,6 @@ from phase1.model_inputs import (
     infer_iv_from_gamma,
     fit_synthetic_iv,
     prepare_option_for_model,
-    normalize_option_for_model,
 )
 
 
@@ -107,16 +106,3 @@ def test_prepare_option_returns_no_model_input_when_nothing_available():
 
     assert result["accepted"] is False
     assert result["reason"] == "no_model_input"
-
-
-def test_normalize_option_for_model_backward_wrapper():
-    opt = {
-        "strike": 5000,
-        "openInterest": 100,
-        "impliedVolatility": 0.22,
-        "vendorGamma": 0.0,
-    }
-
-    norm = normalize_option_for_model(opt, sign=1, T=1/365, spot=5000, r=0.04)
-    assert norm is not None
-    assert norm["iv_source"] == "direct_iv"

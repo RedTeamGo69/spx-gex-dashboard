@@ -245,9 +245,3 @@ def prepare_option_for_model(opt, sign, T, spot, r):
     }
 
 
-def normalize_option_for_model(opt, sign, T, spot, r):
-    """
-    Backward-compatible wrapper.
-    """
-    result = prepare_option_for_model(opt, sign, T, spot, r)
-    return result["normalized"]

@@ -17,12 +17,8 @@ import statsmodels.api as sm
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from range_finder.feature_builder import (
-    init_features_table,
-    build_features,
     get_features,
     get_feature_for_week,
-    create_gex_table,
-    print_feature_summary,
 )
 
 # =============================================================================

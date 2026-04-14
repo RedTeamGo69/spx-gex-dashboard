@@ -82,15 +82,6 @@ def get_ticker_config(ticker: str = "SPX") -> dict:
 # =============================================================================
 
 @dataclass
-class SpreadLeg:
-    """One leg of a credit spread."""
-    side:        str
-    direction:   str
-    strike:      float
-    description: str     = ""
-
-
-@dataclass
 class SpreadSide:
     """One side of the iron condor (either the call spread or put spread)."""
     side:          str
