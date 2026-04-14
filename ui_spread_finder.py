@@ -515,6 +515,17 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     # ── Fit model or load from cache ──
     # ── Step 4: Fit model and forecast ──
+    # Session-state layout: we keep the fit result, features, metrics and
+    # the *name* of the spec that produced them.  Tracking the name lets
+    # the dropdown actually work — without it, switching M3→M4 would
+    # silently keep using the old M3 fit (metric cards and strikes both)
+    # because the rest of the code just reads `sf_model_result_{ticker}`
+    # regardless of what the selectbox currently says.
+    _mdl_result_key  = f"sf_model_result_{ticker}"
+    _mdl_feat_key    = f"sf_model_features_{ticker}"
+    _mdl_metrics_key = f"sf_model_metrics_{ticker}"
+    _mdl_name_key    = f"sf_model_name_{ticker}"
+
     if do_forecast:
         with st.spinner(f"4/4 — Fitting {model_choice}..."):
             try:
@@ -528,33 +539,46 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 metrics = rf_evaluate_oos(result, X_test, y_test, model_name=model_choice)
                 rf_save_model(result, avail_cols, model_choice, metrics, conn=conn)
 
-                st.session_state[f"sf_model_result_{ticker}"]   = result
-                st.session_state[f"sf_model_features_{ticker}"] = avail_cols
-                st.session_state[f"sf_model_metrics_{ticker}"]  = metrics
+                st.session_state[_mdl_result_key]  = result
+                st.session_state[_mdl_feat_key]    = avail_cols
+                st.session_state[_mdl_metrics_key] = metrics
+                st.session_state[_mdl_name_key]    = model_choice
             except Exception as e:
                 st.error(f"Model fitting failed: {e}")
                 return
-        st.success(f"Model fitted | OOS R² = {metrics['oos_r2']:.4f}")
+        st.success(f"Model fitted | {model_choice} | OOS R² = {metrics['oos_r2']:.4f}")
+
+    # If the user toggled the model dropdown, the cached fit in session
+    # state belongs to a different spec — evict it so the load block
+    # below pulls the right saved fit for the newly-selected spec from
+    # Postgres (or shows the "click Forecast" nudge if that spec has
+    # never been fitted yet).
+    _cached_mdl_name = st.session_state.get(_mdl_name_key)
+    if _cached_mdl_name is not None and _cached_mdl_name != model_choice:
+        for _k in (_mdl_result_key, _mdl_feat_key, _mdl_metrics_key, _mdl_name_key):
+            st.session_state.pop(_k, None)
 
     # Try to load model from session or disk
-    if f"sf_model_result_{ticker}" not in st.session_state:
+    if _mdl_result_key not in st.session_state:
         try:
             payload = rf_load_model(model_choice, conn=conn)
-            st.session_state[f"sf_model_result_{ticker}"]   = payload["result"]
-            st.session_state[f"sf_model_features_{ticker}"] = payload["feature_cols"]
-            st.session_state[f"sf_model_metrics_{ticker}"]  = payload["metrics"]
+            st.session_state[_mdl_result_key]  = payload["result"]
+            st.session_state[_mdl_feat_key]    = payload["feature_cols"]
+            st.session_state[_mdl_metrics_key] = payload["metrics"]
+            st.session_state[_mdl_name_key]    = model_choice
         except FileNotFoundError:
-            st.info("Click **Generate Forecast** to fit the model for the first time.")
+            st.info(f"No saved fit for **{model_choice}** yet. Click **Forecast** to fit it for the first time.")
             _render_gex_context_panel(gex_ctx, spot)
             return
         except Exception as e:
-            st.warning(f"Saved model incompatible: {e}. Click **Generate Forecast** to refit.")
+            st.warning(f"Saved {model_choice} model incompatible: {e}. Click **Forecast** to refit.")
             _render_gex_context_panel(gex_ctx, spot)
             return
 
-    result    = st.session_state[f"sf_model_result_{ticker}"]
-    feat_cols = st.session_state[f"sf_model_features_{ticker}"]
-    metrics   = st.session_state[f"sf_model_metrics_{ticker}"]
+    result       = st.session_state[_mdl_result_key]
+    feat_cols    = st.session_state[_mdl_feat_key]
+    metrics      = st.session_state[_mdl_metrics_key]
+    active_model = st.session_state.get(_mdl_name_key, model_choice)
 
     # ── Determine week start ──
     # Anchored to NY wall clock (run_now = now_ny() above) so that the
@@ -653,8 +677,14 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         gex_ctx.gamma_regime.title(),
         f"flag: {gex_adj['gex_regime_flag']:+d}",
     )
+    # Flag it when the dropdown's selection and the fit we're actually
+    # rendering don't agree — shouldn't happen in normal flow since the
+    # eviction block above reloads the saved fit for the new spec, but
+    # if that load fell through (e.g. user is still on the first render
+    # after toggling) we'd rather the card tell the truth than lie.
+    _mdl_label = active_model if active_model == model_choice else f"{active_model} ⚠"
     c5.metric(
-        "OOS R²",
+        f"OOS R² · {_mdl_label}",
         f"{metrics['oos_r2']:.4f}",
         f"MAE: {metrics['mae_pct']*100:.2f}%",
     )
