@@ -263,7 +263,6 @@ def init_all_tables(conn) -> None:
             hv_ratio            REAL,
             high_vol_regime     INTEGER,
             gex                 REAL,
-            gex_flag            INTEGER,
             gex_normalized      REAL,
             yield_spread        REAL,
             fed_funds           REAL,
@@ -350,7 +349,6 @@ def init_all_tables(conn) -> None:
             wing_width_used     INTEGER,
             buffer_pct          REAL,
             event_count         INTEGER,
-            gex_flag            INTEGER,
             warnings            TEXT,
             actual_high         REAL,
             actual_low          REAL,
@@ -362,6 +360,16 @@ def init_all_tables(conn) -> None:
             updated_at          TEXT
         )
     """)
+
+    # Drop deprecated gex_flag columns on legacy databases. _gex_flag and
+    # its binary-regime feature were superseded by the continuous
+    # gex_normalized feature; the columns were written but never read by
+    # any live code path. Idempotent — safe to run every init.
+    for tbl in ("model_features", "spread_log"):
+        try:
+            cur.execute(f"ALTER TABLE {tbl} DROP COLUMN IF EXISTS gex_flag")
+        except Exception:
+            pass
 
     # --- saved_models (Postgres BYTEA — replaces pickle files) ---
     cur.execute("""

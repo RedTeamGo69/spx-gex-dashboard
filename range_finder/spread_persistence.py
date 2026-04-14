@@ -29,9 +29,9 @@ def log_spread_plan(
             week_start, generated_at,
             spx_ref_close, point_pct, upper_pct, effective_range_pct,
             call_short, call_long, put_short, put_long,
-            wing_width_used, buffer_pct, event_count, gex_flag,
+            wing_width_used, buffer_pct, event_count,
             warnings, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(week_start) DO UPDATE SET
             generated_at        = excluded.generated_at,
             spx_ref_close       = excluded.spx_ref_close,
@@ -45,7 +45,6 @@ def log_spread_plan(
             wing_width_used     = excluded.wing_width_used,
             buffer_pct          = excluded.buffer_pct,
             event_count         = excluded.event_count,
-            gex_flag            = excluded.gex_flag,
             warnings            = excluded.warnings,
             updated_at          = excluded.updated_at
     """, (
@@ -62,7 +61,6 @@ def log_spread_plan(
         width,
         plan.buffer_pct,
         plan.event_count,
-        plan.gex_flag,
         " | ".join(plan.warnings),
         now,
     ))
@@ -257,7 +255,6 @@ def print_spread_plan(plan) -> None:
     print(f"\n  CONTEXT")
     print(f"    Events this week  : {plan.event_count}  "
           f"(FOMC={plan.has_fomc} CPI={plan.has_cpi} NFP={plan.has_nfp} OPEX={plan.has_opex})")
-    print(f"    GEX regime        : {plan.gex_regime}")
     print(f"    Recommended width : {plan.recommended_width} pts")
 
     if plan.warnings:

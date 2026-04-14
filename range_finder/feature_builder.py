@@ -296,7 +296,6 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     # Join GEX (Monday open — same week, no lag needed)
     if not gex_df.empty:
         df = df.join(gex_df[["gex"]], how="left")
-        df["gex_flag"] = df["gex"].apply(_gex_flag)
         # Continuous GEX feature: normalize raw GEX by spot² to cancel the
         # spot² scaling embedded in the GEX formula
         # (gex_engine.py:174 — sign × OI × gamma × 100 × spot²).
@@ -313,7 +312,6 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
         df["gex_normalized"] = df["gex"] / (weekly["spx_open"] ** 2) * 1e4
     else:
         df["gex"]            = np.nan
-        df["gex_flag"]       = np.nan
         df["gex_normalized"] = np.nan
 
     # Join event flags
@@ -345,25 +343,6 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     return df
 
 
-def _gex_flag(gex_val) -> int | None:
-    """
-    Classify GEX into regime: +1 positive, 0 neutral, -1 negative.
-
-    DEPRECATED: This binary flag is superseded by the continuous gex_normalized
-    feature. Kept only for backward compatibility with existing DB rows.
-    New code should use gex_normalized directly.
-    """
-    if gex_val is None or (isinstance(gex_val, float) and math.isnan(gex_val)):
-        return None
-    # Note: this threshold is approximate and not calibrated to Spot²-scaled GEX.
-    # It exists only for legacy rows. The HAR model uses gex_normalized instead.
-    if gex_val > 0:
-        return 1
-    elif gex_val < 0:
-        return -1
-    return 0
-
-
 def _save_features(conn, df: pd.DataFrame) -> None:
     """Upsert the feature matrix into model_features."""
     now = datetime.now(timezone.utc).isoformat()
@@ -380,13 +359,13 @@ def _save_features(conn, df: pd.DataFrame) -> None:
                 vix9d_close, vix3m_close, vix_ts_slope, vix_wk_ratio,
                 hv5, hv10, hv20, hv_ratio,
                 high_vol_regime,
-                gex, gex_flag, gex_normalized,
+                gex, gex_normalized,
                 yield_spread, fed_funds,
                 spx_return_lag1, abs_return_lag1,
                 has_fomc, has_cpi, has_nfp, has_opex, event_count,
                 updated_at
             ) VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
             ON CONFLICT(week_start) DO UPDATE SET
                 log_range           = excluded.log_range,
@@ -406,7 +385,6 @@ def _save_features(conn, df: pd.DataFrame) -> None:
                 hv_ratio            = excluded.hv_ratio,
                 high_vol_regime     = excluded.high_vol_regime,
                 gex                 = excluded.gex,
-                gex_flag            = excluded.gex_flag,
                 gex_normalized      = excluded.gex_normalized,
                 yield_spread        = excluded.yield_spread,
                 fed_funds           = excluded.fed_funds,
@@ -428,7 +406,7 @@ def _save_features(conn, df: pd.DataFrame) -> None:
             _f(row, "hv5"),              _f(row, "hv10"),            _f(row, "hv20"),
             _f(row, "hv_ratio"),
             _i(row, "high_vol_regime"),
-            _f(row, "gex"),              _i(row, "gex_flag"),        _f(row, "gex_normalized"),
+            _f(row, "gex"),              _f(row, "gex_normalized"),
             _f(row, "yield_spread"),     _f(row, "fed_funds"),
             _f(row, "spx_return_lag1"),  _f(row, "abs_return_lag1"),
             _i(row, "has_fomc"),         _i(row, "has_cpi"),

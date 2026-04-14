@@ -221,7 +221,6 @@ def _build_spread_finder_excel(
         ("Recommended wing width",    plan.recommended_width),
         ("", ""),
         ("GEX regime",                gex_ctx.gamma_regime),
-        ("GEX flag",                  gex_adj.get("gex_regime_flag")),
         ("Zero gamma",                round(gex_ctx.zero_gamma, 2)),
         ("Call wall",                 round(gex_ctx.call_wall, 2)),
         ("Put wall",                  round(gex_ctx.put_wall, 2)),
@@ -490,9 +489,8 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # ── Step 3: Save live GEX ──
     if do_save_gex:
         try:
-            gex_flag = save_gex_to_range_finder(gex_ctx, conn, ticker=ticker)
-            regime_label = {1: "positive", 0: "neutral", -1: "negative"}.get(gex_flag, "unknown")
-            st.success(f"GEX saved: regime={regime_label}, flag={gex_flag} (ticker={ticker})")
+            save_gex_to_range_finder(gex_ctx, conn, ticker=ticker)
+            st.success(f"GEX saved: regime={gex_ctx.gamma_regime} (ticker={ticker})")
         except Exception as e:
             st.error(f"GEX save failed: {e}")
 
@@ -760,7 +758,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     c4.metric(
         "GEX Regime",
         gex_ctx.gamma_regime.title(),
-        f"flag: {gex_adj['gex_regime_flag']:+d}",
+        f"ZG: {gex_ctx.zero_gamma:.0f}",
     )
     # Flag it when the dropdown's selection and the fit we're actually
     # rendering don't agree — shouldn't happen in normal flow since the

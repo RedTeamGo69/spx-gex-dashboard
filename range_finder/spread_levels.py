@@ -130,8 +130,6 @@ class SpreadPlan:
     has_nfp:          int  = 0
     has_opex:         int  = 0
     event_count:      int  = 0
-    gex_flag:         Optional[int] = None
-    gex_regime:       str = "unknown"
 
     recommended_width: int = 25
 
@@ -498,12 +496,16 @@ def build_spread_plan(
     has_opex    = _flag("has_opex")
     event_count = _flag("event_count")
 
-    gex_raw  = feature_row.get("gex_flag") if feature_row is not None else None
-    gex_flag = None
-    if gex_raw is not None and not (isinstance(gex_raw, float) and math.isnan(gex_raw)):
-        gex_flag = int(gex_raw)
-
-    gex_regime = {1: "positive (suppressive)", 0: "neutral", -1: "negative (amplifying)"}.get(gex_flag, "unknown")
+    # Read the continuous gex_normalized feature for the regime warning
+    # below. This replaces the old _gex_flag binary path (removed). Negative
+    # values mean dealers are net short gamma (amplifying moves); the
+    # warning is triggered below a modest threshold derived from the
+    # feature's historical ±1σ band.
+    gex_normalized = None
+    if feature_row is not None:
+        _gn_raw = feature_row.get("gex_normalized")
+        if _gn_raw is not None and not (isinstance(_gn_raw, float) and math.isnan(_gn_raw)):
+            gex_normalized = float(_gn_raw)
 
     # --- Short strikes ---
     increment = cfg["strike_increment"]
@@ -547,8 +549,15 @@ def build_spread_plan(
         warnings.append(f"Multiple macro events this week ({event_count}) — consider reducing size or widening wings further")
     if has_fomc:
         warnings.append(f"FOMC week — minimum width floor raised to {min_floor} pts; gaps through strikes are possible")
-    if gex_flag == -1:
-        warnings.append("Negative GEX regime — dealer hedging amplifies moves; buffer widened")
+    # Negative GEX warning, from the continuous gex_normalized feature.
+    # The ~-0.5 threshold sits roughly at the -1σ point of the historical
+    # distribution, so the warning fires on the clearly-negative weeks
+    # without triggering on every mildly-neutral reading.
+    if gex_normalized is not None and gex_normalized < -0.5:
+        warnings.append(
+            f"Negative GEX regime (gex_normalized={gex_normalized:.2f}) — "
+            "dealer hedging amplifies moves; buffer widened"
+        )
     if forecast.get("model_vs_vix", 0) > 0.01:
         warnings.append(f"Model expects wider range than VIX implies ({forecast['model_vs_vix']*100:+.2f}%) — trust the model")
     if vix_level > 25:
@@ -580,8 +589,6 @@ def build_spread_plan(
         has_nfp              = has_nfp,
         has_opex             = has_opex,
         event_count          = event_count,
-        gex_flag             = gex_flag,
-        gex_regime           = gex_regime,
         recommended_width    = rec_width,
         warnings             = warnings,
     )

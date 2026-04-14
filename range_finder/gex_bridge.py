@@ -8,7 +8,7 @@
 #
 # This is the key integration point — the GEX dashboard produces real-time
 # gamma exposure levels, and the range finder uses them to:
-#   1. Adjust the gex_flag feature in the HAR model (M4_full spec)
+#   1. Populate the gex_normalized feature for the HAR model (M4_full spec)
 #   2. Widen/tighten the spread buffer based on dealer positioning
 #   3. Use GEX walls as additional guardrails for strike placement
 # =============================================================================
@@ -212,7 +212,7 @@ def adjust_spread_with_gex(
         gex_put_wall_vs_short  : how far the put wall is from the put short strike
         call_strike_inside_wall: True if call short is inside the call wall (safer)
         put_strike_inside_wall : True if put short is inside the put wall (safer)
-        gex_regime_label       : human-readable regime description
+        gex_regime             : human-readable regime string
         gex_adjustment_notes   : list of actionable notes
     """
     call_short = plan.call_spreads[0].short_strike if plan.call_spreads else None
@@ -223,7 +223,6 @@ def adjust_spread_with_gex(
         "gex_put_wall":         gex_ctx.put_wall,
         "gex_zero_gamma":       gex_ctx.zero_gamma,
         "gex_regime":           gex_ctx.gamma_regime,
-        "gex_regime_flag":      regime_to_gex_flag(gex_ctx.gamma_regime),
         "gex_adjustment_notes": [],
     }
 
