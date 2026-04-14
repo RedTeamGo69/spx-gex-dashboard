@@ -605,11 +605,19 @@ def main():
     spot_c = COLORS["spot"]
     text_sec = COLORS["text_secondary"]
     text_mut = COLORS["text_muted"]
+    # Flag fallback zero-gamma so the banner tells the truth: if the sweep
+    # couldn't find a true sign-change crossing, the displayed "Positive
+    # Gamma" / "Negative Gamma" label is derived from a min-abs-GEX node
+    # that can be dozens of points away from the real zero-gamma. The
+    # sidebar already warns about this but users acting on the header
+    # regime label never saw the qualification.
+    zg_is_true = bool(levels.get("zero_gamma_is_true_crossing", True))
+    regime_suffix = "" if zg_is_true else " <span style='color:#ffa726;font-size:13px;'>(fallback ZG)</span>"
     st.markdown(
         f"<div style='text-align:center;padding:6px;'>"
         f"<span style='font-size:22px;font-weight:bold;color:{spot_c};'>{ticker} ${spot:.2f}</span>"
         f"&nbsp;&nbsp;&nbsp;"
-        f"<span style='font-size:18px;color:{regime_color};font-weight:bold;'>{regime['regime']}</span>"
+        f"<span style='font-size:18px;color:{regime_color};font-weight:bold;'>{regime['regime']}</span>{regime_suffix}"
         f"&nbsp;&nbsp;"
         f"<span style='color:{text_sec};font-size:13px;'>({regime['distance_text']})</span>"
         f"&nbsp;&nbsp;&nbsp;"
@@ -617,6 +625,14 @@ def main():
         f"</div>",
         unsafe_allow_html=True,
     )
+    if not zg_is_true:
+        st.warning(
+            "⚠️ **Zero gamma is a fallback estimate** — the GEX sweep didn't "
+            "find a true sign-change crossing in the window, so the regime "
+            "label above is derived from the nearest-to-zero GEX node. In "
+            "high-vol weeks this can be 10+ points off the true flip. Trade "
+            "with tighter stops or skip."
+        )
 
     # ── Market context banner ──
     market_ctx = em_analysis.get("market_context", "live")
