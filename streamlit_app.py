@@ -536,6 +536,15 @@ def main():
     # ── Weekly & Monthly EM ──
     run_now = now_ny()
     temp_client = TradierDataClient(token=tradier_token)
+    # Seed the temp client's chain cache with the snapshot we captured
+    # inside fetch_all_data so weekly/monthly EM lookups reuse the chains
+    # we already paid for instead of hitting Tradier again. Without this,
+    # every rerun pays for 2+ extra option-chain fetches (one per
+    # compute_em_for_expiration call) even when fetch_all_data has already
+    # pre-warmed the target expirations (see the "pre-fetch" block near
+    # the top of fetch_all_data).
+    if data.chain_cache:
+        temp_client.chain_cache.update(data.chain_cache)
 
     # Weekly EM: straddle from this Friday's expiration, frozen Monday at open
     weekly_exp = find_weekly_expiration(data.avail, run_now.date())
@@ -596,11 +605,19 @@ def main():
     spot_c = COLORS["spot"]
     text_sec = COLORS["text_secondary"]
     text_mut = COLORS["text_muted"]
+    # Flag fallback zero-gamma so the banner tells the truth: if the sweep
+    # couldn't find a true sign-change crossing, the displayed "Positive
+    # Gamma" / "Negative Gamma" label is derived from a min-abs-GEX node
+    # that can be dozens of points away from the real zero-gamma. The
+    # sidebar already warns about this but users acting on the header
+    # regime label never saw the qualification.
+    zg_is_true = bool(levels.get("zero_gamma_is_true_crossing", True))
+    regime_suffix = "" if zg_is_true else " <span style='color:#ffa726;font-size:13px;'>(fallback ZG)</span>"
     st.markdown(
         f"<div style='text-align:center;padding:6px;'>"
         f"<span style='font-size:22px;font-weight:bold;color:{spot_c};'>{ticker} ${spot:.2f}</span>"
         f"&nbsp;&nbsp;&nbsp;"
-        f"<span style='font-size:18px;color:{regime_color};font-weight:bold;'>{regime['regime']}</span>"
+        f"<span style='font-size:18px;color:{regime_color};font-weight:bold;'>{regime['regime']}</span>{regime_suffix}"
         f"&nbsp;&nbsp;"
         f"<span style='color:{text_sec};font-size:13px;'>({regime['distance_text']})</span>"
         f"&nbsp;&nbsp;&nbsp;"
@@ -608,6 +625,14 @@ def main():
         f"</div>",
         unsafe_allow_html=True,
     )
+    if not zg_is_true:
+        st.warning(
+            "⚠️ **Zero gamma is a fallback estimate** — the GEX sweep didn't "
+            "find a true sign-change crossing in the window, so the regime "
+            "label above is derived from the nearest-to-zero GEX node. In "
+            "high-vol weeks this can be 10+ points off the true flip. Trade "
+            "with tighter stops or skip."
+        )
 
     # ── Market context banner ──
     market_ctx = em_analysis.get("market_context", "live")
@@ -716,12 +741,25 @@ def main():
 
         cls_name = classification.get("classification", "–")
         cls_bias = classification.get("bias", "")
-        if cls_bias in ("range-bound", "mean-revert"):
-            cls_color = COLORS["positive"]
-        elif cls_bias in ("directional", "continued-trend"):
-            cls_color = COLORS["negative"]
-        else:
+        cls_signal = classification.get("signal_strength", "weak")
+        cls_acc = classification.get("bucket_accuracy")
+
+        # Color is gated on calibrated signal strength so weak buckets
+        # (55% accuracy — barely above random) stop rendering with a
+        # decisive green/red that implies a reliable read.
+        if cls_signal == "strong":
+            if cls_bias in ("range-bound", "mean-revert"):
+                cls_color = COLORS["positive"]
+            elif cls_bias in ("directional", "continued-trend"):
+                cls_color = COLORS["negative"]
+            else:
+                cls_color = COLORS["warning"]
+        elif cls_signal == "moderate":
             cls_color = COLORS["warning"]
+        else:
+            cls_color = COLORS["text_muted"]
+
+        cls_acc_label = f"hist {cls_acc*100:.0f}%" if cls_acc is not None else ""
 
         em_bar_html = (
             '<div class="em-bar">'
@@ -729,7 +767,7 @@ def main():
             f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data.get("lower_level", 0) or 0:.0f} &ndash; ${em_data.get("upper_level", 0) or 0:.0f}</div></div>'
             f'<div class="em-item"><div class="lbl">{on_label}</div><div class="val" style="color:{on_color};">{on_arrow} {display_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{display_pct:+.2f}%</div></div>'
             f'<div class="em-item"><div class="lbl">Vol Budget Used</div><div class="val" style="color:{ratio_color};">{ratio_pct}</div></div>'
-            f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div></div>'
+            f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div><div class="lbl" style="color:{cls_color};">{cls_acc_label}</div></div>'
             '</div>'
         )
         st.markdown(em_bar_html, unsafe_allow_html=True)

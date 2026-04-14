@@ -288,8 +288,22 @@ def check_db_connection():
         return {"ok": False, "error": str(e)}
 
 
-def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
-    """Persist EM snapshot to Postgres so it survives across sessions on the same day."""
+# One-time schema init flag — `save_em_snapshot` previously issued a
+# CREATE TABLE + 4 × ALTER TABLE + 2 × DROP/CREATE INDEX block on EVERY
+# call, which cost ~9 round-trips per save (~200-300ms on Neon). This
+# flag collapses the DDL to a single first-use invocation so steady-state
+# saves are one INSERT.
+_em_schema_initialized = False
+
+
+def _ensure_em_snapshots_schema():
+    """Create the em_snapshots table and run legacy migrations once per
+    process. Subsequent calls are a no-op guarded by a module-level flag.
+    All DDL is idempotent (IF NOT EXISTS / IF EXISTS + DO $$ BEGIN
+    EXCEPTION), so multiple workers racing the first call is safe."""
+    global _em_schema_initialized
+    if _em_schema_initialized:
+        return
     conn = _pg_get_connection()
     try:
         cur = conn.cursor()
@@ -341,6 +355,17 @@ def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
             CREATE UNIQUE INDEX IF NOT EXISTS idx_em_ticker_date_type
             ON em_snapshots(ticker, date, em_type)
         """)
+        _em_schema_initialized = True
+    finally:
+        conn.close()
+
+
+def save_em_snapshot(em_data, date_str, ticker="SPX", em_type="daily"):
+    """Persist EM snapshot to Postgres so it survives across sessions on the same day."""
+    _ensure_em_snapshots_schema()
+    conn = _pg_get_connection()
+    try:
+        cur = conn.cursor()
         # Compute anchor_spot from EM range midpoint
         upper = em_data.get("upper_level")
         lower = em_data.get("lower_level")

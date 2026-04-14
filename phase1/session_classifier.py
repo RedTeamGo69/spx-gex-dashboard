@@ -4,8 +4,42 @@ Session day-type classification based on overnight move ratio and gamma regime.
 Classifies sessions as Pin Day, Trend Day, Exhaustion Day, or Extension Day
 based on the fraction of expected move consumed overnight and the dealer
 gamma positioning.
+
+IMPORTANT — calibrated accuracy is modest:
+    low bucket  : 55% accuracy (5pp above random)
+    high bucket : 73% accuracy
+    moderate    : no historical edge
+The classifier is a probabilistic lean, not a reliable signal. Every
+returned dict carries a numeric ``bucket_accuracy`` field (0..1) and a
+``signal_strength`` label ("weak" / "moderate" / "strong") so UIs can
+surface the calibrated confidence instead of rendering every cell with
+decisive visual weight.
 """
 from __future__ import annotations
+
+
+# ── Bucket accuracy from session_backtest.py (1022 days, 4 years) ─────────
+# These are shared across both gamma regimes within a ratio bucket — the
+# backtest can only measure accuracy_low / accuracy_high, not the 4 cells
+# independently. Populating the dict explicitly so consumers never have to
+# recompute them.
+_LOW_BUCKET_ACCURACY  = 0.55
+_HIGH_BUCKET_ACCURACY = 0.73
+_MODERATE_BUCKET_ACCURACY = 0.50  # no measured edge; treated as coin flip
+
+# A signal is "strong" only if calibrated accuracy is meaningfully above
+# the 50% random baseline. 65% is the threshold where the kelly edge is
+# large enough to be actionable with typical spread-seller risk-reward.
+_SIGNAL_STRONG_THRESHOLD = 0.65
+_SIGNAL_WEAK_THRESHOLD   = 0.58
+
+
+def _signal_strength_from_accuracy(acc: float) -> str:
+    if acc >= _SIGNAL_STRONG_THRESHOLD:
+        return "strong"
+    if acc >= _SIGNAL_WEAK_THRESHOLD:
+        return "moderate"
+    return "weak"
 
 
 # ── Day classification lookup table ────────────────────────────────────────
@@ -14,45 +48,60 @@ _DAY_CLASSIFICATIONS = {
     ("low", "positive"):  {
         "label": "Pin Day",
         "description": (
-            "Small overnight move + positive gamma. Dealer hedging tends to suppress volatility. "
-            "Historically correlated with tighter intraday ranges and mean-reverting price action near major strikes."
+            "Small overnight move + positive gamma. Dealer hedging may suppress volatility. "
+            "Historical lean toward tighter intraday ranges near major strikes, but the "
+            "low-bucket classifier is only 55% accurate — treat as a weak tilt, not a setup."
         ),
         "bias": "range-bound",
         "historical_tendencies": [
-            "historically correlated with range-bound, mean-reverting price action",
-            "dealer hedging tends to create support/resistance at GEX walls",
+            "weak historical tilt toward range-bound action (55% bucket accuracy)",
+            "dealer hedging may create support/resistance at GEX walls",
             "lower realized vol relative to implied",
         ],
-        "confidence_note": "This is a probabilistic tendency, not a guarantee. Confirm with price action at the open.",
+        "confidence_note": (
+            "Weak signal (55% historical accuracy, only 5pp above random). "
+            "Do not size based on this classification alone."
+        ),
+        "bucket_accuracy": _LOW_BUCKET_ACCURACY,
     },
     ("low", "negative"):  {
         "label": "Trend Day",
         "description": (
-            "Small overnight move + negative gamma. Most of the expected move budget remains available "
-            "and dealer hedging can reinforce directional moves. Historically correlated with wider intraday ranges."
+            "Small overnight move + negative gamma. Most of the expected move budget "
+            "remains available and dealer hedging can reinforce directional moves. "
+            "Historical lean toward wider intraday ranges, but the low-bucket "
+            "classifier is only 55% accurate — treat as a weak tilt."
         ),
         "bias": "directional",
         "historical_tendencies": [
-            "historically correlated with wider intraday ranges and sustained moves",
+            "weak historical tilt toward wider intraday ranges (55% bucket accuracy)",
             "dealer hedging may amplify directional flow",
-            "breakouts from the open tend to have more follow-through",
+            "breakouts from the open may have more follow-through",
         ],
-        "confidence_note": "Trend days are identified probabilistically. The direction is unknown — watch the first 30 min.",
+        "confidence_note": (
+            "Weak signal (55% historical accuracy, only 5pp above random). "
+            "Direction is unknown — watch the first 30 min before committing."
+        ),
+        "bucket_accuracy": _LOW_BUCKET_ACCURACY,
     },
     ("high", "positive"): {
         "label": "Exhaustion Day",
         "description": (
             "Large overnight move + positive gamma. A significant portion of the expected move "
             "has already occurred. Dealer hedging tends to dampen further moves. "
-            "Historically correlated with tighter ranges after the open."
+            "High-bucket classifier has 73% historical accuracy — moderate confidence."
         ),
         "bias": "mean-revert",
         "historical_tendencies": [
-            "historically correlated with fading of the overnight move",
+            "moderate historical tilt toward fading the overnight move (73% bucket accuracy)",
             "reduced intraday range as volatility budget is consumed",
             "price may consolidate near the open or drift back toward prior close",
         ],
-        "confidence_note": "Large overnight gaps can extend further on news catalysts. This classification reflects typical behavior, not certainty.",
+        "confidence_note": (
+            "Moderate signal (73% historical accuracy). Large overnight gaps can "
+            "still extend on news catalysts — this reflects typical behavior, not certainty."
+        ),
+        "bucket_accuracy": _HIGH_BUCKET_ACCURACY,
     },
     ("high", "negative"): {
         "label": "Extension Day",
@@ -63,11 +112,15 @@ _DAY_CLASSIFICATIONS = {
         ),
         "bias": "continued-trend",
         "historical_tendencies": [
-            "historically associated with the widest intraday ranges",
+            "moderate historical tilt toward widest intraday ranges (73% bucket accuracy)",
             "dealer hedging may add fuel to directional moves",
             "risk management is critical — stops and position sizing matter most",
         ],
-        "confidence_note": "This is the highest-risk session type. Protect capital first.",
+        "confidence_note": (
+            "Moderate signal (73% historical accuracy). Highest-risk session type — "
+            "protect capital first regardless of directional read."
+        ),
+        "bucket_accuracy": _HIGH_BUCKET_ACCURACY,
     },
 }
 
@@ -100,6 +153,8 @@ def classify_session(
             "bias": None,
             "historical_tendencies": [],
             "confidence_note": "",
+            "bucket_accuracy": None,
+            "signal_strength": None,
         }
 
     move_ratio = abs(overnight_move_pts) / expected_move_pts
@@ -132,16 +187,27 @@ def classify_session(
             "gamma_bucket": gamma_bucket,
             "description": (
                 f"Overnight move consumed a moderate portion of the expected range "
-                f"({move_ratio*100:.0f}%). The session could go either way — watch price "
-                f"action near gamma levels to confirm direction."
+                f"({move_ratio*100:.0f}%). No historical edge in this bucket — "
+                f"the classifier is at the coin-flip baseline. Watch price action "
+                f"near gamma levels to confirm direction."
             ),
             "bias": "uncertain",
-            "historical_tendencies": ["no clear historical edge — wait for confirmation", "reduce position sizes"],
-            "confidence_note": "Moderate move ratios have the least predictive value. Let the first 30 minutes resolve ambiguity.",
+            "historical_tendencies": [
+                "no measured historical edge — classifier is at random baseline",
+                "wait for confirmation; reduce position sizes",
+            ],
+            "confidence_note": (
+                "No signal (50% historical accuracy — coin flip). "
+                "Moderate move ratios have the least predictive value. "
+                "Let the first 30 minutes resolve ambiguity."
+            ),
+            "bucket_accuracy": _MODERATE_BUCKET_ACCURACY,
+            "signal_strength": _signal_strength_from_accuracy(_MODERATE_BUCKET_ACCURACY),
         }
 
     key = (ratio_label, gamma_bucket)
     info = _DAY_CLASSIFICATIONS.get(key, {})
+    bucket_acc = info.get("bucket_accuracy", _MODERATE_BUCKET_ACCURACY)
 
     return {
         "classification": info.get("label", "Unknown"),
@@ -152,4 +218,6 @@ def classify_session(
         "bias": info.get("bias"),
         "historical_tendencies": info.get("historical_tendencies", []),
         "confidence_note": info.get("confidence_note", ""),
+        "bucket_accuracy": bucket_acc,
+        "signal_strength": _signal_strength_from_accuracy(bucket_acc),
     }

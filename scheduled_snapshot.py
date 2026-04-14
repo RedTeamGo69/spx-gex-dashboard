@@ -164,9 +164,35 @@ def capture_snapshot():
                 "GEX calculation returned empty — skipping GEX snapshot save "
                 "but continuing with weekly setup (force mode)"
             )
-            levels = {"zero_gamma": spot, "call_wall": None, "put_wall": None,
-                      "zero_gamma_is_true_crossing": False}
-            regime_info = {"regime": "Unknown", "color": "#888888"}
+            # Use concrete spot-relative fallback values instead of None.
+            # dict.get(key, default) returns None when the key EXISTS with
+            # value None, so downstream code that does e.g.
+            #     levels.get("call_wall", spot + 50)
+            # would still see None and blow up on the next f"{...:.0f}"
+            # format (TypeError: unsupported format string passed to
+            # NoneType.__format__). Supplying a real fallback sidesteps
+            # the gotcha entirely.
+            levels = {
+                "zero_gamma": spot,
+                "zero_gamma_is_true_crossing": False,
+                "zero_gamma_type": "Fallback node",
+                "zero_gamma_method": "force_mode_empty_chain",
+                "zero_gamma_abs_gex": None,
+                "call_wall": round(spot * 1.01, 2),
+                "call_wall_gex": 0.0,
+                "call_wall_cluster": None,
+                "put_wall": round(spot * 0.99, 2),
+                "put_wall_gex": 0.0,
+                "put_wall_cluster": None,
+                "per_exp_zero_gamma": {},
+            }
+            regime_info = {
+                "regime": "Unknown",
+                "color": "#888888",
+                "distance_text": "n/a",
+                "note": "Force-mode synthetic fallback — GEX chain was empty",
+                "abs_distance": 0.0,
+            }
         else:
             _logger.error("GEX calculation returned empty — no data to save")
             sys.exit(1)
@@ -404,7 +430,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     _logger.info("  3/4 Saving GEX to range finder...")
     try:
         gex_ctx = extract_gex_context(levels, spot, regime_info)
-        save_gex_to_range_finder(gex_ctx, conn)
+        save_gex_to_range_finder(gex_ctx, conn, ticker=ticker)
     except Exception as e:
         _logger.warning(f"  GEX save failed: {e}")
 

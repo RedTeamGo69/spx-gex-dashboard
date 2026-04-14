@@ -47,6 +47,21 @@ def test_fit_synthetic_iv_reports_good_fit():
     assert fit["rel_error"] < 0.08
 
 
+def test_fit_synthetic_iv_rejects_below_economic_floor():
+    """A deep OTM strike with a near-zero vendor gamma can round-trip
+    to a numerically tight but economically nonsense sub-1% IV. The
+    fitter must refuse it rather than poisoning the stats.call_iv /
+    put_iv averages downstream."""
+    # Build a target gamma from a very low sigma (0.02 = 2% annualized).
+    # This should produce a fit that numerically round-trips but sits
+    # below the 0.05 economic floor.
+    tiny_sigma = 0.02
+    target = bs_gamma(S=5000, K=4750, T=5/252, r=0.04, sigma=tiny_sigma)
+    fit = fit_synthetic_iv(target, S=5000, K=4750, T=5/252, r=0.04)
+    assert fit["accepted"] is False
+    assert fit["reason"] == "below_economic_floor"
+
+
 def test_prepare_option_prefers_direct_iv():
     opt = {
         "strike": 5000,

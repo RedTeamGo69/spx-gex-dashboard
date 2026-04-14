@@ -211,16 +211,25 @@ def compute_har_features(weekly_df: pd.DataFrame) -> pd.DataFrame:
 # GEX PLACEHOLDER
 # =============================================================================
 
-def load_gex_inputs(conn) -> pd.DataFrame:
-    """Load GEX values from the gex_inputs table if it exists."""
+def load_gex_inputs(conn, ticker: str = "SPX") -> pd.DataFrame:
+    """Load GEX values from the gex_inputs table if it exists.
+
+    Filters by ticker so the HAR feature builder only sees rows that
+    match the underlying it was trained on. The feature builder
+    normalizes by SPX's spx_open² (see build_features), so mixing XSP
+    rows into the input here would produce a ~100× scale mismatch on
+    gex_normalized for any week that XSP wrote last.
+    """
     try:
         df = pd.read_sql_query(
-            "SELECT week_start, gex FROM gex_inputs ORDER BY week_start ASC",
+            "SELECT week_start, gex FROM gex_inputs WHERE ticker = ? "
+            "ORDER BY week_start ASC",
             conn,
+            params=(ticker,),
             parse_dates=["week_start"],
         )
         df.set_index("week_start", inplace=True)
-        log.info(f"GEX inputs loaded: {len(df)} rows")
+        log.info(f"GEX inputs loaded: {len(df)} rows (ticker={ticker})")
         return df
     except Exception:
         log.info("gex_inputs table not found — GEX features will be NULL")
@@ -233,19 +242,20 @@ def create_gex_table(conn) -> None:
     pass  # Tables created in db.init_all_tables()
 
 
-def upsert_gex(conn, week_start: str, gex: float, notes: str = "") -> None:
-    """Insert or update a single GEX value for a given week."""
+def upsert_gex(conn, week_start: str, gex: float, notes: str = "",
+               ticker: str = "SPX") -> None:
+    """Insert or update a single GEX value for a given week and ticker."""
     now = datetime.now(timezone.utc).isoformat()
     conn.execute("""
-        INSERT INTO gex_inputs (week_start, gex, notes, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(week_start) DO UPDATE SET
+        INSERT INTO gex_inputs (week_start, ticker, gex, notes, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(week_start, ticker) DO UPDATE SET
             gex        = excluded.gex,
             notes      = excluded.notes,
             updated_at = excluded.updated_at
-    """, (week_start, gex, notes, now))
+    """, (week_start, ticker, gex, notes, now))
     conn.commit()
-    log.info(f"GEX upserted: {week_start} → {gex:,.0f}")
+    log.info(f"GEX upserted: {week_start} {ticker} → {gex:,.0f}")
 
 
 # =============================================================================
@@ -279,12 +289,26 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     macro_wk = resample_macro_to_weekly(macro)
 
     # --- GEX ---
-    gex_df = load_gex_inputs(conn)
+    # Feature matrix is built against SPX weekly OHLC (yfinance) and
+    # normalized by spx_open², so only SPX GEX rows are meaningful here.
+    # Filtering explicitly avoids the XSP-row scale mismatch.
+    gex_df = load_gex_inputs(conn, ticker="SPX")
 
     # --- VIX implied range ---
-    # VIX / sqrt(52) = 1-SD weekly range (encloses ~68% of moves)
-    # Divided by 100 to convert from percentage points to decimal
-    weekly["vix_implied_range"] = (weekly["vix_close"] / math.sqrt(52)) / 100
+    # VIX is annualized 1-SD vol in percent. De-annualize by sqrt(52) for the
+    # weekly 1-SD, then scale by the Brownian high-low range factor
+    # E[H-L] = 2·sigma·sqrt(2/pi) ≈ 1.5958·sigma (Feller 1951 / Parkinson 1980)
+    # so the column is directly comparable to realized range_pct = (H-L)/open.
+    # Previously this was just 1-SD weekly vol (biased ~37% low as a range
+    # predictor); the fix rescales it so UI comparisons like model_vs_vix and
+    # the "trust the model" warning in spread_levels.py stop firing spuriously
+    # on nearly every week. OLS is scale-invariant so re-fitting the HAR
+    # model just rescales its coefficient on this feature — predictive power
+    # is unchanged.
+    _BM_RANGE_FACTOR = 2.0 * math.sqrt(2.0 / math.pi)
+    weekly["vix_implied_range"] = (
+        (weekly["vix_close"] / math.sqrt(52)) / 100 * _BM_RANGE_FACTOR
+    )
 
     # --- SPX return lags ---
     weekly["spx_return_lag1"] = weekly["spx_return"].shift(1)

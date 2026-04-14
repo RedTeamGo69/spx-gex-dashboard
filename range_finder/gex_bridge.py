@@ -54,12 +54,20 @@ def extract_gex_context(levels: dict, spot: float, regime_info: dict) -> GEXCont
         levels      : dict from gex_engine.find_key_levels()
         spot        : current SPX spot price
         regime_info : dict from gex_engine.get_gamma_regime_text()
+
+    Coerces missing / None wall values to a ±1% fallback so that downstream
+    formatting code (which does ``f"{gex_ctx.call_wall:.0f}"``) doesn't
+    crash with TypeError on force-mode / empty-chain paths where the
+    upstream dict intentionally passes None.
     """
+    def _coalesce(value, fallback):
+        return fallback if value is None else value
+
     return GEXContext(
         spot         = spot,
-        zero_gamma   = levels.get("zero_gamma", spot),
-        call_wall    = levels.get("call_wall", spot + 50),
-        put_wall     = levels.get("put_wall", spot - 50),
+        zero_gamma   = _coalesce(levels.get("zero_gamma"), spot),
+        call_wall    = _coalesce(levels.get("call_wall"), round(spot * 1.01, 2)),
+        put_wall     = _coalesce(levels.get("put_wall"),  round(spot * 0.99, 2)),
         gamma_regime = regime_info.get("regime", "unknown"),
         net_gex      = levels.get("net_gex"),
         call_wall_gex= levels.get("call_wall_gex"),
@@ -140,10 +148,16 @@ def regime_to_gex_dollars(gex_ctx: GEXContext) -> float:
 def save_gex_to_range_finder(
     gex_ctx: GEXContext,
     conn = None,
+    ticker: str = "SPX",
 ) -> int:
     """
     Persist the live GEX data from the dashboard into the range finder's
     gex_inputs table. Returns the gex_flag value written.
+
+    gex_inputs is keyed on (week_start, ticker), so XSP and SPX runs
+    write to distinct rows and don't stomp on each other. The HAR
+    feature builder only consumes SPX rows (see load_gex_inputs),
+    but we still persist XSP rows for audit/debug purposes.
 
     This is called after each GEX dashboard run so the range finder
     model has fresh GEX data for the current week.
@@ -163,6 +177,7 @@ def save_gex_to_range_finder(
     continuous = compute_continuous_gex_features(gex_ctx)
 
     notes = (
+        f"ticker={ticker} | "
         f"regime={gex_ctx.gamma_regime} | "
         f"zero_gamma={gex_ctx.zero_gamma:.0f} | "
         f"call_wall={gex_ctx.call_wall:.0f} | "
@@ -172,10 +187,10 @@ def save_gex_to_range_finder(
         f"wall_w={continuous['gex_wall_width_pct']:.4f}"
     )
 
-    upsert_gex(conn, week_start, gex_dollars, notes=notes)
+    upsert_gex(conn, week_start, gex_dollars, notes=notes, ticker=ticker)
 
     log.info(
-        f"GEX bridge: saved for {week_start} — "
+        f"GEX bridge: saved for {week_start} {ticker} — "
         f"gex=${gex_dollars:,.0f}, flag={gex_flag}, regime={gex_ctx.gamma_regime}"
     )
     return gex_flag

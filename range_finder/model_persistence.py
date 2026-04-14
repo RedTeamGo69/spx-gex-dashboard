@@ -23,7 +23,12 @@ MODEL_DIR = Path(__file__).parent / "models"
 # return a stale-but-loadable model instead of silently producing wrong
 # forecasts). Load will raise a clear error on mismatch and the UI will
 # fall through to "refit the model" guidance.
-SCHEMA_VERSION = 1
+#
+# v2 (2026-04): vix_implied_range rescaled by Brownian range factor
+# (2*sqrt(2/pi) ≈ 1.5958). Old fits have a coefficient calibrated to the
+# unscaled 1-SD vol; loading them against the rescaled feature would shift
+# every forecast. Refit required.
+SCHEMA_VERSION = 2
 
 
 def save_model(

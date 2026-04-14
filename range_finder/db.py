@@ -138,7 +138,11 @@ class PGConnectionWrapper:
                 log.info("Postgres connection lost — reconnecting...")
                 self._connect()
                 return
-            self._conn.cursor().execute("SELECT 1")
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT 1")
+            finally:
+                cur.close()
         except Exception:
             log.info("Postgres connection stale — reconnecting...")
             try:
@@ -287,13 +291,41 @@ def init_all_tables(conn) -> None:
             pass
 
     # --- gex_inputs ---
+    # Composite PK (week_start, ticker) so SPX and XSP runs don't stomp on
+    # each other's rows. Historically the table was keyed on week_start
+    # alone; the migration block below adds the ticker column and swaps
+    # the PK in place. The HAR feature builder only consumes SPX rows
+    # (it normalizes by spx_open²), but XSP dashboard runs still write
+    # here via save_gex_to_range_finder and need a non-colliding slot.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS gex_inputs (
-            week_start  TEXT PRIMARY KEY,
+            week_start  TEXT NOT NULL,
+            ticker      TEXT NOT NULL DEFAULT 'SPX',
             gex         REAL,
             notes       TEXT,
-            updated_at  TEXT
+            updated_at  TEXT,
+            PRIMARY KEY (week_start, ticker)
         )
+    """)
+    # Migration: add ticker column on legacy tables and rebuild the PK.
+    cur.execute("""
+        DO $$ BEGIN
+            ALTER TABLE gex_inputs ADD COLUMN ticker TEXT NOT NULL DEFAULT 'SPX';
+        EXCEPTION WHEN duplicate_column THEN NULL;
+        END $$
+    """)
+    cur.execute("""
+        DO $$ BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'gex_inputs_pkey'
+                  AND conrelid = 'gex_inputs'::regclass
+                  AND array_length(conkey, 1) = 1
+            ) THEN
+                ALTER TABLE gex_inputs DROP CONSTRAINT gex_inputs_pkey;
+                ALTER TABLE gex_inputs ADD PRIMARY KEY (week_start, ticker);
+            END IF;
+        END $$
     """)
 
     # --- spread_log ---

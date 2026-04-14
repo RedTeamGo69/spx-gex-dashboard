@@ -89,6 +89,57 @@ def test_calculate_all_basic_fake_client():
     assert len(all_options) == 2
     assert not strike_support_df.empty
     assert not expiration_support_df.empty
+    # Volume amplification diagnostics: this fixture has OI=100, volume=0
+    # on both legs, so size == OI everywhere → amplification ratio is 1.0
+    # and no strikes are volume-dominated.
+    assert stats["vol_amplification_ratio"] == 1.0
+    assert stats["vol_dominated_strike_count"] == 0
+    assert stats["vol_dominated_pct"] == 0.0
+
+
+def test_calculate_all_flags_volume_amplification():
+    """When today's volume dwarfs yesterday's OI on most strikes, the
+    amplification ratio should exceed 1.0 and vol_dominated_strike_count
+    should reflect the number of volume-dominated strikes."""
+    class FakeClient:
+        def prefetch_chains(self, ticker, expirations):
+            return None
+
+        def get_chain_cached(self, ticker, exp):
+            # OI = 10, volume = 500 — volume dominates by 50× on both legs
+            return {
+                "status": "ok",
+                "calls": [{
+                    "strike": 5000,
+                    "openInterest": 10,
+                    "volume": 500,
+                    "impliedVolatility": 0.20,
+                    "vendorGamma": 0.0,
+                    "bid": 10.0, "ask": 10.5, "mid": 10.25,
+                }],
+                "puts": [{
+                    "strike": 5000,
+                    "openInterest": 10,
+                    "volume": 500,
+                    "impliedVolatility": 0.20,
+                    "vendorGamma": 0.0,
+                    "bid": 10.0, "ask": 10.5, "mid": 10.25,
+                }],
+                "error": None,
+            }
+
+    fake_now = datetime(2026, 3, 10, 10, 0, tzinfo=NY_TZ)
+    _, stats, _, _, _ = gex_engine.calculate_all(
+        client=FakeClient(),
+        ticker="SPX",
+        target_exps=["2026-03-20"],
+        spot=5000,
+        r=0.04,
+        now=fake_now,
+    )
+    assert stats["vol_amplification_ratio"] == 50.0
+    assert stats["vol_dominated_strike_count"] == 2
+    assert stats["vol_dominated_pct"] == 1.0
 
 
 def test_zero_gamma_sweep_details_flags_fallback_when_no_crossing():
