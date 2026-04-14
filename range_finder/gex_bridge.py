@@ -54,12 +54,20 @@ def extract_gex_context(levels: dict, spot: float, regime_info: dict) -> GEXCont
         levels      : dict from gex_engine.find_key_levels()
         spot        : current SPX spot price
         regime_info : dict from gex_engine.get_gamma_regime_text()
+
+    Coerces missing / None wall values to a ±1% fallback so that downstream
+    formatting code (which does ``f"{gex_ctx.call_wall:.0f}"``) doesn't
+    crash with TypeError on force-mode / empty-chain paths where the
+    upstream dict intentionally passes None.
     """
+    def _coalesce(value, fallback):
+        return fallback if value is None else value
+
     return GEXContext(
         spot         = spot,
-        zero_gamma   = levels.get("zero_gamma", spot),
-        call_wall    = levels.get("call_wall", spot + 50),
-        put_wall     = levels.get("put_wall", spot - 50),
+        zero_gamma   = _coalesce(levels.get("zero_gamma"), spot),
+        call_wall    = _coalesce(levels.get("call_wall"), round(spot * 1.01, 2)),
+        put_wall     = _coalesce(levels.get("put_wall"),  round(spot * 0.99, 2)),
         gamma_regime = regime_info.get("regime", "unknown"),
         net_gex      = levels.get("net_gex"),
         call_wall_gex= levels.get("call_wall_gex"),
