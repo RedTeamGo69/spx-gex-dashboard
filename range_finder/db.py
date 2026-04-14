@@ -138,7 +138,11 @@ class PGConnectionWrapper:
                 log.info("Postgres connection lost — reconnecting...")
                 self._connect()
                 return
-            self._conn.cursor().execute("SELECT 1")
+            cur = self._conn.cursor()
+            try:
+                cur.execute("SELECT 1")
+            finally:
+                cur.close()
         except Exception:
             log.info("Postgres connection stale — reconnecting...")
             try:
