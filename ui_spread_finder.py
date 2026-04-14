@@ -630,8 +630,63 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     # ── Get feature row ──
     feature_row = rf_get_feature_for_week(conn, week_start)
+    feature_row_is_stale = False
     if feature_row is None:
         feature_row = df_feat.iloc[-1]
+        feature_row_is_stale = True
+
+    # ── Regime-shift circuit breaker ──────────────────────────────────────
+    # HAR features are lagged by one week — vix_close in feature_row is
+    # last Friday's close. When IV spikes overnight (e.g., VIX 15 → 40 on
+    # a news shock), the model's input features still reflect the pre-spike
+    # world for a full week, so the forecast's PI is anchored to the wrong
+    # vol regime and the Spread Finder will place strikes dangerously
+    # close to spot. The weekly EM floor partially mitigates this (it
+    # uses the live straddle, so shorts get pushed to the market-implied
+    # range), but it doesn't stop the user from trusting the "model says
+    # range will be 2%" read.
+    #
+    # Detect the shift by comparing the live VIX to the trailing VIX
+    # already in the feature row. Ratio > 1.5 is the threshold — that's
+    # roughly a 2σ move on the weekly VIX change distribution.
+    _trailing_vix = None
+    try:
+        _trailing_vix_raw = feature_row.get("vix_close")
+        if _trailing_vix_raw is not None:
+            _trailing_vix = float(_trailing_vix_raw)
+    except Exception:
+        pass
+
+    regime_shift = None
+    if _trailing_vix and _trailing_vix > 0 and live_vix and live_vix > 0:
+        _vix_ratio = live_vix / _trailing_vix
+        if _vix_ratio >= 1.5:
+            regime_shift = {
+                "severity": "extreme" if _vix_ratio >= 2.0 else "elevated",
+                "live_vix": live_vix,
+                "trailing_vix": _trailing_vix,
+                "ratio": _vix_ratio,
+            }
+
+    if regime_shift is not None:
+        _sev_word = regime_shift["severity"]
+        st.error(
+            f"⚠️ **VIX regime shift detected ({_sev_word})** — "
+            f"live VIX **{regime_shift['live_vix']:.1f}** vs trailing "
+            f"feature VIX **{regime_shift['trailing_vix']:.1f}** "
+            f"(**{regime_shift['ratio']:.2f}×**).\n\n"
+            f"The HAR model's features lag by one week, so the forecast below "
+            f"is anchored to the pre-spike vol regime. Short strikes sized "
+            f"against this forecast are likely **too narrow**. Rely on the "
+            f"live weekly EM floor (which reflects the current straddle) — "
+            f"or, better, skip the trade until features catch up."
+        )
+    if feature_row_is_stale:
+        st.warning(
+            "⚠️ This week's features have not been rebuilt yet — "
+            "using the most recent available feature row. Forecast may be "
+            "stale. Click **Weekly Setup** (or **Rebuild Features**) to refresh."
+        )
 
     # ── Build forecast → plan → tiers from the latest GEX refresh ──
     # We intentionally DO NOT cache these on a session-state key any more.
