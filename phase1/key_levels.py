@@ -128,37 +128,20 @@ def find_key_levels(gex_df, spot, all_options=None, r=DEFAULT_RISK_FREE_RATE,
     else:
         pw = gex_df.loc[gex_df["net_gex"].idxmin()]
 
-    if all_options:
-        # Compute ATM IV for dynamic sweep range
-        atm_iv = _estimate_atm_iv(all_options, spot)
-        zg_details = zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv,
-                                              r_curve=r_curve)
-        zg = zg_details["zero_gamma"]
-        print(
-            f"  Zero gamma (sweep): ${zg:.2f} "
-            f"[{zg_details['zero_gamma_type']}, {zg_details['method']}]"
+    if not all_options:
+        raise ValueError(
+            "find_key_levels requires all_options for the zero-gamma sweep; "
+            "caller passed None with a non-empty gex_df."
         )
-    else:
-        s = gex_df.sort_values("strike").reset_index(drop=True)
-        s["cum"] = s["net_gex"].cumsum()
-        zg = spot
-        best_dist = float("inf")
-        for i in range(1, len(s)):
-            if s.loc[i - 1, "cum"] * s.loc[i, "cum"] < 0:
-                s1, s2 = s.loc[i - 1, "strike"], s.loc[i, "strike"]
-                p, c = abs(s.loc[i - 1, "cum"]), abs(s.loc[i, "cum"])
-                cr = s1 + (s2 - s1) * p / (p + c)
-                if abs(cr - spot) < best_dist:
-                    best_dist = abs(cr - spot)
-                    zg = cr
-        zg_details = {
-            "zero_gamma": round(float(zg), 2),
-            "is_true_crossing": False,
-            "zero_gamma_type": "Fallback node",
-            "method": "cumulative_fallback",
-            "final_abs_gex": None,
-        }
-        print(f"  Zero gamma (cumulative fallback): ${zg:.2f}")
+
+    atm_iv = _estimate_atm_iv(all_options, spot)
+    zg_details = zero_gamma_sweep_details(all_options, spot, r=r, atm_iv=atm_iv,
+                                          r_curve=r_curve)
+    zg = zg_details["zero_gamma"]
+    print(
+        f"  Zero gamma (sweep): ${zg:.2f} "
+        f"[{zg_details['zero_gamma_type']}, {zg_details['method']}]"
+    )
 
     # Per-expiry zero-gamma (0DTE vs rest)
     nearest_exp = None

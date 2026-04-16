@@ -149,6 +149,7 @@ def classify_session(
             "move_ratio": None,
             "move_ratio_label": None,
             "gamma_bucket": None,
+            "at_zero_gamma": False,
             "description": "Insufficient data to classify the session.",
             "bias": None,
             "historical_tendencies": [],
@@ -166,25 +167,48 @@ def classify_session(
     else:
         ratio_label = "moderate"
 
-    # Map gamma regime to bucket
+    # Map gamma regime to bucket. "At zero gamma" can go either way, so
+    # we tie-break to the less volatile assumption (positive) but keep
+    # an at_zero_gamma flag so consumers can mute the signal rather
+    # than trust an arbitrary coin-flip.
     regime_lower = gamma_regime.lower().strip()
+    at_zero_gamma = False
     if "positive" in regime_lower:
         gamma_bucket = "positive"
     elif "negative" in regime_lower:
         gamma_bucket = "negative"
     else:
-        # At zero gamma — could go either way; treat as a blend
-        gamma_bucket = "positive"  # at zero gamma: default to less volatile assumption
+        gamma_bucket = "positive"
+        at_zero_gamma = True
+
+    # At zero gamma the regime could flip either way within the session,
+    # so the chosen gamma_bucket is a tie-break, not a read. Downgrade
+    # the signal by one step and append a note so UIs can render it muted.
+    _ZG_DOWNGRADE = {"strong": "moderate", "moderate": "weak", "weak": "weak"}
+    _ZG_NOTE = (
+        " Spot is at zero gamma — the regime could flip intraday, so "
+        "this classification is a tie-break rather than a read. Muted."
+    )
 
     # Moderate move ratio: blend characteristics
     if ratio_label == "moderate":
         base_key = ("low", gamma_bucket)
         base = _DAY_CLASSIFICATIONS[base_key]
+        signal = _signal_strength_from_accuracy(_MODERATE_BUCKET_ACCURACY)
+        conf = (
+            "No signal (50% historical accuracy — coin flip). "
+            "Moderate move ratios have the least predictive value. "
+            "Let the first 30 minutes resolve ambiguity."
+        )
+        if at_zero_gamma:
+            signal = _ZG_DOWNGRADE[signal]
+            conf = conf + _ZG_NOTE
         return {
             "classification": f"Mixed / {base['label']} Leaning",
             "move_ratio": round(move_ratio, 3),
             "move_ratio_label": ratio_label,
             "gamma_bucket": gamma_bucket,
+            "at_zero_gamma": at_zero_gamma,
             "description": (
                 f"Overnight move consumed a moderate portion of the expected range "
                 f"({move_ratio*100:.0f}%). No historical edge in this bucket — "
@@ -196,28 +220,31 @@ def classify_session(
                 "no measured historical edge — classifier is at random baseline",
                 "wait for confirmation; reduce position sizes",
             ],
-            "confidence_note": (
-                "No signal (50% historical accuracy — coin flip). "
-                "Moderate move ratios have the least predictive value. "
-                "Let the first 30 minutes resolve ambiguity."
-            ),
+            "confidence_note": conf,
             "bucket_accuracy": _MODERATE_BUCKET_ACCURACY,
-            "signal_strength": _signal_strength_from_accuracy(_MODERATE_BUCKET_ACCURACY),
+            "signal_strength": signal,
         }
 
     key = (ratio_label, gamma_bucket)
     info = _DAY_CLASSIFICATIONS.get(key, {})
     bucket_acc = info.get("bucket_accuracy", _MODERATE_BUCKET_ACCURACY)
 
+    signal = _signal_strength_from_accuracy(bucket_acc)
+    conf = info.get("confidence_note", "")
+    if at_zero_gamma:
+        signal = _ZG_DOWNGRADE[signal]
+        conf = (conf + _ZG_NOTE).strip()
+
     return {
         "classification": info.get("label", "Unknown"),
         "move_ratio": round(move_ratio, 3),
         "move_ratio_label": ratio_label,
         "gamma_bucket": gamma_bucket,
+        "at_zero_gamma": at_zero_gamma,
         "description": info.get("description", ""),
         "bias": info.get("bias"),
         "historical_tendencies": info.get("historical_tendencies", []),
-        "confidence_note": info.get("confidence_note", ""),
+        "confidence_note": conf,
         "bucket_accuracy": bucket_acc,
-        "signal_strength": _signal_strength_from_accuracy(bucket_acc),
+        "signal_strength": signal,
     }

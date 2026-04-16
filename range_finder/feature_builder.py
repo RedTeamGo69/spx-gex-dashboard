@@ -92,41 +92,6 @@ def compute_hv_windows(daily_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================================================================
-# GARCH(1,1) VOLATILITY FORECAST
-# =============================================================================
-
-def compute_garch_vol(daily_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Fit a GARCH(1,1) model on daily SPX log returns and produce a weekly
-    conditional volatility forecast (annualized, same scale as HV features).
-    """
-    from arch import arch_model
-
-    df = daily_df.copy()
-    df["log_ret"] = np.log(df["spx_close"] / df["spx_close"].shift(1))
-    df.dropna(subset=["log_ret"], inplace=True)
-
-    # arch library expects percentage returns for numerical stability
-    returns = df["log_ret"] * 100
-
-    am = arch_model(returns, vol="Garch", p=1, q=1, dist="Normal", rescale=False)
-    result = am.fit(disp="off", show_warning=False)
-
-    # Conditional volatility: convert back from pct to decimal, annualize
-    cond_vol = result.conditional_volatility / 100 * math.sqrt(252)
-    cond_vol.index = df.index
-
-    # Resample to weekly — take last value of each week (Friday close)
-    weekly_garch = cond_vol.resample("W-FRI").last()
-    weekly_garch.index = weekly_garch.index - pd.offsets.Week(weekday=0)  # shift to Monday
-    weekly_garch.index.name = "week_start"
-
-    result_df = pd.DataFrame({"garch_vol": weekly_garch})
-    log.info(f"GARCH(1,1) vol computed: {len(result_df)} weekly rows")
-    return result_df
-
-
-# =============================================================================
 # VIX TERM STRUCTURE
 # =============================================================================
 
@@ -333,18 +298,6 @@ def build_features(conn, exclude_covid: bool = True) -> pd.DataFrame:
     df = df.join(hv_lagged, how="left")
     df["hv_ratio"] = df["hv5"] / df["hv20"]
 
-    # --- GARCH(1,1) volatility forecast ---
-    try:
-        garch_df = compute_garch_vol(daily_spx)
-        garch_lagged = garch_df.shift(1)  # lag 1 week, same as HV
-        df = df.join(garch_lagged, how="left")
-    except ImportError:
-        log.warning("arch library not installed — garch_vol feature will be NULL")
-        df["garch_vol"] = np.nan
-    except Exception as e:
-        log.warning(f"GARCH fit failed ({e}) — garch_vol will be NULL")
-        df["garch_vol"] = np.nan
-
     # --- High-vol regime detection ---
     # Binary flag: 1 if trailing 4-week average VIX > 20
     df["high_vol_regime"] = (df["vix_close"].rolling(4, min_periods=2).mean() > 20).astype(int)
@@ -444,14 +397,14 @@ def _save_features(conn, df: pd.DataFrame) -> None:
                 vix_close, vix_implied_range,
                 vix9d_close, vix3m_close, vix_ts_slope, vix_wk_ratio,
                 hv5, hv10, hv20, hv_ratio,
-                garch_vol, high_vol_regime,
+                high_vol_regime,
                 gex, gex_flag, gex_normalized,
                 yield_spread, fed_funds,
                 spx_return_lag1, abs_return_lag1,
                 has_fomc, has_cpi, has_nfp, has_opex, event_count,
                 updated_at
             ) VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
             ON CONFLICT(week_start) DO UPDATE SET
                 log_range           = excluded.log_range,
@@ -469,7 +422,6 @@ def _save_features(conn, df: pd.DataFrame) -> None:
                 hv10                = excluded.hv10,
                 hv20                = excluded.hv20,
                 hv_ratio            = excluded.hv_ratio,
-                garch_vol           = excluded.garch_vol,
                 high_vol_regime     = excluded.high_vol_regime,
                 gex                 = excluded.gex,
                 gex_flag            = excluded.gex_flag,
@@ -493,7 +445,7 @@ def _save_features(conn, df: pd.DataFrame) -> None:
             _f(row, "vix_ts_slope"),     _f(row, "vix_wk_ratio"),
             _f(row, "hv5"),              _f(row, "hv10"),            _f(row, "hv20"),
             _f(row, "hv_ratio"),
-            _f(row, "garch_vol"),        _i(row, "high_vol_regime"),
+            _i(row, "high_vol_regime"),
             _f(row, "gex"),              _i(row, "gex_flag"),        _f(row, "gex_normalized"),
             _f(row, "yield_spread"),     _f(row, "fed_funds"),
             _f(row, "spx_return_lag1"),  _f(row, "abs_return_lag1"),

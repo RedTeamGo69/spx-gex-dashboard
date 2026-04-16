@@ -261,7 +261,6 @@ def init_all_tables(conn) -> None:
             hv10                REAL,
             hv20                REAL,
             hv_ratio            REAL,
-            garch_vol           REAL,
             high_vol_regime     INTEGER,
             gex                 REAL,
             gex_flag            INTEGER,
@@ -281,7 +280,6 @@ def init_all_tables(conn) -> None:
 
     # Schema migrations for columns added after the initial release
     for col, ctype in [
-        ("garch_vol", "REAL"),
         ("high_vol_regime", "INTEGER"),
         ("gex_normalized", "REAL"),
     ]:

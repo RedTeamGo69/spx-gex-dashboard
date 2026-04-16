@@ -626,13 +626,24 @@ def main():
         unsafe_allow_html=True,
     )
     if not zg_is_true:
-        st.warning(
-            "⚠️ **Zero gamma is a fallback estimate** — the GEX sweep didn't "
-            "find a true sign-change crossing in the window, so the regime "
-            "label above is derived from the nearest-to-zero GEX node. In "
-            "high-vol weeks this can be 10+ points off the true flip. Trade "
-            "with tighter stops or skip."
-        )
+        zg_type = levels.get("zero_gamma_type", "Fallback node")
+        if zg_type == "Rescued crossing":
+            st.warning(
+                "⚠️ **Zero gamma is a rescued crossing** — the coarse GEX "
+                "sweep didn't find a sign change, and the level above was "
+                "only caught by refining around the nearest-to-zero node. "
+                "The crossing is real but fragile: a single-strike IV or "
+                "OI move can swing it 10+ points. Trade with tighter "
+                "stops or skip."
+            )
+        else:
+            st.warning(
+                "⚠️ **Zero gamma is a fallback estimate** — the GEX sweep didn't "
+                "find a true sign-change crossing in the window, so the regime "
+                "label above is derived from the nearest-to-zero GEX node. In "
+                "high-vol weeks this can be 10+ points off the true flip. Trade "
+                "with tighter stops or skip."
+            )
 
     # ── Market context banner ──
     market_ctx = em_analysis.get("market_context", "live")

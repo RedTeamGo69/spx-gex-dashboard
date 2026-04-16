@@ -174,9 +174,16 @@ def _compute_trading_hours_to_expiry(
     sched = get_schedule(calendar_name, start_date, end_date)
 
     if sched.empty:
-        # Fallback: estimate as calendar time assuming 6.5 hr/day
-        cal_days = max((close_dt - ts_ny).total_seconds() / 86400.0, 0.0)
-        return cal_days * 6.5 / 7.0 * 5.0  # rough weekday adjustment
+        # Empty schedule between ts and expiration means the market
+        # calendar is misconfigured for this window — not a situation
+        # where a fudge-factor calendar-day approximation is safe to
+        # return. Fail loudly so the bad config gets noticed instead
+        # of quietly polluting 0DTE gamma with wrong T values.
+        raise ValueError(
+            f"Empty trading schedule for {calendar_name} between "
+            f"{start_date} and {end_date}; cannot compute trading-time T. "
+            "Check that pandas_market_calendars is installed and up to date."
+        )
 
     total_hours = 0.0
     ts_pd = pd.Timestamp(ts_ny)

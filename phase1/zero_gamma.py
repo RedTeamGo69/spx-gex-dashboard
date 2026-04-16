@@ -209,10 +209,15 @@ def zero_gamma_sweep_details(all_options, spot, r=DEFAULT_RISK_FREE_RATE, atm_iv
 
     fine_cross = _find_nearest_crossing_details(fine_prices, fine_gex, spot)
     if fine_cross is not None:
+        # The coarse sweep didn't find a crossing — we only caught one by
+        # refining around the min-|GEX| node. That's a "rescued" crossing:
+        # real math-wise, but fragile (a single strike's IV/OI move could
+        # swing the level 10+ points). Flag it so the UI surfaces the
+        # same fallback banner as a pure min-|GEX| node.
         return {
             "zero_gamma": round(float(fine_cross["crossing"]), 2),
-            "is_true_crossing": True,
-            "zero_gamma_type": "True crossing",
+            "is_true_crossing": False,
+            "zero_gamma_type": "Rescued crossing",
             "method": "crossing_from_fallback_refine",
             "coarse_crossing_found": False,
             "fine_crossing_found": True,
