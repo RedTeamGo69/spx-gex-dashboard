@@ -740,24 +740,32 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # METRIC CARDS
     # =========================================================================
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    # Four risk-tier cards up front (Lower PI → Point → Upper PI → Effective),
+    # then GEX regime + OOS R² as context. Six columns keeps them readable on
+    # desktop; Streamlit wraps them gracefully on narrower screens.
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
 
     c1.metric(
+        f"{forecast['confidence_level']}% PI Lower",
+        f"{forecast['lower_pct']*100:.2f}%",
+        "aggressive tier",
+    )
+    c2.metric(
         "Point Estimate",
         f"{forecast['point_pct']*100:.2f}%",
         f"vs VIX: {forecast['model_vs_vix']*100:+.2f}%",
     )
-    c2.metric(
+    c3.metric(
         f"{forecast['confidence_level']}% PI Upper",
         f"{forecast['upper_pct']*100:.2f}%",
-        "used for strike selection",
-    )
-    c3.metric(
-        "Effective Range",
-        f"{plan.effective_range_pct*100:.2f}%",
-        f"buffer: +{plan.buffer_pct*100:.2f}%",
+        "moderate tier",
     )
     c4.metric(
+        "Effective Range",
+        f"{plan.effective_range_pct*100:.2f}%",
+        f"conservative · buffer: +{plan.buffer_pct*100:.2f}%",
+    )
+    c5.metric(
         "GEX Regime",
         gex_ctx.gamma_regime.title(),
         f"flag: {gex_adj['gex_regime_flag']:+d}",
@@ -768,7 +776,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # if that load fell through (e.g. user is still on the first render
     # after toggling) we'd rather the card tell the truth than lie.
     _mdl_label = active_model if active_model == model_choice else f"{active_model} ⚠"
-    c5.metric(
+    c6.metric(
         f"OOS R² · {_mdl_label}",
         f"{metrics['oos_r2']:.4f}",
         f"MAE: {metrics['mae_pct']*100:.2f}%",
@@ -953,23 +961,23 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
             all_warnings = list(_plan.warnings) + _gex_adj.get("gex_adjustment_notes", [])
 
-            # Per-tier weekly EM floor warnings
+            # Per-tier weekly EM floor warnings — use the tier's stored
+            # pre-floor strikes so the message matches the "Model Strikes
+            # (before EM floor)" section exactly (chain-snap rounding aware).
             _em_upper = (_weekly_em or {}).get("upper_level", 0) or 0
             _em_lower = (_weekly_em or {}).get("lower_level", 0) or 0
-            if _em_upper and _em_lower:
-                # Compute what the raw (pre-floor) strike would have been
-                _half = selected_tier.range_pct / 2
-                _raw_call = _spx_close_inp * (1 + _half)
-                _raw_put  = _spx_close_inp * (1 - _half)
-                if _raw_call < _em_upper:
+            if _em_upper > 0 and _em_lower > 0:
+                if selected_tier.model_call_short is not None:
                     all_warnings.append(
-                        f"Weekly EM floor applied: call short widened from ~{_raw_call:,.0f} "
-                        f"to {selected_tier.call_short:,.0f} (EM upper = {_em_upper:,.0f})"
+                        f"Weekly EM floor applied: call short widened from "
+                        f"{selected_tier.model_call_short:,.0f} to "
+                        f"{selected_tier.call_short:,.0f} (EM upper = {_em_upper:,.0f})"
                     )
-                if _raw_put > _em_lower:
+                if selected_tier.model_put_short is not None:
                     all_warnings.append(
-                        f"Weekly EM floor applied: put short widened from ~{_raw_put:,.0f} "
-                        f"to {selected_tier.put_short:,.0f} (EM lower = {_em_lower:,.0f})"
+                        f"Weekly EM floor applied: put short widened from "
+                        f"{selected_tier.model_put_short:,.0f} to "
+                        f"{selected_tier.put_short:,.0f} (EM lower = {_em_lower:,.0f})"
                     )
 
             if all_warnings:
