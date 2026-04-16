@@ -206,8 +206,19 @@ def render_key_levels(levels, spot, regime_info, confidence_info, staleness_info
     )
     st.markdown(html, unsafe_allow_html=True)
 
-    if not levels.get("is_true_crossing", True):
-        st.warning("⚠️ Zero gamma is a fallback estimate — no true sign-change crossing was found in the sweep range. Use this level with caution.")
+    if not levels.get("zero_gamma_is_true_crossing", True):
+        zg_type = levels.get("zero_gamma_type", "Fallback node")
+        if zg_type == "Rescued crossing":
+            st.warning(
+                "⚠️ Zero gamma is a **rescued crossing** — the coarse sweep "
+                "missed a sign change and we only caught one by refining "
+                "around the min-|GEX| node. Fragile to single-strike moves."
+            )
+        else:
+            st.warning(
+                "⚠️ Zero gamma is a fallback estimate — no true sign-change "
+                "crossing was found in the sweep range. Use with caution."
+            )
 
     st.caption(
         "**Dealer positioning assumption:** GEX models assume dealers are net short calls and net short puts "
