@@ -740,32 +740,28 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # METRIC CARDS
     # =========================================================================
 
-    # Four risk-tier cards up front (Lower PI → Point → Upper PI → Effective),
-    # then GEX regime + OOS R² as context. Six columns keeps them readable on
-    # desktop; Streamlit wraps them gracefully on narrower screens.
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    # Five metric cards. The PI card holds both tier bounds (Lower ↔ Upper)
+    # so all four risk tiers named in the spec — Lower PI, Point, Upper PI,
+    # Effective — stay visible without cramping the row into 6 columns
+    # (which clips labels on typical laptop widths).
+    c1, c2, c3, c4, c5 = st.columns(5)
 
     c1.metric(
-        f"{forecast['confidence_level']}% PI Lower",
-        f"{forecast['lower_pct']*100:.2f}%",
-        "aggressive tier",
-    )
-    c2.metric(
         "Point Estimate",
         f"{forecast['point_pct']*100:.2f}%",
         f"vs VIX: {forecast['model_vs_vix']*100:+.2f}%",
     )
-    c3.metric(
-        f"{forecast['confidence_level']}% PI Upper",
-        f"{forecast['upper_pct']*100:.2f}%",
-        "moderate tier",
+    c2.metric(
+        f"{forecast['confidence_level']}% PI Range",
+        f"{forecast['lower_pct']*100:.2f}% — {forecast['upper_pct']*100:.2f}%",
+        "aggressive ↔ moderate",
     )
-    c4.metric(
+    c3.metric(
         "Effective Range",
         f"{plan.effective_range_pct*100:.2f}%",
         f"conservative · buffer: +{plan.buffer_pct*100:.2f}%",
     )
-    c5.metric(
+    c4.metric(
         "GEX Regime",
         gex_ctx.gamma_regime.title(),
         f"flag: {gex_adj['gex_regime_flag']:+d}",
@@ -776,7 +772,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # if that load fell through (e.g. user is still on the first render
     # after toggling) we'd rather the card tell the truth than lie.
     _mdl_label = active_model if active_model == model_choice else f"{active_model} ⚠"
-    c6.metric(
+    c5.metric(
         f"OOS R² · {_mdl_label}",
         f"{metrics['oos_r2']:.4f}",
         f"MAE: {metrics['mae_pct']*100:.2f}%",
