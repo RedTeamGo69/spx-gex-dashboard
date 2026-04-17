@@ -457,9 +457,15 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     except Exception as e:
         _logger.warning(f"  GEX save failed: {e}")
 
-    # ── Step 4: Fit model and forecast ──
-    _logger.info("  4/4 Fitting model and generating forecast...")
-    model_choice = "M3_extended"
+    # ── Step 4: Fit every model spec and save them all ──
+    # Fitting every spec Monday (not just M3_extended) means a user who
+    # switches the Spread Finder's model dropdown mid-week to compare
+    # M6_regime vs M1_baseline etc. gets a clean load-from-Postgres of
+    # a Monday-frozen fit — no "click Forecast to fit it for the first
+    # time" prompt, no mid-week refit that reproduces Monday's result
+    # unnecessarily. OLS with HC3 on ~few hundred weekly rows is
+    # milliseconds per spec, so fitting all 5 adds ~1–2s total.
+    _logger.info(f"  4/4 Fitting all {len(MODEL_SPECS)} model specs...")
     try:
         from range_finder.feature_builder import get_features
         df_feat = get_features(conn)
@@ -467,17 +473,34 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
             _logger.warning("  No features available — skipping forecast")
             return
 
-        feat_cols = MODEL_SPECS.get(model_choice, [])
-        avail_cols = [c for c in feat_cols if feature_has_enough_data(df_feat, c)]
+        fitted = 0
+        failed = []
+        for spec_name in MODEL_SPECS:
+            try:
+                feat_cols  = MODEL_SPECS[spec_name]
+                avail_cols = [c for c in feat_cols if feature_has_enough_data(df_feat, c)]
 
-        X_train, X_test, y_train, y_test = time_series_split(df_feat, feature_cols=avail_cols)
-        result = fit_model(X_train, y_train, model_name=model_choice)
-        metrics = evaluate_oos(result, X_test, y_test, model_name=model_choice)
-        save_model(result, avail_cols, model_choice, metrics, conn=conn)
+                if len(avail_cols) < 2:
+                    _logger.info(f"    {spec_name}: skipping — only {len(avail_cols)} usable features")
+                    continue
 
-        _logger.info(f"  Model fitted: OOS R² = {metrics['oos_r2']:.4f}, MAE = {metrics['mae_pct']*100:.2f}%")
+                X_train, X_test, y_train, y_test = time_series_split(df_feat, feature_cols=avail_cols)
+                result  = fit_model(X_train, y_train, model_name=spec_name)
+                metrics = evaluate_oos(result, X_test, y_test, model_name=spec_name)
+                save_model(result, avail_cols, spec_name, metrics, conn=conn)
+
+                _logger.info(
+                    f"    {spec_name}: OOS R² = {metrics['oos_r2']:.4f}, "
+                    f"MAE = {metrics['mae_pct']*100:.2f}%  (features: {len(avail_cols)})"
+                )
+                fitted += 1
+            except Exception as e:
+                failed.append(spec_name)
+                _logger.warning(f"    {spec_name}: fit failed — {e}")
+
+        _logger.info(f"  Fitted {fitted}/{len(MODEL_SPECS)} specs" + (f" (failed: {failed})" if failed else ""))
     except Exception as e:
-        _logger.error(f"  Model fitting failed: {e}")
+        _logger.error(f"  Model fitting stage failed: {e}")
 
     # ── Save Monday open + VIX to DB ──
     # Prefer the true daily-candle Open over the live mid-move `spot` /
