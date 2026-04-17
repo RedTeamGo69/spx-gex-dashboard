@@ -389,10 +389,17 @@ def main():
             _today = run_now.date()
             _min_d = date.fromisoformat(future_exps[0])  if future_exps else _today
             _max_d = date.fromisoformat(future_exps[-1]) if future_exps else _today
-            _default_end = min(_today + timedelta(days=7), _max_d)
+            # Clamp the default "from" into the allowed window.  On weekends
+            # or Friday-after-close, `today` is already behind future_exps[0]
+            # (which is next Monday), and Streamlit's date_input raises a
+            # StreamlitAPIException when value[0] < min_value.
+            _default_from = max(_today, _min_d)
+            _default_end  = min(_default_from + timedelta(days=7), _max_d)
+            if _default_end < _default_from:
+                _default_end = _default_from
             _range = st.date_input(
                 "Pick date range",
-                value=(_today, _default_end),
+                value=(_default_from, _default_end),
                 min_value=_min_d,
                 max_value=_max_d,
                 format="YYYY-MM-DD",
