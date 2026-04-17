@@ -907,9 +907,29 @@ def main():
         # Weekly/monthly markers ONLY use the frozen snap — never the live EM.
         # Falling back to live data makes the markers drift every refresh; if
         # the snap is missing we'd rather draw nothing than a moving target.
-        w_em_for_chart = weekly_em_snap or {}
-        m_em_for_chart = monthly_em_snap or {}
-        fig1 = build_gex_bar_chart(data.gex_df, levels, spot, em_analysis, weekly_em=w_em_for_chart, monthly_em=m_em_for_chart)
+        #
+        # We also hide each EM band whenever the user's expiration view has
+        # zoomed PAST that EM's coverage window, because an EM measured from
+        # a Friday straddle is meaningless once you're looking at strikes
+        # that expire next month — the underlying can (and usually does)
+        # move far beyond the weekly ±EM by then. Rules:
+        #   daily   EM → show only if every selected exp is today
+        #   weekly  EM → show only if the farthest selected exp ≤ this Friday
+        #   monthly EM → show only if the farthest selected exp ≤ this OpEx
+        _today_str = run_now.strftime("%Y-%m-%d")
+        _farthest  = max(selected) if selected else _today_str
+
+        _show_daily_em   = all(e == _today_str for e in selected) if selected else False
+        _show_weekly_em  = bool(weekly_exp)  and _farthest <= weekly_exp
+        _show_monthly_em = bool(monthly_exp) and _farthest <= monthly_exp
+
+        w_em_for_chart = (weekly_em_snap or {}) if _show_weekly_em else {}
+        m_em_for_chart = (monthly_em_snap or {}) if _show_monthly_em else {}
+        fig1 = build_gex_bar_chart(
+            data.gex_df, levels, spot, em_analysis,
+            weekly_em=w_em_for_chart, monthly_em=m_em_for_chart,
+            show_daily_em=_show_daily_em,
+        )
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
     # ── Spread Finder — Weekly credit spread placement ──
