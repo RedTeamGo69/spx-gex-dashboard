@@ -385,6 +385,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         fetch_spx_vix, save_spx_vix,
         fetch_fred_macro, save_fred_macro,
         build_event_flags,
+        fred_key_status, FRED_API_KEY,
     )
     from range_finder.feature_builder import build_features
     from range_finder.gex_bridge import (
@@ -410,12 +411,19 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         _logger.warning(f"  SPX/VIX fetch failed: {e} (continuing with existing data)")
 
     if fred_key:
+        _logger.info(f"  FRED key: {fred_key_status()}")
         try:
             df_macro = fetch_fred_macro(years=6)
             save_fred_macro(conn, df_macro)
             _logger.info(f"  FRED macro: {len(df_macro)} rows")
         except Exception as e:
-            _logger.warning(f"  FRED fetch skipped: {e}")
+            if not FRED_API_KEY:
+                _logger.warning("  FRED fetch skipped: FRED_API_KEY not set")
+            else:
+                _logger.warning(
+                    f"  FRED fetch failed ({e}) — existing DB macro data still "
+                    "valid; pipeline continues"
+                )
 
     build_event_flags(conn)
 

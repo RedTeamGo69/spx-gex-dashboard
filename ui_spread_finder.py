@@ -25,6 +25,8 @@ from range_finder.data_collector import (
     fetch_fred_macro as rf_fetch_fred_macro, save_fred_macro as rf_save_fred_macro,
     build_event_flags as rf_build_event_flags,
     get_weekly_spx as rf_get_weekly_spx,
+    fred_key_status as rf_fred_key_status,
+    FRED_API_KEY as RF_FRED_API_KEY,
 )
 from range_finder.feature_builder import (
     build_features as rf_build_features,
@@ -506,7 +508,26 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 rf_save_fred_macro(conn, df_macro)
                 st.success(f"FRED macro data refreshed — {len(df_macro)} rows")
             except Exception as e:
-                st.warning(f"FRED fetch skipped: {e} (set FRED_API_KEY in secrets to enable)")
+                # Distinguish "no key" from "FRED returned an error" — the
+                # old message lumped them together and blamed the user for
+                # a missing key whenever FRED itself had a 500. Also
+                # surface the key status so you can eyeball whether
+                # Streamlit actually picked up the secret.
+                if not RF_FRED_API_KEY:
+                    st.warning(
+                        "FRED fetch skipped: FRED_API_KEY is not set. "
+                        "Add it under Streamlit Cloud → Manage app → Secrets, "
+                        "or export FRED_API_KEY in your local env."
+                    )
+                else:
+                    st.warning(
+                        f"FRED fetch failed — {e}. "
+                        f"Key status: {rf_fred_key_status()}. "
+                        "Existing macro data in the DB is still valid; "
+                        "the rest of the pipeline will keep running. "
+                        "Try again in a minute — FRED's API occasionally "
+                        "returns 500s during their maintenance windows."
+                    )
 
         rf_build_event_flags(conn)
 
