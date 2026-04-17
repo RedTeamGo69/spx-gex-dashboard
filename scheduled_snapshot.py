@@ -457,15 +457,57 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         _logger.error(f"  Model fitting failed: {e}")
 
     # ── Save Monday open + VIX to DB ──
+    # Prefer the true daily-candle Open over the live mid-move `spot` /
+    # live-last VIX tick. Yahoo publishes today's Open within seconds of
+    # 9:30 ET, so by the time this cron actually runs the daily bar is
+    # almost always available. Fall back to `spot` / live VIX only if
+    # the bar is still empty (which mostly happens when the workflow
+    # fires before Yahoo's first tick).
     _logger.info("  Saving Monday open + VIX...")
     try:
-        vix_close = 18.0
-        try:
-            vix_hist = yf.Ticker("^VIX").history(period="5d")
-            if not vix_hist.empty:
-                vix_close = round(float(vix_hist["Close"].dropna().iloc[-1]), 2)
-        except Exception:
-            pass
+        session_date = run_now.date()
+
+        def _daily_open(symbol: str):
+            try:
+                hist = yf.Ticker(symbol).history(period="5d")
+            except Exception as e:
+                _logger.warning(f"    yfinance fetch failed for {symbol}: {e}")
+                return None
+            if hist is None or hist.empty or "Open" not in hist.columns:
+                return None
+            # hist.index is tz-aware; matching on .date() dodges DST edges.
+            for ts, row in hist.iterrows():
+                if hasattr(ts, "date") and ts.date() == session_date:
+                    op = row.get("Open")
+                    if op is not None and not (isinstance(op, float) and op != op):
+                        return float(op)
+            return None
+
+        # Index open: ^SPX is the cash index. XSP trades at ~SPX/10, so we
+        # scale for XSP-ticker weekly rows to match the strike space the
+        # rest of the spread finder expects.
+        spx_open = _daily_open("^SPX")
+        if spx_open is not None:
+            monday_open = round(spx_open / 10.0, 2) if ticker == "XSP" else round(spx_open, 2)
+            open_source = f"^SPX daily Open ({session_date})"
+        else:
+            monday_open = round(spot, 2)
+            open_source = "live parity spot (daily bar unavailable)"
+
+        vix_open = _daily_open("^VIX")
+        if vix_open is not None:
+            monday_vix = round(vix_open, 2)
+            vix_source = f"^VIX daily Open ({session_date})"
+        else:
+            # Live-last fallback — same as the legacy path.
+            monday_vix = 18.0
+            try:
+                vix_hist = yf.Ticker("^VIX").history(period="5d")
+                if not vix_hist.empty:
+                    monday_vix = round(float(vix_hist["Close"].dropna().iloc[-1]), 2)
+            except Exception:
+                pass
+            vix_source = "live ^VIX last close (daily Open unavailable)"
 
         days_since_monday = run_now.weekday()
         monday = run_now - timedelta(days=days_since_monday)
@@ -481,10 +523,13 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
                 monday_open = excluded.monday_open,
                 monday_vix  = excluded.monday_vix,
                 captured_at = excluded.captured_at
-        """, (week_start, ticker, round(spot, 2), vix_close, now_iso))
+        """, (week_start, ticker, monday_open, monday_vix, now_iso))
         conn.commit()
 
-        _logger.info(f"  Monday open saved: {ticker} = {spot:.2f}, VIX = {vix_close}")
+        _logger.info(
+            f"  Monday open saved: {ticker}={monday_open:.2f} ({open_source}), "
+            f"VIX={monday_vix:.2f} ({vix_source})"
+        )
     except Exception as e:
         _logger.warning(f"  Monday open/VIX save failed: {e}")
 
