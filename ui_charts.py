@@ -5,7 +5,8 @@ import plotly.graph_objects as go
 from theme import COLORS
 
 
-def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, monthly_em=None):
+def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
+                         weekly_em=None, monthly_em=None, show_daily_em=True):
     df = gex_df.copy().sort_values("strike").reset_index(drop=True)
     strikes = df["strike"].values
     net_gex = df["net_gex"].values
@@ -30,9 +31,11 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, month
                        annotation_font_color=color, annotation_font_size=9,
                        annotation_position="top left")
 
-    # EM levels (0DTE — purple dotted)
+    # EM levels (0DTE — purple dotted).  Suppressed when the caller says
+    # the selected expiration view has extended beyond today — the 0DTE
+    # straddle's ±EM is only meaningful for today's session.
     em = em_analysis.get("expected_move", {})
-    if em.get("upper_level"):
+    if show_daily_em and em.get("upper_level"):
         for val, label in [(em["upper_level"], "EM+"), (em["lower_level"], "EM−")]:
             fig.add_hline(y=val, line_color=COLORS["em_level"], line_dash="dot", line_width=1.2,
                            annotation_text=f"{label} ${val:.0f}",
