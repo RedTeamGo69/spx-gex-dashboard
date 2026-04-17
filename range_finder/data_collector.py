@@ -32,6 +32,16 @@ except Exception:
 if not FRED_API_KEY:
     FRED_API_KEY = os.environ.get("FRED_API_KEY", "")
 
+
+def fred_key_status() -> str:
+    """Human-readable description of where the FRED key was (or wasn't)
+    resolved from, without leaking the key itself. Use in UI captions /
+    log lines so "is my key actually loaded?" is diagnosable without
+    having to crack open the secrets panel."""
+    if not FRED_API_KEY:
+        return "not set (neither st.secrets['FRED_API_KEY'] nor $FRED_API_KEY)"
+    return f"configured ({len(FRED_API_KEY)} chars; FRED keys are normally 32)"
+
 # How many years of history to pull on initial load
 HISTORY_YEARS = 6
 
