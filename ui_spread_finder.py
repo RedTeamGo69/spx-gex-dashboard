@@ -559,56 +559,97 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     _mdl_name_key    = f"sf_model_name_{ticker}"
 
     if do_forecast:
-        with st.spinner(f"4/4 — Fitting {model_choice}..."):
-            try:
-                # Start from the static feature list but COPY it — we may
-                # append `gex_normalized` below and we don't want to mutate
-                # the module-level MODEL_SPECS dict.
-                feat_cols = list(RF_MODEL_SPECS[model_choice])
+        # Weekly Setup fits every spec (same as the Monday cron) so a
+        # user can switch the model dropdown afterwards without tripping
+        # the "click Forecast to fit this spec" prompt. A standalone
+        # Forecast click still fits only the currently-selected spec —
+        # that's the fast path for iterating on one model.
+        _specs_to_fit = list(RF_MODEL_SPECS.keys()) if do_weekly else [model_choice]
+        _spinner_label = (
+            f"4/4 — Fitting {len(_specs_to_fit)} specs..."
+            if len(_specs_to_fit) > 1 else f"4/4 — Fitting {model_choice}..."
+        )
 
-                # Mirror run_full_pipeline's dynamic GEX injection: when the
-                # user has built up enough weekly GEX history via the Save
-                # GEX button (>20 non-null rows of gex_normalized), fold it
-                # into M4_full as a real training feature.  This is the
-                # whole reason M4_full is called "full" — without this the
-                # UI-fitted M4 is just M3 + term structure + yield spread,
-                # ignoring all the GEX snapshots you've been accumulating.
-                # The CLI batch function run_full_pipeline already does
-                # this; we were just missing it in the Streamlit path.
-                if model_choice == "M4_full":
-                    gex_col = "gex_normalized"
-                    if rf_feature_has_enough_data(df_feat, gex_col):
-                        if gex_col not in feat_cols:
-                            feat_cols.append(gex_col)
-                            st.caption(
-                                f"ℹ️ M4_full: using {int(df_feat[gex_col].notna().sum())} "
-                                f"weeks of stored GEX history as a training feature."
-                            )
-                    else:
-                        _weeks = int(df_feat[gex_col].notna().sum()) if gex_col in df_feat.columns else 0
-                        st.caption(
-                            f"ℹ️ M4_full: only {_weeks} weeks of GEX history — need >{RF_GEX_MIN_WEEKS} to "
-                            f"fold `gex_normalized` into the fit. Keep clicking **Save GEX** "
-                            f"each week; in the meantime M4 runs without the GEX feature."
-                        )
+        _selected_result = None
+        _selected_avail  = None
+        _selected_metrics = None
 
-                avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
+        with st.spinner(_spinner_label):
+            for _spec in _specs_to_fit:
+                try:
+                    # Start from the static feature list but COPY it — we may
+                    # append `gex_normalized` below and we don't want to mutate
+                    # the module-level MODEL_SPECS dict.
+                    feat_cols = list(RF_MODEL_SPECS[_spec])
 
-                X_train, X_test, y_train, y_test = rf_time_series_split(
-                    df_feat, feature_cols=avail_cols
-                )
-                result = rf_fit_model(X_train, y_train, model_name=model_choice)
-                metrics = rf_evaluate_oos(result, X_test, y_test, model_name=model_choice)
-                rf_save_model(result, avail_cols, model_choice, metrics, conn=conn)
+                    # Mirror run_full_pipeline's dynamic GEX injection: when the
+                    # user has built up enough weekly GEX history via the Save
+                    # GEX button (>RF_GEX_MIN_WEEKS non-null rows of gex_normalized),
+                    # fold it into M4_full as a real training feature.  This is
+                    # the whole reason M4_full is called "full" — without this
+                    # the UI-fitted M4 is just M3 + term structure + yield
+                    # spread, ignoring all the GEX snapshots accumulated.
+                    if _spec == "M4_full":
+                        gex_col = "gex_normalized"
+                        if rf_feature_has_enough_data(df_feat, gex_col):
+                            if gex_col not in feat_cols:
+                                feat_cols.append(gex_col)
+                                # Only surface the "using N weeks of GEX" note
+                                # when fitting the spec the user is looking at
+                                # — otherwise the Weekly Setup run spams the
+                                # UI with notes about every background spec.
+                                if _spec == model_choice:
+                                    st.caption(
+                                        f"ℹ️ M4_full: using {int(df_feat[gex_col].notna().sum())} "
+                                        f"weeks of stored GEX history as a training feature."
+                                    )
+                        else:
+                            _weeks = int(df_feat[gex_col].notna().sum()) if gex_col in df_feat.columns else 0
+                            if _spec == model_choice:
+                                st.caption(
+                                    f"ℹ️ M4_full: only {_weeks} weeks of GEX history — need >{RF_GEX_MIN_WEEKS} to "
+                                    f"fold `gex_normalized` into the fit. Keep clicking **Save GEX** "
+                                    f"each week; in the meantime M4 runs without the GEX feature."
+                                )
 
-                st.session_state[_mdl_result_key]  = result
-                st.session_state[_mdl_feat_key]    = avail_cols
-                st.session_state[_mdl_metrics_key] = metrics
-                st.session_state[_mdl_name_key]    = model_choice
-            except Exception as e:
-                st.error(f"Model fitting failed: {e}")
-                return
-        st.success(f"Model fitted | {model_choice} | OOS R² = {metrics['oos_r2']:.4f}")
+                    avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
+                    if len(avail_cols) < 2:
+                        if _spec == model_choice:
+                            st.warning(f"{_spec}: only {len(avail_cols)} usable features — skipped")
+                        continue
+
+                    X_train, X_test, y_train, y_test = rf_time_series_split(
+                        df_feat, feature_cols=avail_cols
+                    )
+                    _result  = rf_fit_model(X_train, y_train, model_name=_spec)
+                    _metrics = rf_evaluate_oos(_result, X_test, y_test, model_name=_spec)
+                    rf_save_model(_result, avail_cols, _spec, _metrics, conn=conn)
+
+                    if _spec == model_choice:
+                        _selected_result  = _result
+                        _selected_avail   = avail_cols
+                        _selected_metrics = _metrics
+                except Exception as e:
+                    st.error(f"{_spec} fitting failed: {e}")
+
+        # Summary line for the Weekly Setup path so the user can see which
+        # specs landed in Postgres at a glance.
+        if do_weekly:
+            st.success(f"Fitted {len(_specs_to_fit)} specs (all saved to Postgres)")
+
+        # Prime session state with the currently-selected spec's fit so
+        # the rest of this render uses it without falling through to the
+        # load-from-Postgres path (same behavior as the previous single-
+        # spec code).
+        if _selected_result is not None:
+            st.session_state[_mdl_result_key]  = _selected_result
+            st.session_state[_mdl_feat_key]    = _selected_avail
+            st.session_state[_mdl_metrics_key] = _selected_metrics
+            st.session_state[_mdl_name_key]    = model_choice
+            st.success(
+                f"Model fitted | {model_choice} | "
+                f"OOS R² = {_selected_metrics['oos_r2']:.4f}"
+            )
 
     # If the user toggled the model dropdown, the cached fit in session
     # state belongs to a different spec — evict it so the load block
