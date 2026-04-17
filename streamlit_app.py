@@ -564,6 +564,40 @@ def main():
         "monthly", monthly_date_key, _is_monthly_freeze_day(run_now),
     )
 
+    # ── Pick the EM that matches the expiration view the user chose ──
+    # The header "Expected Move" card used to always show the 0DTE EM even
+    # when the user selected "This week" or "OpEx Cycle", which was
+    # misleading. Map the sidebar mode to the matching frozen snapshot
+    # (or a live compute for Custom/Tomorrow where there's no natural
+    # session-start anchor).
+    daily_em = em_analysis.get("expected_move", {}) or {}
+
+    def _em_for_exp(exp_str):
+        if not exp_str:
+            return {}
+        try:
+            return compute_em_for_expiration(temp_client, ticker, exp_str, spot) or {}
+        except Exception:
+            return {}
+
+    if "0DTE" in mode:
+        display_em = daily_em
+        display_em_label = "0DTE EM"
+    elif "Tomorrow" in mode:
+        tmr_em = _em_for_exp(selected[0] if selected else None)
+        display_em = tmr_em or daily_em
+        display_em_label = "Tomorrow EM"
+    elif "week" in mode:
+        display_em = weekly_em_snap or weekly_em_live or {}
+        display_em_label = "Weekly EM"
+    elif "OpEx" in mode:
+        display_em = monthly_em_snap or monthly_em_live or {}
+        display_em_label = "OpEx-Cycle EM"
+    else:  # Custom
+        farthest = selected[-1] if selected else None
+        display_em = _em_for_exp(farthest) or daily_em
+        display_em_label = f"Custom EM ({farthest})" if farthest else "Custom EM"
+
     # ── Save historical snapshot (market hours only, throttled to refresh interval) ──
     if is_market_open:
         now_utc = datetime.now(timezone.utc)
@@ -772,10 +806,18 @@ def main():
 
         cls_acc_label = f"hist {cls_acc*100:.0f}%" if cls_acc is not None else ""
 
+        # The EM card shown here tracks the expiration view the user picked
+        # in the sidebar (see display_em / display_em_label above) — it's no
+        # longer hard-wired to the 0DTE daily EM. The vol-budget ratio still
+        # uses the 0DTE EM denominator because today's overnight move can't
+        # sensibly be normalized by a weekly or monthly straddle.
+        _em_pts = display_em.get("expected_move_pts", 0) or 0
+        _em_lo  = display_em.get("lower_level", 0) or 0
+        _em_hi  = display_em.get("upper_level", 0) or 0
         em_bar_html = (
             '<div class="em-bar">'
-            f'<div class="em-item"><div class="lbl">Expected Move</div><div class="val">&plusmn;{em_data.get("expected_move_pts", 0) or 0:.0f} pts</div></div>'
-            f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${em_data.get("lower_level", 0) or 0:.0f} &ndash; ${em_data.get("upper_level", 0) or 0:.0f}</div></div>'
+            f'<div class="em-item"><div class="lbl">{display_em_label}</div><div class="val">&plusmn;{_em_pts:.0f} pts</div></div>'
+            f'<div class="em-item"><div class="lbl">EM Range</div><div class="val">${_em_lo:.0f} &ndash; ${_em_hi:.0f}</div></div>'
             f'<div class="em-item"><div class="lbl">{on_label}</div><div class="val" style="color:{on_color};">{on_arrow} {display_pts:+.1f} pts</div><div class="lbl" style="color:{on_color};">{display_pct:+.2f}%</div></div>'
             f'<div class="em-item"><div class="lbl">Vol Budget Used</div><div class="val" style="color:{ratio_color};">{ratio_pct}</div></div>'
             f'<div class="em-item"><div class="lbl">Session Type</div><div class="val" style="color:{cls_color};">{cls_name}</div><div class="lbl" style="color:{cls_color};">{cls_acc_label}</div></div>'
@@ -783,10 +825,17 @@ def main():
         )
         st.markdown(em_bar_html, unsafe_allow_html=True)
 
-        # Show when the straddle was captured
-        snap_time = st.session_state.get(f"em_snapshot_time_daily_{ticker}")
+        # Show when the relevant straddle was captured. Each horizon has its
+        # own freeze timestamp key (daily / weekly / monthly); Custom and
+        # Tomorrow are live recomputes so they don't have one.
+        _snap_key_for_view = {
+            "0DTE EM": f"em_snapshot_time_daily_{ticker}",
+            "Weekly EM": f"em_snapshot_time_weekly_{ticker}",
+            "OpEx-Cycle EM": f"em_snapshot_time_monthly_{ticker}",
+        }.get(display_em_label)
+        snap_time = st.session_state.get(_snap_key_for_view) if _snap_key_for_view else None
         if market_ctx == "live" and snap_time:
-            st.caption(f"📌 Expected move captured at {snap_time} — frozen for the session. Today's move and vol budget update live.")
+            st.caption(f"📌 {display_em_label} captured at {snap_time} — frozen for the horizon. Today's move and vol budget update live.")
 
         # Overnight range bar (when ES high/low available, after hours only)
         if market_ctx == "afterhours" and overnite_range and overnite_range.get("es_high"):
