@@ -419,6 +419,28 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     build_event_flags(conn)
 
     # ── Step 2: Rebuild features ──
+    #
+    # IMPORTANT — the order below is load-bearing.  build_features runs
+    # BEFORE save_gex_to_range_finder on purpose: the HAR model is a
+    # strictly lag-1 autoregressive structure (VIX, HV ratios, yield
+    # spread, event flags are all time-aligned to "last Friday's close"
+    # as the information set used to predict THIS week).  If we saved
+    # this-Monday-morning's live GEX first and then rebuilt features,
+    # the current week's `gex_normalized` would reflect an information
+    # timestamp 1 week later than every other feature in the row — a
+    # temporal alignment mismatch that the fitted coefficients weren't
+    # trained for, with all the usual look-ahead-bias and noise-driven
+    # buffer-widening consequences.
+    #
+    # The consequence of the lag is that the current week's
+    # `gex_normalized` stays NaN (or last week's value) until NEXT
+    # Monday's rebuild — that's intentional.  Live GEX is still surfaced
+    # on the plan via adjust_spread_with_gex's display-side annotations;
+    # it just doesn't get baked into strike placement until it's been
+    # lagged one week, matching the rest of the HAR features.
+    #
+    # Do NOT reorder these steps without updating the HAR model's
+    # training pipeline to match.
     _logger.info("  2/4 Rebuilding feature matrix...")
     try:
         build_features(conn)
