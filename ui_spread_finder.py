@@ -311,8 +311,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     # ── Monday open freeze logic ──
     # On the weekly freeze day (Monday or Tue after holiday) at market open,
-    # capture spot as the weekly reference. Rest of the week uses that frozen value.
-    # Before Monday open (weekends), use the live spot (Friday close).
+    # capture the true daily-candle Open as the weekly reference. Rest of
+    # the week uses that frozen value. Before Monday open (weekends), use
+    # the live spot (Friday close).
     run_now = now_ny()
     is_freeze_day = _is_weekly_freeze_day(run_now)
     is_market_open = data.market_open
@@ -324,13 +325,42 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # Determine which week we're in (use ISO week number)
     current_week = run_now.isocalendar()[1]
 
+    def _daily_open_today(symbol: str):
+        """Today's daily-candle Open, or None if Yahoo hasn't published
+        it yet (happens briefly after 9:30 while the first tick settles)."""
+        try:
+            hist = yf.Ticker(symbol).history(period="5d")
+        except Exception:
+            return None
+        if hist is None or hist.empty or "Open" not in hist.columns:
+            return None
+        today = run_now.date()
+        for ts, row in hist.iterrows():
+            if hasattr(ts, "date") and ts.date() == today:
+                op = row.get("Open")
+                if op is not None and not (isinstance(op, float) and op != op):
+                    return float(op)
+        return None
+
     # Freeze Monday's open on the freeze day when market is open
     if is_freeze_day and is_market_open:
         stored_week = st.session_state.get(mon_open_week_key)
         if stored_week != current_week:
-            # First market-hours refresh on the freeze day — lock the open price + VIX
-            st.session_state[mon_open_key] = round(spot, 2)
-            st.session_state[mon_vix_key] = live_vix
+            # First market-hours refresh on the freeze day — lock the
+            # TRUE daily-candle Open, not whatever tick `spot` happens to
+            # land on while this refresh is running. Fall back to spot
+            # only if yfinance hasn't returned today's bar yet.
+            spx_daily_open = _daily_open_today("^SPX")
+            if spx_daily_open is not None:
+                frozen_spot = round(spx_daily_open / 10.0, 2) if ticker == "XSP" else round(spx_daily_open, 2)
+            else:
+                frozen_spot = round(spot, 2)
+
+            vix_daily_open = _daily_open_today("^VIX")
+            frozen_vix_val = round(vix_daily_open, 2) if vix_daily_open is not None else live_vix
+
+            st.session_state[mon_open_key] = frozen_spot
+            st.session_state[mon_vix_key] = frozen_vix_val
             st.session_state[mon_open_week_key] = current_week
 
     # Determine the reference price/VIX and their source label
@@ -740,32 +770,28 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # METRIC CARDS
     # =========================================================================
 
-    # Four risk-tier cards up front (Lower PI → Point → Upper PI → Effective),
-    # then GEX regime + OOS R² as context. Six columns keeps them readable on
-    # desktop; Streamlit wraps them gracefully on narrower screens.
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    # Five metric cards. The PI card holds both tier bounds (Lower ↔ Upper)
+    # so all four risk tiers named in the spec — Lower PI, Point, Upper PI,
+    # Effective — stay visible without cramping the row into 6 columns
+    # (which clips labels on typical laptop widths).
+    c1, c2, c3, c4, c5 = st.columns(5)
 
     c1.metric(
-        f"{forecast['confidence_level']}% PI Lower",
-        f"{forecast['lower_pct']*100:.2f}%",
-        "aggressive tier",
-    )
-    c2.metric(
         "Point Estimate",
         f"{forecast['point_pct']*100:.2f}%",
         f"vs VIX: {forecast['model_vs_vix']*100:+.2f}%",
     )
-    c3.metric(
-        f"{forecast['confidence_level']}% PI Upper",
-        f"{forecast['upper_pct']*100:.2f}%",
-        "moderate tier",
+    c2.metric(
+        f"{forecast['confidence_level']}% PI Range",
+        f"{forecast['lower_pct']*100:.2f}% — {forecast['upper_pct']*100:.2f}%",
+        "aggressive ↔ moderate",
     )
-    c4.metric(
+    c3.metric(
         "Effective Range",
         f"{plan.effective_range_pct*100:.2f}%",
         f"conservative · buffer: +{plan.buffer_pct*100:.2f}%",
     )
-    c5.metric(
+    c4.metric(
         "GEX Regime",
         gex_ctx.gamma_regime.title(),
         f"flag: {gex_adj['gex_regime_flag']:+d}",
@@ -776,7 +802,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # if that load fell through (e.g. user is still on the first render
     # after toggling) we'd rather the card tell the truth than lie.
     _mdl_label = active_model if active_model == model_choice else f"{active_model} ⚠"
-    c6.metric(
+    c5.metric(
         f"OOS R² · {_mdl_label}",
         f"{metrics['oos_r2']:.4f}",
         f"MAE: {metrics['mae_pct']*100:.2f}%",
