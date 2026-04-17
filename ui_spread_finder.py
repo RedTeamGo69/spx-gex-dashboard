@@ -1228,12 +1228,18 @@ def _render_sf_strike_map_tier(
     fig = go.Figure()
 
     # Build level markers
+    #
+    # SPX Ref (white star) is the frozen Monday open used for strike
+    # placement. Spot (amber circle) is the LIVE price from the most
+    # recent refresh — useful for seeing where price is relative to the
+    # frozen reference and the short strikes as the week plays out.
     levels = [
         (put_long,   "Put Long",   SF_BEAR,   "triangle-left",  8),
         (put_short,  "Put Short",  tier_color, "diamond",       10),
         (gex_ctx.put_wall,   "Put Wall",  COLORS["put_wall"],  "square",  9),
         (gex_ctx.zero_gamma, "Zero-G",    COLORS["zero_gamma"], "x",     10),
         (spx_ref,    f"{ticker} Ref", COLORS["spot"], "star",           12),
+        (gex_ctx.spot, "Spot (live)",  "#ffc107",  "circle",   11),
         (gex_ctx.call_wall,  "Call Wall", COLORS["call_wall"],  "square",  9),
         (call_short, "Call Short", tier_color, "diamond",       10),
         (call_long,  "Call Long",  SF_BEAR,   "triangle-right",  8),
@@ -1294,6 +1300,10 @@ def _render_sf_strike_map_tier(
         ))
 
     fig.add_vline(x=spx_ref, line_dash="solid", line_color=COLORS["spot"], line_width=2, opacity=0.4)
+    # Live spot — dashed amber line so the reader can eyeball the
+    # distance from current price to either short strike at a glance.
+    fig.add_vline(x=gex_ctx.spot, line_dash="dash", line_color="#ffc107",
+                   line_width=1.5, opacity=0.55)
 
     all_prices = [l[0] for l in levels]
     margin_px = (max(all_prices) - min(all_prices)) * 0.15
