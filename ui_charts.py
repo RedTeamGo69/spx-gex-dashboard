@@ -39,19 +39,33 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis, weekly_em=None, month
                            annotation_font_color=COLORS["em_level"], annotation_font_size=8,
                            annotation_position="bottom right")
 
-    # Weekly EM levels (amber dashed)
+    # Weekly EM levels — amber dashed lines + translucent shaded band so the
+    # zone the market is pricing for the week is visually obvious (not just
+    # two thin lines).  Band is frozen at Monday's open price, so it stays
+    # put as spot moves through the week.
     w_em = weekly_em or {}
-    if w_em.get("upper_level"):
+    if w_em.get("upper_level") and w_em.get("lower_level"):
+        fig.add_hrect(
+            y0=w_em["lower_level"], y1=w_em["upper_level"],
+            fillcolor=COLORS["em_weekly"], opacity=0.06,
+            line_width=0, layer="below",
+        )
         for val, label in [(w_em["upper_level"], "wEM+"), (w_em["lower_level"], "wEM−")]:
             fig.add_hline(y=val, line_color=COLORS["em_weekly"], line_dash="dash", line_width=1,
                            annotation_text=f"{label} ${val:.0f}",
                            annotation_font_color=COLORS["em_weekly"], annotation_font_size=7,
                            annotation_position="top right")
 
-    # OpEx-cycle EM levels (cyan longdash) — frozen on the Monday after each
-    # standard 3rd-Friday expiration, using the next 3rd Friday's straddle.
+    # OpEx-cycle EM levels (cyan longdash + band) — frozen on the first
+    # trading day of the cycle (Monday after each 3rd-Friday expiration),
+    # using the next 3rd Friday's straddle.
     m_em = monthly_em or {}
-    if m_em.get("upper_level"):
+    if m_em.get("upper_level") and m_em.get("lower_level"):
+        fig.add_hrect(
+            y0=m_em["lower_level"], y1=m_em["upper_level"],
+            fillcolor=COLORS["em_monthly"], opacity=0.04,
+            line_width=0, layer="below",
+        )
         for val, label in [(m_em["upper_level"], "OpEx+"), (m_em["lower_level"], "OpEx−")]:
             fig.add_hline(y=val, line_color=COLORS["em_monthly"], line_dash="longdash", line_width=1,
                            annotation_text=f"{label} ${val:.0f}",
