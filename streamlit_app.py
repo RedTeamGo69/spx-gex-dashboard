@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -382,7 +382,43 @@ def main():
             else:
                 selected = []
         else:
-            selected = st.multiselect("Pick expirations", future_exps, default=future_exps[:1])
+            # Custom → date-range picker. Tradier only lists expirations on
+            # specific days (weekdays + whatever 0DTE the product offers), so
+            # we let the user pick any [from, to] span and then filter the
+            # available expirations down to whatever falls inside it.
+            _today = run_now.date()
+            _min_d = date.fromisoformat(future_exps[0])  if future_exps else _today
+            _max_d = date.fromisoformat(future_exps[-1]) if future_exps else _today
+            _default_end = min(_today + timedelta(days=7), _max_d)
+            _range = st.date_input(
+                "Pick date range",
+                value=(_today, _default_end),
+                min_value=_min_d,
+                max_value=_max_d,
+                format="YYYY-MM-DD",
+                help="Pick a single date (click twice on the same day) or a range.",
+            )
+            # st.date_input returns a date while the user is mid-selection
+            # and a tuple of dates once they've picked both endpoints.
+            if isinstance(_range, tuple):
+                _from, _to = _range if len(_range) == 2 else (_range[0], _range[0])
+            else:
+                _from = _to = _range
+
+            _from_s = _from.strftime("%Y-%m-%d")
+            _to_s   = _to.strftime("%Y-%m-%d")
+            selected = [e for e in future_exps if _from_s <= e <= _to_s]
+
+            if selected:
+                st.caption(
+                    f"{len(selected)} expiration{'s' if len(selected) > 1 else ''} "
+                    f"in {_from_s} → {_to_s}"
+                )
+            else:
+                st.caption(
+                    f"No Tradier expirations fall inside {_from_s} → {_to_s}. "
+                    "Widen the range or pick a weekday the product trades on."
+                )
 
         # Final safety net: if the chosen mode somehow produced an empty list
         # but there ARE future expirations available, fall back to the nearest
