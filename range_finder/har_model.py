@@ -43,6 +43,30 @@ log = logging.getLogger(__name__)
 TEST_SIZE = 0.20
 PI_ALPHA = 0.20
 
+# Minimum non-null weekly observations required to fold a feature into a
+# fit. The default (20) reflects the rule-of-thumb that HC3-robust OLS
+# needs ~10 obs/feature plus headroom. `gex_normalized` uses a lower bar
+# because it's a single-coefficient addition to an already-populated
+# spec, and waiting 20 weeks (~5 months) before live GEX flows into
+# strike placement is overkill for a stable-sign regressor.
+DEFAULT_MIN_WEEKS_FOR_FIT = 20
+GEX_MIN_WEEKS_FOR_FIT = 12
+
+_FEATURE_MIN_WEEKS_OVERRIDES = {
+    "gex_normalized": GEX_MIN_WEEKS_FOR_FIT,
+}
+
+
+def feature_has_enough_data(df, col: str) -> bool:
+    """True if `col` exists in `df` and has enough non-null rows to include
+    in a regression fit. Uses DEFAULT_MIN_WEEKS_FOR_FIT, with a per-feature
+    override for columns whose statistical behavior warrants a different
+    bar (see `_FEATURE_MIN_WEEKS_OVERRIDES`)."""
+    if col not in df.columns:
+        return False
+    threshold = _FEATURE_MIN_WEEKS_OVERRIDES.get(col, DEFAULT_MIN_WEEKS_FOR_FIT)
+    return df[col].notna().sum() > threshold
+
 
 # =============================================================================
 # FEATURE SETS PER MODEL SPEC
@@ -328,7 +352,7 @@ def compare_enhancements(
         raise RuntimeError("model_features is empty — run feature_builder.py first")
 
     # Create interaction terms if regime feature exists
-    if "high_vol_regime" in df.columns and df["high_vol_regime"].notna().sum() > 20:
+    if feature_has_enough_data(df, "high_vol_regime"):
         df["har_d1_x_regime"] = df["har_d1"] * df["high_vol_regime"]
         df["har_w_x_regime"] = df["har_w"] * df["high_vol_regime"]
     else:
@@ -351,7 +375,7 @@ def compare_enhancements(
     for label, cfg in enhancements.items():
         spec_name = cfg["spec"]
         feat_cols = local_specs.get(spec_name, [])
-        available = [c for c in feat_cols if c in df.columns and df[c].notna().sum() > 20]
+        available = [c for c in feat_cols if feature_has_enough_data(df, c)]
 
         if len(available) < 2:
             log.warning(f"{label}: too few available features ({available}), skipping")
@@ -506,7 +530,7 @@ def run_full_pipeline(
     log.info(f"Loaded {len(df)} feature rows for modeling")
 
     # --- Create interaction terms for regime model ---
-    if "high_vol_regime" in df.columns and df["high_vol_regime"].notna().sum() > 20:
+    if feature_has_enough_data(df, "high_vol_regime"):
         df["har_d1_x_regime"] = df["har_d1"] * df["high_vol_regime"]
         df["har_w_x_regime"] = df["har_w"] * df["high_vol_regime"]
     else:
@@ -516,7 +540,7 @@ def run_full_pipeline(
     # --- Determine if GEX is available ---
     # Use continuous gex_normalized for richer signal than the deprecated binary gex_flag
     # BUG FIX: use a local copy of the feature list instead of mutating the global
-    gex_available = "gex_normalized" in df.columns and df["gex_normalized"].notna().sum() > 20
+    gex_available = feature_has_enough_data(df, "gex_normalized")
     local_specs = {k: list(v) for k, v in MODEL_SPECS.items()}
     if gex_available:
         log.info("GEX data available — adding gex_normalized (continuous) to M4_full")
@@ -530,7 +554,7 @@ def run_full_pipeline(
     all_results  = {}
 
     for spec_name, feat_cols in local_specs.items():
-        available = [c for c in feat_cols if c in df.columns and df[c].notna().sum() > 20]
+        available = [c for c in feat_cols if feature_has_enough_data(df, c)]
         if len(available) < len(feat_cols):
             missing = set(feat_cols) - set(available)
             log.warning(f"{spec_name}: skipping missing features {missing}")

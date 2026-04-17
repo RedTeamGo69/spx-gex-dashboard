@@ -76,6 +76,7 @@ def main():
     from range_finder.feature_builder import build_features, get_features
     from range_finder.har_model import (
         MODEL_SPECS, time_series_split, fit_model, evaluate_oos,
+        feature_has_enough_data,
     )
     from range_finder.model_persistence import save_model
 
@@ -136,7 +137,7 @@ def main():
         feat_cols = MODEL_SPECS.get(spec_name, [])
         # Drop features that have too few non-null rows (eg. gex_normalized on
         # a fresh DB — there won't be any historical GEX values)
-        avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
+        avail_cols = [c for c in feat_cols if feature_has_enough_data(df_feat, c)]
         dropped = set(feat_cols) - set(avail_cols)
         if dropped:
             _log.info(f"  {spec_name}: dropping insufficient-data features: {sorted(dropped)}")
