@@ -393,6 +393,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
     from range_finder.har_model import (
         time_series_split, fit_model, evaluate_oos,
         save_model, MODEL_SPECS, forecast_next_week,
+        feature_has_enough_data,
     )
     from range_finder.spread_levels import build_spread_plan, log_spread_plan
 
@@ -467,7 +468,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
             return
 
         feat_cols = MODEL_SPECS.get(model_choice, [])
-        avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
+        avail_cols = [c for c in feat_cols if feature_has_enough_data(df_feat, c)]
 
         X_train, X_test, y_train, y_test = time_series_split(df_feat, feature_cols=avail_cols)
         result = fit_model(X_train, y_train, model_name=model_choice)

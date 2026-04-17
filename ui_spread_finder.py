@@ -33,6 +33,8 @@ from range_finder.feature_builder import (
 )
 from range_finder.har_model import (
     MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
+    GEX_MIN_WEEKS_FOR_FIT as RF_GEX_MIN_WEEKS,
+    feature_has_enough_data as rf_feature_has_enough_data,
     time_series_split as rf_time_series_split,
     fit_model as rf_fit_model, evaluate_oos as rf_evaluate_oos,
     forecast_next_week as rf_forecast_next_week,
@@ -575,7 +577,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                 # this; we were just missing it in the Streamlit path.
                 if model_choice == "M4_full":
                     gex_col = "gex_normalized"
-                    if gex_col in df_feat.columns and df_feat[gex_col].notna().sum() > 20:
+                    if rf_feature_has_enough_data(df_feat, gex_col):
                         if gex_col not in feat_cols:
                             feat_cols.append(gex_col)
                             st.caption(
@@ -585,12 +587,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                     else:
                         _weeks = int(df_feat[gex_col].notna().sum()) if gex_col in df_feat.columns else 0
                         st.caption(
-                            f"ℹ️ M4_full: only {_weeks} weeks of GEX history — need >20 to "
+                            f"ℹ️ M4_full: only {_weeks} weeks of GEX history — need >{RF_GEX_MIN_WEEKS} to "
                             f"fold `gex_normalized` into the fit. Keep clicking **Save GEX** "
                             f"each week; in the meantime M4 runs without the GEX feature."
                         )
 
-                avail_cols = [c for c in feat_cols if c in df_feat.columns and df_feat[c].notna().sum() > 20]
+                avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
 
                 X_train, X_test, y_train, y_test = rf_time_series_split(
                     df_feat, feature_cols=avail_cols
