@@ -776,11 +776,32 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             f"or, better, skip the trade until features catch up."
         )
     if feature_row_is_stale:
-        st.warning(
-            "⚠️ This week's features have not been rebuilt yet — "
-            "using the most recent available feature row. Forecast may be "
-            "stale. Click **Weekly Setup** (or **Rebuild Features**) to refresh."
-        )
+        # On Fri-Sun the spread finder forecasts NEXT week, so it asks for
+        # next-Monday's feature row — which legitimately can't exist until
+        # next week's market data lands. Telling the user to click Weekly
+        # Setup in that case is actively wrong (the click can't materialize
+        # a row for a future week). Distinguish the two cases honestly.
+        _is_weekend_or_friday = run_now.weekday() >= 4
+        if _is_weekend_or_friday:
+            _fallback_idx = df_feat.index[-1]
+            _fallback_label = (
+                _fallback_idx.strftime("%Y-%m-%d")
+                if hasattr(_fallback_idx, "strftime") else str(_fallback_idx)
+            )
+            st.info(
+                f"ℹ️ Forecasting next week ({week_start}) using the most recent "
+                f"completed week's features ({_fallback_label}). Next Monday's "
+                "feature row will only exist once next week's market data lands; "
+                "until then this fallback is the best available input. **Weekly "
+                "Setup will not help right now** — it can't build a row for a "
+                "week that hasn't started."
+            )
+        else:
+            st.warning(
+                "⚠️ This week's features have not been rebuilt yet — "
+                "using the most recent available feature row. Forecast may be "
+                "stale. Click **Weekly Setup** (or **Rebuild Features**) to refresh."
+            )
 
     # ── Build forecast → plan → tiers from the latest GEX refresh ──
     # We intentionally DO NOT cache these on a session-state key any more.
