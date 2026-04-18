@@ -461,7 +461,11 @@ def main():
     refresh_seconds = {"Off": 0, "Every 5 min": 300, "Every 30 min": 1800}.get(refresh_option, 0)
 
     # ── Run ID for cache busting ──
-    run_id = f"{datetime.now(timezone.utc).isoformat()}" if refresh_seconds == 0 else "auto"
+    # Stable key: cache freshness is driven by the @st.cache_resource TTL and
+    # the "Refresh Now" button (which calls st.cache_resource.clear()). Using a
+    # per-rerun timestamp here previously busted the cache on every widget
+    # interaction, forcing a full Tradier/FRED/Yahoo/GEX repipeline each time.
+    run_id = "stable"
 
     # ── Fetch data ──
     with st.spinner("Crunching GEX..."):
