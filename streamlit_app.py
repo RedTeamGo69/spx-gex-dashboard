@@ -164,11 +164,19 @@ def get_credentials():
 # ─────────────────────────────────────────────────────────────────────────────
 # Data fetching (cached)
 # ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=600, show_spinner=False)
+def get_expirations_cached(tradier_token: str, ticker: str) -> list[str]:
+    """Tradier expirations change at most once per day; cache for 10 minutes
+    so the sidebar render doesn't hit the API on every widget rerun."""
+    return TradierDataClient(token=tradier_token).get_expirations(ticker)
+
+
 @st.cache_resource(ttl=90, show_spinner=False)
 def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run_id: str, ticker: str = "SPX"):
     """
     Run the full GEX engine pipeline. Cached for 90 seconds.
-    _run_id forces a cache bust when the user clicks Refresh.
+    _run_id is kept stable; cache freshness is driven by the TTL and the
+    "Refresh Now" button (which calls st.cache_resource.clear()).
     """
     client = TradierDataClient(token=tradier_token)
     client.clear_cache()
@@ -330,8 +338,7 @@ def main():
         # Expiration picker
         with st.spinner("Loading expirations..."):
             try:
-                temp_client = TradierDataClient(token=tradier_token)
-                avail = temp_client.get_expirations(ticker)
+                avail = get_expirations_cached(tradier_token, ticker)
             except Exception as e:
                 st.error(f"Could not fetch expirations: {e}")
                 st.stop()
