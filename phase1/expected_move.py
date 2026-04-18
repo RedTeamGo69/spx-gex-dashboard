@@ -220,14 +220,14 @@ def build_expected_move_analysis(
     gamma_regime: str,
     calls_0dte: list[dict],
     puts_0dte: list[dict],
-    spy_quote: dict | None = None,
     market_open: bool = True,
-    futures_context: dict | None = None,
     expiration: str | None = None,
     as_of: date | None = None,
 ) -> dict:
     """
-    Full expected-move analysis combining all signals.
+    Full expected-move analysis combining the ATM straddle, the SPX move vs
+    prevclose, and a session classification. Pre-market overnight context
+    (SPY proxy, ES futures, overnight range) has been removed.
 
     Parameters:
         spot:             Current reference spot (parity-implied or Tradier)
@@ -237,9 +237,7 @@ def build_expected_move_analysis(
         calls_0dte:       Call chain for the 0DTE expiration (the nearest
                           available expiration — NOT necessarily 0DTE)
         puts_0dte:        Put chain for the same expiration
-        spy_quote:        Optional SPY full quote for pre-market proxy
         market_open:      Whether the cash market is currently open
-        futures_context:  Optional dict from futures_data.build_futures_context()
         expiration:       ISO date string of the expiration the straddle came
                           from ("YYYY-MM-DD"). When provided, the straddle DTE
                           is stored in em_info["straddle"]["dte"] so the UI
@@ -248,8 +246,6 @@ def build_expected_move_analysis(
                           straddle which carries √2-ish more vol than a true
                           same-day straddle would.
         as_of:            Reference date for DTE calculation. Defaults to today.
-
-    Returns a comprehensive analysis dict.
     """
     # 1. ATM straddle and expected move
     straddle = find_atm_straddle(calls_0dte, puts_0dte, spot)
@@ -266,96 +262,31 @@ def build_expected_move_analysis(
         except (ValueError, TypeError):
             pass
 
-    # 2. Overnight move — primary from SPX prevclose
+    # 2. SPX move from prevclose — live during the session, retrospective
+    #    (full realized session move) once the cash market is closed.
     overnight = compute_overnight_move(spot, prev_close, source="spx_vs_prevclose")
 
-    # 3. SPY pre-market proxy (if available)
-    spy_overnight = None
-    if spy_quote is not None and spy_quote.get("prevclose", 0) > 0:
-        spy_current = spy_quote.get("last", 0) or spy_quote.get("bid", 0)
-        if spy_current > 0:
-            spy_move_pct = (spy_current - spy_quote["prevclose"]) / spy_quote["prevclose"] * 100
-            implied_spx_move = spot * spy_move_pct / 100
-            spy_overnight = {
-                "spy_price": round(spy_current, 2),
-                "spy_prevclose": round(spy_quote["prevclose"], 2),
-                "spy_move_pct": round(spy_move_pct, 3),
-                "implied_spx_move_pts": round(implied_spx_move, 2),
-                "source": "spy_premarket_proxy",
-            }
-
-    # 4. Determine the best overnight move for classification
-    #    Priority: ES futures > SPY proxy > SPX (when pre-market)
-    #    During market hours: SPX is live and primary
-    classification_move_pts = overnight.get("overnight_move_pts")
-    classification_source = "spx"
-
-    spx_move_is_stale = (
-        not market_open
-        and classification_move_pts is not None
-        and abs(classification_move_pts) < 0.5
-    )
-
-    if not market_open and futures_context is not None:
-        # ES futures available — best pre-market source
-        classification_move_pts = futures_context["overnight_move_pts"]
-        classification_source = f"es_futures ({futures_context['source']})"
-    elif spx_move_is_stale and spy_overnight is not None:
-        classification_move_pts = spy_overnight["implied_spx_move_pts"]
-        classification_source = "spy_proxy"
-    elif not market_open and classification_move_pts is not None and abs(classification_move_pts) > 0.5:
-        classification_source = "spx_realized"
-
-    # 5. Session classification
+    # 3. Session classification — always uses the SPX move.
     classification = classify_session(
         expected_move_pts=em_info["expected_move_pts"],
-        overnight_move_pts=classification_move_pts,
+        overnight_move_pts=overnight.get("overnight_move_pts"),
         gamma_regime=gamma_regime,
     )
-    classification["move_source"] = classification_source
+    classification["move_source"] = "spx"
 
-    # 6. Overnight range context (from ES futures)
-    overnight_range = None
-    if futures_context is not None and futures_context.get("overnight_range_pts") is not None:
-        em_pts = em_info.get("expected_move_pts")
-        max_move = futures_context["max_overnight_move"]
-        overnight_range = {
-            "es_high": futures_context["es_high"],
-            "es_low": futures_context["es_low"],
-            "range_pts": futures_context["overnight_range_pts"],
-            "high_move_from_close": futures_context["overnight_high_move"],
-            "low_move_from_close": futures_context["overnight_low_move"],
-            "max_move_pts": max_move,
-            "max_move_vs_em": round(max_move / em_pts, 3) if em_pts and em_pts > 0 else None,
-        }
-
-    # 7. Market context
+    # 4. Market context
     if market_open:
         market_context = "live"
         context_note = None
-    elif futures_context is not None:
-        market_context = "premarket"
-        src_label = "ES futures (Yahoo, ~10 min delayed)" if "yahoo" in futures_context.get("source", "") else "ES futures (manual)"
-        context_note = (
-            f"Pre-market — overnight move from {src_label}. "
-            "The ATM straddle reflects the nearest available chain. "
-            "Re-check after the open for live classification."
-        )
-    elif spx_move_is_stale:
-        market_context = "premarket"
-        context_note = (
-            "Pre-market — SPX is not trading. No ES futures data available. "
-            "Enter ES price manually in the sidebar for accurate classification."
-        )
     else:
         market_context = "afterhours"
         context_note = (
-            "After hours — the overnight move reflects today's full realized session move, "
-            "not the overnight gap. The classification is retrospective. "
-            "Run again tomorrow morning before the open for a forward-looking signal."
+            "Market closed — the SPX move shown is retrospective "
+            "(today's full realized session move from prevclose, not a "
+            "forward-looking overnight gap). Re-check after the open."
         )
 
-    # 8. Expected move levels relative to key GEX levels
+    # 5. Expected move levels relative to key GEX levels
     level_context = None
     if em_info["upper_level"] is not None:
         level_context = {
@@ -371,9 +302,6 @@ def build_expected_move_analysis(
     return {
         "expected_move": em_info,
         "overnight_move": overnight,
-        "spy_proxy": spy_overnight,
-        "futures_context": futures_context,
-        "overnight_range": overnight_range,
         "classification": classification,
         "level_context": level_context,
         "spot": round(spot, 2),
