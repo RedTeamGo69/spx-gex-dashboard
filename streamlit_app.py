@@ -179,7 +179,6 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     "Refresh Now" button (which calls st.cache_resource.clear()).
     """
     client = TradierDataClient(token=tradier_token)
-    client.clear_cache()
 
     run_now = now_ny()
     calendar_snapshot = get_calendar_snapshot(run_now)
