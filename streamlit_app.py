@@ -194,12 +194,15 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     today_str = run_now.strftime("%Y-%m-%d")
     nearest_exp = next((e for e in avail if e >= today_str), avail[0])
 
-    # Fetch the index's full quote up front so parity's spot lookup, prev_close,
-    # and the Expected Move panel all share the same /markets/quotes response
-    # instead of issuing two identical SPX requests on every run.
+    # Fetch index + SPY quotes in a single /markets/quotes call up front so
+    # parity's spot lookup, prev_close, and the Expected Move panel all share
+    # the same response instead of each issuing their own request.
     index_quote = None
+    spy_quote = None
     try:
-        index_quote = client.get_full_quote(ticker)
+        batched = client.get_full_quotes([ticker, "SPY"])
+        index_quote = batched.get(ticker)
+        spy_quote = batched.get("SPY")
     except Exception:
         pass
 
@@ -241,13 +244,8 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
     )
     regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
 
-    # Expected move raw inputs (EM analysis happens in main() with futures data).
-    # index_quote was already fetched above and shared with the parity call.
-    spy_quote = None
-    try:
-        spy_quote = client.get_full_quote("SPY")
-    except Exception:
-        pass
+    # index_quote + spy_quote were fetched together above in a single batched
+    # /markets/quotes call and shared with the parity path.
 
     prev_close = index_quote["prevclose"] if index_quote else 0.0
     dte0_exp = target_exps[0] if target_exps else nearest_exp
