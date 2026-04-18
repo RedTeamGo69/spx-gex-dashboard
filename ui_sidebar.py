@@ -11,60 +11,18 @@ from theme import COLORS
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar rendering
 # ─────────────────────────────────────────────────────────────────────────────
-def _render_move_display(overnight, classification, futures_ctx, market_ctx, ticker):
-    """Render the overnight/today's move section."""
-    move_source = classification.get("move_source", "spx")
-
-    if market_ctx == "live":
-        on_pts = overnight.get("overnight_move_pts")
-        on_pct = overnight.get("overnight_move_pct")
-        if on_pts is not None:
-            arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
-            pct_str = f" ({on_pct:+.2f}%)" if on_pct is not None else ""
-            st.markdown(
-                f"**Today's Move:** {arrow} **{on_pts:+.1f} pts**{pct_str}"
-            )
-    elif "es_futures" in move_source and futures_ctx:
-        arrow = "🟢 ▲" if futures_ctx["overnight_move_pts"] >= 0 else "🔴 ▼"
-        st.markdown(
-            f"**Overnight ({'ES÷10' if ticker == 'XSP' else 'ES'}):** {arrow} **{futures_ctx['overnight_move_pts']:+.1f} pts** ({futures_ctx['overnight_move_pct']:+.2f}%)"
-        )
-        src_label = "manual" if futures_ctx["source"] == "manual" else "Yahoo ~10m delayed"
-        _es_label = "ES÷10" if ticker == "XSP" else "ES"
-        _prev_label = f"{ticker} prevclose"
-        st.caption(f"{_es_label}: \\${futures_ctx['es_last']:.2f} vs {_prev_label} \\${futures_ctx['spx_prevclose']:.2f} ({src_label})")
-    else:
-        on_pts = overnight.get("overnight_move_pts")
-        on_pct = overnight.get("overnight_move_pct")
-        if on_pts is not None:
-            label = "Session Move" if market_ctx == "afterhours" else "Overnight Move"
-            arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
-            pct_str = f" ({on_pct:+.2f}%)" if on_pct is not None else ""
-            st.markdown(
-                f"**{label}:** {arrow} **{on_pts:+.1f} pts**{pct_str}"
-            )
-    return move_source
-
-
-def _render_overnight_range(overnite_range, move_source, spy):
-    """Render overnight range and SPY proxy."""
-    if overnite_range and overnite_range.get("es_high"):
-        hi = overnite_range["high_move_from_close"]
-        lo = overnite_range["low_move_from_close"]
-        max_em = overnite_range.get("max_move_vs_em")
-        max_em_str = f" ({max_em*100:.0f}% of EM)" if max_em else ""
-        st.markdown(
-            f"**O/N Range:** :green[${overnite_range['es_high']:.0f}] ({hi:+.0f}) "
-            f"— :red[${overnite_range['es_low']:.0f}] ({lo:+.0f}) "
-            f"= {overnite_range['range_pts']:.0f} pts"
-        )
-        st.caption(f"Max overnight excursion: {overnite_range['max_move_pts']:.0f} pts{max_em_str}")
-
-    if spy and "es_futures" not in move_source:
-        st.caption(
-            f"SPY Pre-mkt: ${spy['spy_price']:.2f} ({spy['spy_move_pct']:+.2f}%) "
-            f"→ ~{spy['implied_spx_move_pts']:+.1f} SPX pts"
-        )
+def _render_move_display(overnight, market_ctx):
+    """Render today's SPX move (or the retrospective session move when the
+    cash market is closed). Pre-market SPY proxy / ES overnight display
+    has been removed."""
+    on_pts = overnight.get("overnight_move_pts")
+    on_pct = overnight.get("overnight_move_pct")
+    if on_pts is None:
+        return
+    label = "Today's Move" if market_ctx == "live" else "Session Move"
+    arrow = "🟢 ▲" if on_pts >= 0 else "🔴 ▼"
+    pct_str = f" ({on_pct:+.2f}%)" if on_pct is not None else ""
+    st.markdown(f"**{label}:** {arrow} **{on_pts:+.1f} pts**{pct_str}")
 
 
 def _render_classification(classification, level_ctx):
@@ -131,9 +89,6 @@ def render_expected_move_panel(em_analysis, ticker="SPX"):
     em_data = em_analysis.get("expected_move", {})
     overnight = em_analysis.get("overnight_move", {})
     classification = em_analysis.get("classification", {})
-    spy = em_analysis.get("spy_proxy")
-    futures_ctx = em_analysis.get("futures_context")
-    overnite_range = em_analysis.get("overnight_range")
     level_ctx = em_analysis.get("level_context")
     market_ctx = em_analysis.get("market_context", "live")
 
@@ -178,8 +133,7 @@ def render_expected_move_panel(em_analysis, ticker="SPX"):
             f":red[${em_lower:.0f}] — :green[${em_upper:.0f}]"
         )
 
-    move_source = _render_move_display(overnight, classification, futures_ctx, market_ctx, ticker)
-    _render_overnight_range(overnite_range, move_source, spy)
+    _render_move_display(overnight, market_ctx)
     _render_classification(classification, level_ctx)
 
     st.divider()

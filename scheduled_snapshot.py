@@ -46,7 +46,6 @@ def capture_snapshot():
     from phase1.confidence import build_run_confidence
     from phase1.staleness import build_staleness_info
     from phase1.expected_move import build_expected_move_analysis
-    from phase1.futures_data import fetch_es_from_yahoo, build_futures_context
     from phase1.gex_history import save_snapshot, save_em_snapshot
 
     # FORCE_WEEKLY_SETUP=1 bypasses the market-hours / weekend / holiday gates
@@ -221,21 +220,6 @@ def capture_snapshot():
     dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
     dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
 
-    futures_ctx = None
-    try:
-        yahoo_es = fetch_es_from_yahoo()
-        if yahoo_es and yahoo_es.get("last") and prev_close > 0:
-            futures_ctx = build_futures_context(
-                es_last=yahoo_es["last"],
-                es_high=yahoo_es.get("high"),
-                es_low=yahoo_es.get("low"),
-                spx_prevclose=prev_close,
-                source=yahoo_es.get("source", "yahoo"),
-                es_prevclose=yahoo_es.get("prevclose"),
-            )
-    except Exception as e:
-        _logger.warning(f"ES futures fetch failed: {e}")
-
     em_analysis = build_expected_move_analysis(
         spot=spot,
         prev_close=prev_close,
@@ -243,9 +227,7 @@ def capture_snapshot():
         gamma_regime=regime_info.get("regime", "Unknown"),
         calls_0dte=dte0_calls,
         puts_0dte=dte0_puts,
-        spy_quote=None,
         market_open=True,
-        futures_context=futures_ctx,
         expiration=dte0_exp,
         as_of=run_now.date(),
     )

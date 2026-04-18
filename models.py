@@ -27,10 +27,8 @@ class GEXData:
     calendar_snapshot: dict
     run_time: str
     prev_close: float
-    spy_quote: dict | None
     dte0_calls: list
     dte0_puts: list
     dte0_exp: str  # Expiration string (YYYY-MM-DD) the 0DTE chain came from
     market_open: bool
-    yahoo_es: dict | None
     chain_cache: dict | None

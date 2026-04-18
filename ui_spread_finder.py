@@ -294,8 +294,14 @@ def _build_spread_finder_excel(
     return buffer.getvalue()
 
 
+@st.fragment
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX", weekly_em: dict = None):
-    """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement."""
+    """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement.
+
+    Wrapped in @st.fragment so widget interactions inside the tab (horizon
+    slider, model-spec dropdown, credit width, etc.) only rerun this tab
+    instead of triggering a full-page rerun that rebuilds the GEX chart,
+    the sidebar, and re-fetches weekly/monthly EM."""
     import yfinance as yf
     from phase1.market_clock import now_ny
 

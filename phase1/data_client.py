@@ -63,24 +63,10 @@ class TradierDataClient:
             q = q[0]
         return safe_float(q.get("last", q.get("close", 0)), 0.0)
 
-    def get_full_quote(self, ticker="SPX"):
-        """
-        Return the full quote dict with prevclose, open, last, bid, ask, etc.
-
-        Useful for computing overnight moves and pre-market context.
-        """
-        r = requests.get(
-            f"{self.base_url}/markets/quotes",
-            headers=self.tradier_headers(),
-            params={"symbols": ticker},
-            timeout=10,
-        )
-        r.raise_for_status()
-        q = r.json()["quotes"]["quote"]
-        if isinstance(q, list):
-            q = q[0]
+    @staticmethod
+    def _normalize_quote(q, fallback_symbol):
         return {
-            "symbol": q.get("symbol", ticker),
+            "symbol": q.get("symbol", fallback_symbol),
             "last": safe_float(q.get("last", 0), 0.0),
             "prevclose": safe_float(q.get("prevclose", 0), 0.0),
             "open": safe_float(q.get("open", 0), 0.0),
@@ -91,6 +77,46 @@ class TradierDataClient:
             "change": safe_float(q.get("change", 0), 0.0),
             "change_pct": safe_float(q.get("change_percentage", 0), 0.0),
         }
+
+    def get_full_quotes(self, tickers):
+        """
+        Batch quote lookup. Returns {symbol: quote_dict} for every symbol
+        Tradier returned. Tradier's /markets/quotes accepts a comma-separated
+        symbols list and returns all of them in a single response.
+        """
+        symbols = ",".join(tickers)
+        r = requests.get(
+            f"{self.base_url}/markets/quotes",
+            headers=self.tradier_headers(),
+            params={"symbols": symbols},
+            timeout=10,
+        )
+        r.raise_for_status()
+        q = r.json()["quotes"]["quote"]
+        if isinstance(q, dict):
+            q = [q]
+        out = {}
+        for row in q:
+            if not isinstance(row, dict):
+                continue
+            symbol = row.get("symbol")
+            if not symbol:
+                continue
+            out[symbol] = self._normalize_quote(row, symbol)
+        return out
+
+    def get_full_quote(self, ticker="SPX"):
+        """
+        Return the full quote dict with prevclose, open, last, bid, ask, etc.
+
+        Useful for computing overnight moves and pre-market context.
+        """
+        quotes = self.get_full_quotes([ticker])
+        if ticker in quotes:
+            return quotes[ticker]
+        # Tradier dropped the symbol from the response — return a zeroed quote
+        # with the requested ticker label so callers keep the shape they expect.
+        return self._normalize_quote({}, ticker)
 
     def get_expirations(self, ticker="SPX"):
         r = requests.get(

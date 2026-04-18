@@ -192,64 +192,16 @@ def test_build_expected_move_analysis_full():
     assert result["overnight_move"]["overnight_move_pts"] == 10.0
     assert result["classification"]["classification"] is not None
     assert result["level_context"]["zero_gamma_within_em"] is True
-    assert result["spy_proxy"] is None
 
 
-def test_build_expected_move_analysis_with_spy_proxy():
-    calls = [_make_option(5650, 20.0, 26.0)]
-    puts = [_make_option(5650, 18.0, 22.0)]
-
-    spy_quote = {"last": 565.5, "prevclose": 564.0, "bid": 565.4, "ask": 565.6}
-
-    result = build_expected_move_analysis(
-        spot=5650.0,
-        prev_close=5640.0,
-        zero_gamma=5645.0,
-        gamma_regime="Positive Gamma",
-        calls_0dte=calls,
-        puts_0dte=puts,
-        spy_quote=spy_quote,
-    )
-
-    assert result["spy_proxy"] is not None
-    assert result["spy_proxy"]["spy_move_pct"] > 0
-    assert result["spy_proxy"]["implied_spx_move_pts"] > 0
-
-
-def test_premarket_uses_spy_proxy_for_classification():
-    """Pre-market: SPX spot == prevclose (no move), so SPY proxy should drive classification."""
-    calls = [_make_option(5650, 20.0, 26.0)]
-    puts = [_make_option(5650, 18.0, 22.0)]
-
-    # SPY is down 1% pre-market
-    spy_quote = {"last": 554.0, "prevclose": 560.0, "bid": 553.9, "ask": 554.1}
-
-    result = build_expected_move_analysis(
-        spot=5650.0,        # same as prevclose — SPX hasn't moved
-        prev_close=5650.0,
-        zero_gamma=5645.0,
-        gamma_regime="Negative Gamma",
-        calls_0dte=calls,
-        puts_0dte=puts,
-        spy_quote=spy_quote,
-        market_open=False,
-    )
-
-    assert result["market_context"] == "premarket"
-    assert result["context_note"] is not None
-    assert "Pre-market" in result["context_note"]
-    # Classification should use SPY-derived move, not the 0-pt SPX move
-    assert result["classification"]["move_source"] == "spy_proxy"
-    assert result["classification"]["move_ratio"] > 0
-
-
-def test_afterhours_shows_realized_move():
-    """After hours: SPX moved during the day, classification is retrospective."""
+def test_market_closed_marks_afterhours():
+    """Any time the cash market is closed we label the context 'afterhours'
+    and emit a retrospective context note."""
     calls = [_make_option(5650, 20.0, 26.0)]
     puts = [_make_option(5650, 18.0, 22.0)]
 
     result = build_expected_move_analysis(
-        spot=5620.0,         # closed 30 pts below yesterday
+        spot=5620.0,
         prev_close=5650.0,
         zero_gamma=5645.0,
         gamma_regime="Negative Gamma",
@@ -260,8 +212,7 @@ def test_afterhours_shows_realized_move():
 
     assert result["market_context"] == "afterhours"
     assert result["context_note"] is not None
-    assert "After hours" in result["context_note"]
-    assert result["classification"]["move_source"] == "spx_realized"
+    assert result["classification"]["move_source"] == "spx"
 
 
 def test_live_market_no_context_note():
