@@ -250,14 +250,28 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
 
             model_iv = norm_opt["iv"]
             gamma_now = norm_opt["gamma_now"]
+            charm_now = norm_opt.get("charm_now", 0.0)
             gex = sign * size * gamma_now * 100.0 * spot * spot
+            # Dollar charm exposure: dealer-book Δ drift per unit of T,
+            # scaled to notional ($). Same sign convention as GEX — a call
+            # (sign=+1) with positive charm means the assumed-short-call
+            # dealer book is shedding delta as time passes, so dealers
+            # must buy the underlying to stay hedged (positive CEX →
+            # supportive flow). Units are $-delta per trading-year;
+            # divide by 252 downstream for a per-trading-day figure.
+            cex = sign * size * charm_now * 100.0 * spot
 
             if exp in target_exps:
                 if K not in agg:
-                    agg[K] = {"call_gex": 0.0, "put_gex": 0.0, "call_oi": 0.0, "put_oi": 0.0}
+                    agg[K] = {
+                        "call_gex": 0.0, "put_gex": 0.0,
+                        "call_oi": 0.0, "put_oi": 0.0,
+                        "call_cex": 0.0, "put_cex": 0.0,
+                    }
 
                 if sign == +1:
                     agg[K]["call_gex"] += gex
+                    agg[K]["call_cex"] += cex
                     agg[K]["call_oi"] += oi
                     total_call_oi += oi
                     if oi > max_call_oi_strike[0]:
@@ -266,6 +280,7 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                         first_exp_call_ivs.append(model_iv)
                 else:
                     agg[K]["put_gex"] += gex
+                    agg[K]["put_cex"] += cex
                     agg[K]["put_oi"] += oi
                     total_put_oi += oi
                     if oi > max_put_oi_strike[0]:
@@ -325,12 +340,16 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                 "call_gex": d["call_gex"],
                 "put_gex": d["put_gex"],
                 "net_gex": d["call_gex"] + d["put_gex"],
+                "call_charm": d["call_cex"],
+                "put_charm": d["put_cex"],
+                "net_charm": d["call_cex"] + d["put_cex"],
             }
         )
 
     gex_df = pd.DataFrame(rows)
 
     net_gex_total = gex_df["net_gex"].sum() if not gex_df.empty else 0.0
+    net_charm_total = gex_df["net_charm"].sum() if not gex_df.empty else 0.0
     pos_gex = gex_df[gex_df["net_gex"] > 0]
     neg_gex = gex_df[gex_df["net_gex"] < 0]
 
@@ -359,9 +378,20 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
     else:
         gex_ratio_val = abs(pos_sum / neg_sum)
 
+    # Charm is annualized against the engine's trading-time T base
+    # (1 year == 252 trading days — see USE_TRADING_TIME in config.py),
+    # so the "per trading day" figure is simply net_charm_total / 252.
+    # This is the metric traders typically care about for 0DTE context:
+    # "how much delta drift does the assumed dealer book take on today?"
+    net_charm_per_day = net_charm_total / 252.0
+
     stats = {
         "net_gex": net_gex_total,
         "net_gex_fmt": fmt_gex(net_gex_total),
+        "net_charm": float(net_charm_total),
+        "net_charm_fmt": fmt_gex(net_charm_total),
+        "net_charm_per_day": float(net_charm_per_day),
+        "net_charm_per_day_fmt": fmt_gex(net_charm_per_day),
         "gex_ratio": gex_ratio_val,
         "pc_ratio": total_put_oi / total_call_oi if total_call_oi > 0 else 0.0,
         "call_oi": fmt_oi(total_call_oi),

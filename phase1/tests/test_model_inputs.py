@@ -1,5 +1,6 @@
 from phase1.model_inputs import (
     bs_gamma,
+    bs_charm,
     infer_iv_from_gamma,
     fit_synthetic_iv,
     prepare_option_for_model,
@@ -17,6 +18,50 @@ def test_bs_gamma_zero_for_invalid_inputs():
     assert bs_gamma(S=5000, K=0, T=1/365, r=0.04, sigma=0.20) == 0.0
     assert bs_gamma(S=5000, K=5000, T=0, r=0.04, sigma=0.20) == 0.0
     assert bs_gamma(S=5000, K=5000, T=1/365, r=0.04, sigma=0) == 0.0
+
+
+def test_bs_charm_zero_for_invalid_inputs():
+    assert bs_charm(S=0, K=5000, T=1/365, r=0.04, sigma=0.20, sign=+1) == 0.0
+    assert bs_charm(S=5000, K=0, T=1/365, r=0.04, sigma=0.20, sign=+1) == 0.0
+    assert bs_charm(S=5000, K=5000, T=0, r=0.04, sigma=0.20, sign=+1) == 0.0
+    assert bs_charm(S=5000, K=5000, T=1/365, r=0.04, sigma=0, sign=+1) == 0.0
+
+
+def test_bs_charm_matches_numerical_delta_derivative():
+    """
+    bs_charm should approximate ∂Δ/∂t for a standard case.
+
+    Uses the BS call delta formula directly (N(d1)) and differentiates
+    numerically against T, then compares to bs_charm's analytic value.
+    With q=0 the charm is ∂Δ_call/∂t where t advances forward in time,
+    i.e. -∂Δ_call/∂T (since T = expiry - t). Sign handling is checked
+    here end-to-end.
+    """
+    import numpy as np
+    from scipy.stats import norm
+
+    S, K, r, sigma = 5000.0, 5000.0, 0.04, 0.20
+
+    def delta_call(T):
+        d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        return norm.cdf(d1)
+
+    T = 5 / 365.0
+    # ∂Δ/∂t ≈ -∂Δ/∂T  (forward time advance shrinks T)
+    dT = 1e-5
+    d_delta_dt_numeric = -(delta_call(T + dT) - delta_call(T - dT)) / (2 * dT)
+
+    analytic = bs_charm(S, K, T, r, sigma, sign=+1)
+    assert abs(analytic - d_delta_dt_numeric) / abs(d_delta_dt_numeric) < 5e-3
+
+
+def test_prepare_option_for_model_emits_charm():
+    opt = {"strike": 5000.0, "openInterest": 1000, "impliedVolatility": 0.20}
+    prep = prepare_option_for_model(opt, sign=+1, T=1/365, spot=5000.0, r=0.04)
+    assert prep["accepted"]
+    assert "charm_now" in prep["normalized"]
+    # near-ATM 1DTE charm should be a meaningfully non-zero number
+    assert prep["normalized"]["charm_now"] != 0.0
 
 
 def test_infer_iv_from_gamma_round_trip_reasonable():

@@ -95,6 +95,17 @@ def test_calculate_all_basic_fake_client():
     assert stats["vol_amplification_ratio"] == 1.0
     assert stats["vol_dominated_strike_count"] == 0
     assert stats["vol_dominated_pct"] == 0.0
+    # Charm fields wired end-to-end: gex_df carries per-leg charm columns,
+    # stats exposes an annualized total plus its per-trading-day conversion.
+    assert "call_charm" in gex_df.columns
+    assert "put_charm" in gex_df.columns
+    assert "net_charm" in gex_df.columns
+    assert "net_charm" in stats
+    assert "net_charm_per_day" in stats
+    # ATM call + ATM put at q=0 have equal, same-signed charm; with opposite
+    # dealer signs (sign=+1 for call, -1 for put) they cancel at the strike.
+    # Whole-book net_charm should therefore be ~0 in this symmetric fixture.
+    assert abs(stats["net_charm"]) < 1e-6
 
 
 def test_calculate_all_flags_volume_amplification():
