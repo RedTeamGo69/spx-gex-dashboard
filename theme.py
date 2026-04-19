@@ -18,6 +18,7 @@ COLORS = {
     "em_weekly": "#ffd740",
     "em_monthly": "#4dd0e1",
     "profile_line": "#9c88ff",
+    "charm_line": "#ffb74d",
     "warning": "#ffd600",
     "text_muted": "#888",
     "text_secondary": "#aaa",

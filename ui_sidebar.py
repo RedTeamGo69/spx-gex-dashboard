@@ -228,6 +228,16 @@ def render_gex_stream(stats, levels, spot):
     # Format net GEX
     ng_fmt = stats.get("net_gex_fmt", f"{net_gex:.0f}")
 
+    # Net Charm / trading-hour — dealer-book $-delta drift the assumed
+    # book takes on per hour of the session. Positive reads as supportive
+    # (mechanical dealer buying as time passes, same sign convention as
+    # GEX), negative as repelling. Uses the same amber accent as the
+    # chart overlay so the KPI and the line visually tie together.
+    net_charm_per_hour = stats.get("net_charm_per_hour", 0.0)
+    nc_fmt = stats.get("net_charm_per_hour_fmt", f"{net_charm_per_hour:,.0f}")
+    nc_color = COLORS["positive"] if net_charm_per_hour > 0 else COLORS["negative"] if net_charm_per_hour < 0 else COLORS["text_muted"]
+    charm_accent = COLORS["charm_line"]
+
     # GEX Ratio display. None is the "undefined" sentinel from gex_engine
     # (all-positive regime → +∞, or empty chain). Disambiguate by checking
     # net_gex sign: positive net_gex with None ratio means +∞; otherwise
@@ -288,6 +298,10 @@ def render_gex_stream(stats, levels, spot):
       <tr style="border-top:1px solid #333;">
         <td style="color:{text_m};padding:3px 6px;">P/C OI Ratio</td>
         <td colspan="4" style="color:{text_w};font-weight:bold;text-align:right;padding:3px 6px;">{pc_ratio:.2f}</td>
+      </tr>
+      <tr style="border-top:1px solid #333;">
+        <td style="color:{charm_accent};padding:3px 6px;">Net Charm/hr</td>
+        <td colspan="4" style="color:{nc_color};font-weight:bold;text-align:right;padding:3px 6px;">{nc_fmt}</td>
       </tr>
     </table>
     """

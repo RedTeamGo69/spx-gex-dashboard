@@ -11,6 +11,7 @@ from phase1.config import (
     HYBRID_IV_MODE,
     NY_TZ,
     DEFAULT_RISK_FREE_RATE,
+    TRADING_HOURS_PER_YEAR,
 )
 from phase1.model_inputs import prepare_option_for_model
 from phase1.market_clock import compute_time_to_expiry_years
@@ -379,11 +380,14 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         gex_ratio_val = abs(pos_sum / neg_sum)
 
     # Charm is annualized against the engine's trading-time T base
-    # (1 year == 252 trading days — see USE_TRADING_TIME in config.py),
-    # so the "per trading day" figure is simply net_charm_total / 252.
-    # This is the metric traders typically care about for 0DTE context:
-    # "how much delta drift does the assumed dealer book take on today?"
+    # (1 year == 252 trading days × 6.5 hours — see TRADING_HOURS_PER_YEAR
+    # and USE_TRADING_TIME in config.py), so per-day divides by 252 and
+    # per-hour divides by TRADING_HOURS_PER_YEAR (1638). Per-hour is the
+    # metric the UI surfaces because 0DTE charm flow accelerates
+    # specifically in the afternoon session — a per-day figure averages
+    # that acceleration away.
     net_charm_per_day = net_charm_total / 252.0
+    net_charm_per_hour = net_charm_total / float(TRADING_HOURS_PER_YEAR)
 
     stats = {
         "net_gex": net_gex_total,
@@ -392,6 +396,8 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         "net_charm_fmt": fmt_gex(net_charm_total),
         "net_charm_per_day": float(net_charm_per_day),
         "net_charm_per_day_fmt": fmt_gex(net_charm_per_day),
+        "net_charm_per_hour": float(net_charm_per_hour),
+        "net_charm_per_hour_fmt": fmt_gex(net_charm_per_hour),
         "gex_ratio": gex_ratio_val,
         "pc_ratio": total_put_oi / total_call_oi if total_call_oi > 0 else 0.0,
         "call_oi": fmt_oi(total_call_oi),
