@@ -1,5 +1,6 @@
 """Chart-building helpers extracted from streamlit_app.py."""
 
+import numpy as np
 import plotly.graph_objects as go
 
 from theme import COLORS
@@ -20,27 +21,81 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
         hovertemplate="Strike: $%{y:.0f}<br>Net GEX: %{x:,.0f}<extra></extra>",
     ))
 
-    # Charm overlay — per-strike $-delta drift per *trading hour* traced
-    # on a secondary X axis at the top of the chart. Charm stored in
-    # gex_df is annualized against trading-time T (252 × 6.5 hours), so
-    # dividing by TRADING_HOURS_PER_YEAR yields per-hour pressure that
-    # mirrors how 0DTE dealer hedging actually accelerates through the
-    # session. Positive values sit to the right of zero on xaxis2 (dealer
-    # book gaining delta as time passes → mechanical buying pressure at
-    # that strike); negative values sit to the left (mechanical selling).
-    # A single accent color is used instead of green/red segmenting so it
-    # doesn't compete visually with the GEX bars underneath — the line's
-    # position relative to the zero line carries the direction.
-    if "net_charm" in df.columns:
+    # Charm overlay — per-strike $-delta drift per *trading hour* on a
+    # secondary X axis. Per-strike net_charm is the dealer option-book
+    # delta drift / year under SqueezeMetrics convention (dealer long
+    # calls, short puts):
+    #
+    #   CEX > 0  →  book gains delta as time passes  →  dealer SELLS to
+    #               re-hedge to delta-neutral  →  REPELLING (red)
+    #   CEX < 0  →  book loses delta as time passes  →  dealer BUYS to
+    #               re-hedge  →  SUPPORTIVE / pinning (green)
+    #
+    # Visual layout choices:
+    #   * The X2 axis is forced symmetric around zero so direction is
+    #     readable even when the entire chain is one-signed (which is
+    #     structurally common — OTM-heavy SPX chains contribute negative
+    #     CEX on both call and put legs).
+    #   * Translucent green / red fills to zero make the sign read in a
+    #     single glance without needing to inspect axis ticks.
+    #   * The amber outline line stays on top so micro-shape (peaks,
+    #     zero-crossings near walls) remains visible above the fills.
+    x2_range = None
+    if "net_charm" in df.columns and len(df) > 0:
         charm_per_hr = df["net_charm"].values / float(TRADING_HOURS_PER_YEAR)
+        charm_per_hr = np.where(np.isfinite(charm_per_hr), charm_per_hr, 0.0)
+
+        max_abs_charm = float(np.max(np.abs(charm_per_hr)))
+        if max_abs_charm > 0:
+            x2_range = [-max_abs_charm * 1.05, max_abs_charm * 1.05]
+
+        # Sign-clipped fill series. Using 0 (not NaN) so adjacent strikes
+        # of opposite sign meet cleanly at the zero axis instead of
+        # leaving a visual gap at the crossing.
+        supportive = np.minimum(charm_per_hr, 0.0)  # green fill
+        repelling  = np.maximum(charm_per_hr, 0.0)  # red fill
+
         fig.add_trace(go.Scatter(
-            y=strikes, x=charm_per_hr,
-            mode="lines",
+            y=strikes, x=supportive, mode="lines",
+            line=dict(color=COLORS["bar_green"], width=0.4),
+            fill="tozerox",
+            fillcolor="rgba(0, 200, 83, 0.18)",
+            xaxis="x2",
+            name="Supportive",
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        fig.add_trace(go.Scatter(
+            y=strikes, x=repelling, mode="lines",
+            line=dict(color=COLORS["bar_red"], width=0.4),
+            fill="tozerox",
+            fillcolor="rgba(255, 23, 68, 0.18)",
+            xaxis="x2",
+            name="Repelling",
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+        # Direction labels for hover. Built once as customdata so users
+        # can hover on any strike and see the corrected sign meaning
+        # without having to memorize the convention.
+        direction_labels = np.where(
+            charm_per_hr > 0, "Repelling (dealer sells)",
+            np.where(charm_per_hr < 0, "Supportive (dealer buys)", "Neutral"),
+        )
+        fig.add_trace(go.Scatter(
+            y=strikes, x=charm_per_hr, mode="lines",
             line=dict(color=COLORS["charm_line"], width=1.5),
             xaxis="x2",
             name="Charm/hr",
-            hovertemplate="Strike: $%{y:.0f}<br>Charm/hr: %{x:,.0f}<extra></extra>",
-            opacity=0.85,
+            customdata=direction_labels,
+            hovertemplate=(
+                "Strike: $%{y:.0f}"
+                "<br>Charm/hr: %{x:,.0f} $Δ"
+                "<br>%{customdata}"
+                "<extra></extra>"
+            ),
+            opacity=0.9,
         ))
 
     # Level lines
@@ -106,10 +161,14 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
         title="Strike-by-Strike Net GEX Proxy",
         xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
         xaxis2=dict(
-            title=dict(text="Charm/hr ($Δ drift)", font=dict(color=COLORS["charm_line"], size=9)),
+            title=dict(
+                text="Charm/hr ($Δ drift) — ← supportive (dealer buys) | repelling (dealer sells) →",
+                font=dict(color=COLORS["charm_line"], size=9),
+            ),
             overlaying="x", side="top",
             showgrid=False,
-            zeroline=True, zerolinecolor=COLORS["charm_line"], zerolinewidth=0.5,
+            range=x2_range,
+            zeroline=True, zerolinecolor=COLORS["charm_line"], zerolinewidth=1.2,
             tickfont=dict(color=COLORS["charm_line"], size=8),
         ),
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
