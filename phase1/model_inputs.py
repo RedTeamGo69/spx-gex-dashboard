@@ -34,6 +34,43 @@ def bs_gamma(S, K, T, r, sigma):
     return norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 
+def bs_charm(S, K, T, r, sigma, sign):
+    """
+    Scalar Black-Scholes charm = ∂Δ/∂t  (delta drift per unit of time).
+
+    Returns the *annualized* charm — i.e. change in Δ over one unit of T.
+    Because the engine uses trading-time T (see USE_TRADING_TIME in
+    config.py, where 1.0 year == 252 × 6.5 trading hours), downstream
+    per-day values should divide by 252 to match the same base.
+
+    Zero-dividend convention matches bs_gamma above; SPX dividend yield is
+    small enough (~1.3% annual) that leaving q=0 is consistent with the
+    existing gamma engine and introduces error well below the accuracy of
+    the underlying IV inputs.
+
+    With q = 0 the call and put charms are equal (the put-call parity
+    term q·e^{-qT}·N(±d1) vanishes), so `sign` only controls the
+    convention-matching sign flip between the two legs for callers that
+    aggregate across them. The raw charm is returned unsigned in
+    magnitude; the caller multiplies by the dealer-direction sign to get
+    dealer-book charm exposure, identically to how bs_gamma is used.
+
+    Note on T→0: charm → ±∞ for near-ATM strikes at expiry. The engine
+    relies on T_FLOOR and the expired-expiration guard to keep these
+    values numerically finite; near-expiry charm magnitudes will still be
+    large, but that's economically correct (delta is collapsing toward
+    0 or 1 in real time).
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 0.0
+    sqrt_T = np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    # ∂Δ/∂t with q=0 — see Hull 10e §20.6 or Wikipedia "Greeks (finance)"
+    charm = -norm.pdf(d1) * (2.0 * r * T - d2 * sigma * sqrt_T) / (2.0 * T * sigma * sqrt_T)
+    return float(charm)
+
+
 def infer_iv_from_gamma(target_gamma, S, K, T, r, low=SYNTH_IV_MIN, high=SYNTH_IV_MAX, steps=70):
     """
     Infer a synthetic IV that matches vendor gamma at current spot.
@@ -187,6 +224,7 @@ def prepare_option_for_model(opt, sign, T, spot, r):
 
     if iv > 0:
         gamma_now = bs_gamma(spot, K, T, r, iv)
+        charm_now = bs_charm(spot, K, T, r, iv, sign)
         return {
             "accepted": True,
             "reason": "direct_iv",
@@ -200,6 +238,7 @@ def prepare_option_for_model(opt, sign, T, spot, r):
                 "sign": sign,
                 "T": T,
                 "gamma_now": gamma_now,
+                "charm_now": charm_now,
                 "iv_source": "direct_iv",
                 "synthetic_fit_rel_error": None,
             },
@@ -208,6 +247,7 @@ def prepare_option_for_model(opt, sign, T, spot, r):
     if HYBRID_IV_MODE and vendor_gamma > 0:
         fit = fit_synthetic_iv(vendor_gamma, spot, K, T, r)
         if fit["accepted"]:
+            charm_now = bs_charm(spot, K, T, r, fit["iv"], sign)
             return {
                 "accepted": True,
                 "reason": "synthetic_iv",
@@ -221,6 +261,7 @@ def prepare_option_for_model(opt, sign, T, spot, r):
                     "sign": sign,
                     "T": T,
                     "gamma_now": fit["fitted_gamma"],
+                    "charm_now": charm_now,
                     "iv_source": "synthetic_iv",
                     "synthetic_fit_rel_error": fit["rel_error"],
                 },
