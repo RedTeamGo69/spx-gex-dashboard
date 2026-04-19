@@ -3,6 +3,7 @@
 import plotly.graph_objects as go
 
 from theme import COLORS
+from phase1.config import TRADING_HOURS_PER_YEAR
 
 
 def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
@@ -18,6 +19,29 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
         marker_color=colors, marker_opacity=0.85,
         hovertemplate="Strike: $%{y:.0f}<br>Net GEX: %{x:,.0f}<extra></extra>",
     ))
+
+    # Charm overlay — per-strike $-delta drift per *trading hour* traced
+    # on a secondary X axis at the top of the chart. Charm stored in
+    # gex_df is annualized against trading-time T (252 × 6.5 hours), so
+    # dividing by TRADING_HOURS_PER_YEAR yields per-hour pressure that
+    # mirrors how 0DTE dealer hedging actually accelerates through the
+    # session. Positive values sit to the right of zero on xaxis2 (dealer
+    # book gaining delta as time passes → mechanical buying pressure at
+    # that strike); negative values sit to the left (mechanical selling).
+    # A single accent color is used instead of green/red segmenting so it
+    # doesn't compete visually with the GEX bars underneath — the line's
+    # position relative to the zero line carries the direction.
+    if "net_charm" in df.columns:
+        charm_per_hr = df["net_charm"].values / float(TRADING_HOURS_PER_YEAR)
+        fig.add_trace(go.Scatter(
+            y=strikes, x=charm_per_hr,
+            mode="lines",
+            line=dict(color=COLORS["charm_line"], width=1.5),
+            xaxis="x2",
+            name="Charm/hr",
+            hovertemplate="Strike: $%{y:.0f}<br>Charm/hr: %{x:,.0f}<extra></extra>",
+            opacity=0.85,
+        ))
 
     # Level lines
     for val, color, dash, name in [
@@ -78,9 +102,16 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", font_size=10,
-        margin=dict(l=80, r=10, t=35, b=35),
+        margin=dict(l=80, r=10, t=55, b=35),
         title="Strike-by-Strike Net GEX Proxy",
         xaxis=dict(title="Net GEX proxy", gridcolor=COLORS["grid_major"], zerolinecolor=COLORS["zeroline"]),
+        xaxis2=dict(
+            title=dict(text="Charm/hr ($Δ drift)", font=dict(color=COLORS["charm_line"], size=9)),
+            overlaying="x", side="top",
+            showgrid=False,
+            zeroline=True, zerolinecolor=COLORS["charm_line"], zerolinewidth=0.5,
+            tickfont=dict(color=COLORS["charm_line"], size=8),
+        ),
         yaxis=dict(title="Strike", gridcolor=COLORS["grid_minor"], tickfont_size=8),
         showlegend=False, height=2000, dragmode=False,
     )
