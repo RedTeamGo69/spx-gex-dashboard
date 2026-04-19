@@ -94,9 +94,10 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
             name="Charm/hr",
             customdata=direction_labels,
             hovertemplate=(
-                "Strike: $%{y:.0f}"
+                "<b>Strike: $%{y:.0f}</b>"
                 "<br>Charm/hr: %{x:,.0f} $Δ"
-                "<br>%{customdata}"
+                "<br><b>%{customdata}</b>"
+                "<br><i>(left = supportive, right = repelling)</i>"
                 "<extra></extra>"
             ),
             opacity=0.95,
