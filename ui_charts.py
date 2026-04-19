@@ -161,12 +161,23 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
                         label=label, font_size=7, position="top right")
 
     # ── Layout ────────────────────────────────────────────────────────
+    # hovermode="y unified" + Y-axis spike lines give a true crosshair:
+    # a dotted horizontal line tracks the mouse Y (strike) across both
+    # panels simultaneously, and a single unified tooltip surfaces every
+    # trace's value at that strike (so GEX magnitude and Charm/hr land
+    # in the same popup without needing to hover the panels one by one).
+    # spikedistance=-1 makes the spike line always render regardless of
+    # how far the cursor is from a trace, which keeps the crosshair
+    # continuous as the user scans up and down the strike axis.
     fig.update_layout(
         paper_bgcolor=COLORS["bg_primary"], plot_bgcolor=COLORS["bg_primary"],
         font_color="white", font_size=10,
         margin=dict(l=80, r=10, t=55, b=35),
         title="Strike-by-Strike Net GEX Proxy  +  Charm/hr",
         showlegend=False, height=2000, dragmode=False,
+        hovermode="y unified",
+        spikedistance=-1,
+        hoverdistance=100,
     )
 
     # Left panel X axis (GEX)
@@ -192,12 +203,30 @@ def build_gex_bar_chart(gex_df, levels, spot, em_analysis,
         row=1, col=2,
     )
 
-    # Shared Y axis
+    # Shared Y axis (strike) — spike line spans both panels because the
+    # Y axes are matched via shared_yaxes. spikemode="across" draws the
+    # horizontal crosshair edge-to-edge across the whole figure; "toaxis"
+    # adds a tick mark on the strike axis at the cursor's current Y.
     fig.update_yaxes(
         title_text="Strike",
         gridcolor=COLORS["grid_minor"],
         tickfont_size=8,
+        showspikes=True,
+        spikemode="across+toaxis",
+        spikesnap="cursor",
+        spikedash="dot",
+        spikecolor=COLORS["text_white"],
+        spikethickness=1,
         row=1, col=1,
+    )
+    fig.update_yaxes(
+        showspikes=True,
+        spikemode="across+toaxis",
+        spikesnap="cursor",
+        spikedash="dot",
+        spikecolor=COLORS["text_white"],
+        spikethickness=1,
+        row=1, col=2,
     )
 
     return fig
