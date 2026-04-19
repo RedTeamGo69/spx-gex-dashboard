@@ -228,14 +228,25 @@ def render_gex_stream(stats, levels, spot):
     # Format net GEX
     ng_fmt = stats.get("net_gex_fmt", f"{net_gex:.0f}")
 
-    # Net Charm / trading-hour — dealer-book $-delta drift the assumed
-    # book takes on per hour of the session. Positive reads as supportive
-    # (mechanical dealer buying as time passes, same sign convention as
-    # GEX), negative as repelling. Uses the same amber accent as the
-    # chart overlay so the KPI and the line visually tie together.
+    # Net Charm / trading-hour — dealer-book $-delta drift per hour of
+    # the session under the engine's SqueezeMetrics sign convention
+    # (dealer long calls, short puts):
+    #   positive net_charm  →  book gains delta  →  dealer SELLS  →
+    #                          repelling / distributing flow (RED)
+    #   negative net_charm  →  book loses delta  →  dealer BUYS  →
+    #                          supportive / pinning flow (GREEN)
+    # Note the inverted color logic vs Net GEX — there, positive = long
+    # gamma = stabilizing (green); here, positive = repelling (red).
+    # Amber label ties the KPI to the chart overlay line of the same
+    # color.
     net_charm_per_hour = stats.get("net_charm_per_hour", 0.0)
     nc_fmt = stats.get("net_charm_per_hour_fmt", f"{net_charm_per_hour:,.0f}")
-    nc_color = COLORS["positive"] if net_charm_per_hour > 0 else COLORS["negative"] if net_charm_per_hour < 0 else COLORS["text_muted"]
+    if net_charm_per_hour > 0:
+        nc_color = COLORS["negative"]   # repelling
+    elif net_charm_per_hour < 0:
+        nc_color = COLORS["positive"]   # supportive
+    else:
+        nc_color = COLORS["text_muted"]
     charm_accent = COLORS["charm_line"]
 
     # GEX Ratio display. None is the "undefined" sentinel from gex_engine
