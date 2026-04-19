@@ -766,6 +766,69 @@ def main():
         )
         st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
+        # Collapsed reading guide for the right-hand Charm/hr panel.
+        # Kept in an expander so it's out of the way once the user has
+        # internalized the sign convention — but one click away when
+        # needed. The guide mirrors the correct SqueezeMetrics-based
+        # interpretation (positive CEX → dealer sells → repelling;
+        # negative CEX → dealer buys → supportive) and explicitly calls
+        # out the inverted color logic vs Net GEX so the green/red
+        # doesn't confuse readers used to the GEX panel.
+        with st.expander("ℹ️ How to read the Charm/hr panel (right side)"):
+            st.markdown(
+                """
+**What it shows.** For each strike, the $-delta the assumed dealer
+option-book gains or loses per **trading hour** purely from time
+passing — i.e. dealer hedging pressure from Θ-decay, independent of
+price moves.
+
+**Direction (the important part):**
+
+| Line sits… | Fill color | Dealer book | Dealer must… | Price effect |
+|---|---|---|---|---|
+| **Left of zero** | 🟢 green | *loses* delta | **Buy** underlying | **Supportive / pinning** |
+| **Right of zero** | 🔴 red | *gains* delta | **Sell** underlying | **Repelling / distributing** |
+
+⚠ **Color logic is inverted vs the Net GEX panel.** In Net GEX, green
+bars = positive = dealer long gamma = stabilizing. In Charm/hr, green
+fill = *negative* values = supportive flow. Read by **fill color and
+side of zero**, not by sign of the number.
+
+**How to use it with GEX (left panel):**
+
+1. **Pin candidate** — strike near spot with large green GEX bar *and*
+   green charm fill. Gamma and charm both magnetizing price there.
+2. **Breakdown candidate** — strike in red GEX territory (negative
+   gamma, amplifying) *and* strong green charm (dealer buying). Puts
+   a floor on sell-offs via mechanical time-decay buying.
+3. **Wall that actively pushes back** — call wall or put wall with
+   red charm fill spilling to the right of zero. The wall isn't just
+   static gamma; dealers are selling *into* time decay there.
+4. **GEX–charm disagreement** — large GEX wall with charm fill hugging
+   zero means the wall is static and won't strengthen through the
+   session. Weakens the pin case.
+
+**Time-of-day behavior:**
+
+- Morning: charm magnitudes are modest; line hugs zero.
+- Afternoon (~2pm ET onward): |charm| accelerates as *T* shrinks. The
+  **Net Charm/hr** KPI in the sidebar climbs through the session —
+  that acceleration *is* the 0DTE afternoon pin effect.
+- Final 30 min: ATM charm magnitudes explode (delta collapsing to 0/1
+  in real time). Treat the direction as meaningful, the numeric
+  magnitude as cartoonish near expiry.
+
+**Caveats:**
+
+- Inherits the Net GEX dealer-sign assumption (dealers assumed long
+  calls, short puts). Covered calls and cash-secured put flows
+  locally invert the sign — same blind spot as GEX.
+- Valid only during market hours (engine uses trading-time *T*).
+- Structural pressure estimate, **not** a flow signal. News, IV
+  spikes, or directional flow can swamp it.
+                """
+            )
+
     # ── Spread Finder — Weekly credit spread placement ──
     with tab_spread_finder:
         # Spread finder also uses the frozen weekly snap only — a drifting
