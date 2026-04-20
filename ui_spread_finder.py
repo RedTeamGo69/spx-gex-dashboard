@@ -1009,8 +1009,13 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         col_gauge, col_strikes = st.columns([1, 1])
 
         with col_gauge:
-            st.markdown("**Range Distribution**")
-            _render_sf_range_gauge(_forecast, _plan, _spx_close_inp)
+            st.markdown("**Forecast Range**")
+            _render_sf_range_gauge(
+                _forecast, _plan, _spx_close_inp,
+                tier_label=selected_tier.label,
+                tier_range_pct=selected_tier.range_pct,
+                tier_risk_level=selected_tier.risk_level,
+            )
 
         with col_strikes:
             st.markdown("**Strike Map with GEX Walls**")
@@ -1162,39 +1167,160 @@ def _render_gex_context_panel(gex_ctx: GEXContext, spot: float):
     )
 
 
-def _render_sf_range_gauge(forecast: dict, plan: SpreadPlan, spx_ref: float):
-    """Bar chart showing point estimate, PI bounds, and effective range."""
+def _render_sf_range_gauge(
+    forecast: dict,
+    plan: SpreadPlan,
+    spx_ref: float,
+    tier_label: str = None,
+    tier_range_pct: float = None,
+    tier_risk_level: str = None,
+):
+    """Horizontal number-line gauge of the weekly range forecast.
+
+    The old view stacked four ascending bars (Lower PI, Point, Upper PI,
+    Effective) which read like four independent predictions climbing in
+    magnitude. They aren't — they're all positions on the same weekly
+    range-% axis: Point is the model's central forecast, Lower/Upper PI
+    are the 10th/90th percentiles of its predictive distribution, and
+    Effective is Upper PI plus a fixed safety buffer. This view lays
+    them out on one horizontal axis:
+
+      - Amber band  = 80% prediction interval (Lower PI → Upper PI)
+      - Red band    = buffer extension (Upper PI → Effective)
+      - Bull dot    = Point Estimate (the center of the distribution)
+      - Dashed tick = VIX-implied range for reference
+      - White caret = the Risk Tier currently driving strike placement
+
+    Because the forecast is fit on log(range), the back-transformed
+    distribution is asymmetric — Point will usually sit below the
+    midpoint of the PI band. That's statistically correct, not a bug,
+    and the horizontal layout actually makes it visible (whereas the
+    old four-bar chart hid it entirely).
+    """
     import plotly.graph_objects as go
 
-    categories = ["Lower PI", "Point Est", "Upper PI", "Effective\n(+buffer)"]
-    values = [
-        forecast["lower_pct"] * 100,
-        forecast["point_pct"] * 100,
-        forecast["upper_pct"] * 100,
-        plan.effective_range_pct * 100,
-    ]
-    colors = [SF_NEUT, SF_BULL, SF_WARN, SF_BEAR]
+    lower_pct     = forecast["lower_pct"]         * 100
+    point_pct     = forecast["point_pct"]         * 100
+    upper_pct     = forecast["upper_pct"]         * 100
+    effective_pct = plan.effective_range_pct      * 100
+    vix_pct       = forecast["vix_implied_pct"]   * 100
+    confidence    = forecast["confidence_level"]
 
-    fig = go.Figure(go.Bar(
-        x=categories, y=values,
-        marker_color=colors,
-        text=[f"{v:.2f}%" for v in values],
-        textposition="outside",
+    # Axis extends a touch past the biggest value on screen so the
+    # right-most label doesn't collide with the plot edge.
+    axis_max = max(effective_pct, vix_pct, point_pct) * 1.18 + 0.4
+
+    _TIER_HIGHLIGHT = {
+        "aggressive":   "#ff4b4b",
+        "moderate":     "#ffa726",
+        "conservative": "#66bb6a",
+    }
+    tier_color = _TIER_HIGHLIGHT.get((tier_risk_level or "").lower(), "#ffffff")
+
+    fig = go.Figure()
+
+    # 80% PI band (Lower → Upper)
+    fig.add_shape(type="rect",
+        x0=lower_pct, x1=upper_pct, y0=0.38, y1=0.62,
+        fillcolor=SF_WARN, opacity=0.28, line_width=0, layer="below",
+    )
+    # Buffer extension (Upper → Effective)
+    fig.add_shape(type="rect",
+        x0=upper_pct, x1=effective_pct, y0=0.38, y1=0.62,
+        fillcolor=SF_BEAR, opacity=0.22, line_width=0, layer="below",
+    )
+
+    # End-caps for the PI band and Effective marker
+    for x, color in [
+        (lower_pct,     SF_WARN),
+        (upper_pct,     SF_WARN),
+        (effective_pct, SF_BEAR),
+    ]:
+        fig.add_shape(type="line",
+            x0=x, x1=x, y0=0.34, y1=0.66,
+            line=dict(color=color, width=2),
+        )
+
+    # Bottom labels for the three bounds
+    for x, label, color in [
+        (lower_pct,     f"Lower PI<br><b>{lower_pct:.2f}%</b>",         SF_WARN),
+        (upper_pct,     f"Upper PI<br><b>{upper_pct:.2f}%</b>",         SF_WARN),
+        (effective_pct, f"Effective<br><b>{effective_pct:.2f}%</b>",    SF_BEAR),
+    ]:
+        fig.add_annotation(
+            x=x, y=0.22, text=label, showarrow=False,
+            font=dict(size=10, color=color), align="center",
+        )
+
+    # "80% PI" text centered in the amber band
+    pi_mid = (lower_pct + upper_pct) / 2
+    fig.add_annotation(
+        x=pi_mid, y=0.50,
+        text=f"<b>{confidence}% PI</b>",
+        showarrow=False,
+        font=dict(size=11, color="#0e1117"),
+    )
+
+    # Point Estimate marker
+    fig.add_trace(go.Scatter(
+        x=[point_pct], y=[0.5], mode="markers",
+        marker=dict(
+            size=18, color=SF_BULL, symbol="circle",
+            line=dict(width=2, color=SF_BG),
+        ),
+        hovertemplate=f"Point Estimate: {point_pct:.2f}%<extra></extra>",
+        showlegend=False,
     ))
+    fig.add_annotation(
+        x=point_pct, y=0.80,
+        text=f"Point<br><b>{point_pct:.2f}%</b>",
+        showarrow=False, font=dict(size=10, color=SF_BULL), align="center",
+    )
 
-    vix_line = forecast["vix_implied_pct"] * 100
-    fig.add_hline(
-        y=vix_line, line_dash="dash", line_color=SF_NEUT,
-        annotation_text=f"VIX implied: {vix_line:.2f}%",
-        annotation_position="top right",
+    # VIX-implied range (dashed reference line, label tucked under axis
+    # so it doesn't collide with the Point/Upper labels when VIX sits
+    # near them — this is the common case on quiet weeks).
+    fig.add_shape(type="line",
+        x0=vix_pct, x1=vix_pct, y0=0.05, y1=0.95,
+        line=dict(color=SF_NEUT, width=1, dash="dash"),
+    )
+    fig.add_annotation(
+        x=vix_pct, y=0.02,
+        text=f"VIX implied {vix_pct:.2f}%",
+        showarrow=False, font=dict(size=9, color=SF_NEUT),
+    )
+
+    # Currently-selected Risk Tier — white caret above the band so the
+    # user can see exactly which % is driving the strikes they're looking
+    # at. Skipped when the caller didn't pass tier info.
+    if tier_range_pct is not None:
+        tier_pct = tier_range_pct * 100
+        fig.add_shape(type="line",
+            x0=tier_pct, x1=tier_pct, y0=0.30, y1=0.70,
+            line=dict(color=tier_color, width=3),
+        )
+        fig.add_annotation(
+            x=tier_pct, y=1.02,
+            text=f"▼ <b>{tier_label or 'Selected'}</b>",
+            showarrow=False, font=dict(size=11, color=tier_color),
+            align="center",
+        )
+
+    fig.update_xaxes(
+        range=[0, axis_max], showgrid=True, gridcolor="#1f2530",
+        ticksuffix="%", zeroline=True, zerolinecolor="#333",
+        title="Weekly range % (High − Low / Open)",
+        title_font=dict(size=11, color="#9aa4b2"),
+    )
+    fig.update_yaxes(
+        range=[-0.05, 1.15], visible=False, fixedrange=True,
     )
 
     fig.update_layout(
         plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
-        yaxis_title="Range % (High - Low / Open)",
         showlegend=False,
-        margin=dict(t=30, b=10, l=10, r=10),
-        height=320, dragmode=False,
+        margin=dict(t=40, b=50, l=20, r=20),
+        height=260, dragmode=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
