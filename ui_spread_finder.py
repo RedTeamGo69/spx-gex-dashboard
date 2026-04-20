@@ -1422,7 +1422,29 @@ def _render_sf_strike_map_tier(
     gex_ctx: GEXContext, selected_width: float = 25, ticker: str = "SPX",
     weekly_em: dict = None,
 ):
-    """Strike map that updates based on the selected risk tier."""
+    """Swim-lane strike map grouped by semantic role.
+
+    The old layout sorted every level (walls, shorts, spot, EM bounds,
+    etc.) onto its own Y-row — clean for avoiding label overlap but
+    forced the reader to mentally re-group "which of these is my trade
+    vs structural GEX vs a forecast marker?" every time they scanned.
+
+    This version keeps one shared price axis on X but splits the Y into
+    three labeled lanes:
+
+      TRADE   — Put Long / Put Short / Ref / Spot / Call Short / Call Long
+      RANGE   — Effective bounds + EM bounds
+      GEX     — Put Wall / Zero-Gamma / Call Wall
+
+    Background shading:
+      - tier-colored band between Put Short and Call Short (the "safe"
+        window for the selected risk tier — where the spread profits)
+      - translucent blue band across the weekly EM envelope
+
+    Label collisions within a lane are avoided by alternating marker
+    text positions top/bottom after sorting each lane's markers by
+    price.
+    """
     import plotly.graph_objects as go
 
     _TIER_COLORS = {
@@ -1452,97 +1474,138 @@ def _render_sf_strike_map_tier(
     em_upper = (weekly_em or {}).get("upper_level", 0)
     em_lower = (weekly_em or {}).get("lower_level", 0)
     has_em = em_upper > 0 and em_lower > 0
+    em_color = "#29b6f6"  # light blue
+
+    # ── Lane layout ──
+    # TRADE on top because the shorts are the decision the reader is
+    # optimizing; GEX at the bottom as the structural backdrop.
+    LANE_TRADE, LANE_RANGE, LANE_GEX = 2.0, 1.0, 0.0
+    Y_BOT, Y_TOP = -0.6, 2.85
 
     fig = go.Figure()
 
-    # Build level markers
-    #
-    # SPX Ref (white star) is the frozen Monday open used for strike
-    # placement. Spot (amber circle) is the LIVE price from the most
-    # recent refresh — useful for seeing where price is relative to the
-    # frozen reference and the short strikes as the week plays out.
-    levels = [
-        (put_long,   "Put Long",   SF_BEAR,   "triangle-left",  8),
-        (put_short,  "Put Short",  tier_color, "diamond",       10),
-        (gex_ctx.put_wall,   "Put Wall",  COLORS["put_wall"],  "square",  9),
-        (gex_ctx.zero_gamma, "Zero-G",    COLORS["zero_gamma"], "x",     10),
-        (spx_ref,    f"{ticker} Ref", COLORS["spot"], "star",           12),
-        (gex_ctx.spot, "Spot (live)",  "#ffc107",  "circle",   11),
-        (gex_ctx.call_wall,  "Call Wall", COLORS["call_wall"],  "square",  9),
-        (call_short, "Call Short", tier_color, "diamond",       10),
-        (call_long,  "Call Long",  SF_BEAR,   "triangle-right",  8),
-    ]
-
-    # Add EM levels if weekly straddle data is available
-    em_color = "#29b6f6"  # light blue
-    if has_em:
-        levels.append((em_upper, "EM Upper", em_color, "line-ew", 9))
-        levels.append((em_lower, "EM Lower", em_color, "line-ew", 9))
-
-    levels.sort(key=lambda x: x[0])
-
-    # Weekly expected move band
+    # ── Background bands (span all lanes) ──
+    # The tier-colored "safe window" between the shorts — price that
+    # stays in this window keeps the credit spread profitable.
+    fig.add_shape(type="rect",
+        x0=put_short, x1=call_short,
+        y0=Y_BOT, y1=Y_TOP,
+        fillcolor=tier_color, opacity=0.08, line_width=0, layer="below",
+    )
+    # Weekly EM envelope — provides a sanity check on where the straddle
+    # thinks price can move, independent of the HAR forecast.
     if has_em:
         fig.add_shape(type="rect",
             x0=em_lower, x1=em_upper,
-            y0=-0.5, y1=len(levels) - 0.5,
-            fillcolor=em_color, opacity=0.06, line_width=1,
-            line_color=em_color, line_dash="dash",
+            y0=Y_BOT, y1=Y_TOP,
+            fillcolor=em_color, opacity=0.05,
+            line=dict(color=em_color, width=1, dash="dot"),
+            layer="below",
         )
 
-    # Tier range band
-    half = tier.range_pct / 2
-    tier_lower = spx_ref * (1 - half)
-    tier_upper = spx_ref * (1 + half)
-    fig.add_shape(type="rect",
-        x0=tier_lower, x1=tier_upper,
-        y0=-0.5, y1=len(levels) - 0.5,
-        fillcolor=tier_color, opacity=0.08, line_width=1,
-        line_color=tier_color, line_dash="dot",
-    )
+    # Lane dividers — faint so they separate without distracting.
+    for y_div in (0.5, 1.5):
+        fig.add_shape(type="line",
+            xref="paper", x0=0, x1=1,
+            y0=y_div, y1=y_div,
+            line=dict(color="#262b36", width=1, dash="dot"),
+            layer="below",
+        )
 
-    # Call spread zone
-    fig.add_shape(type="rect",
-        x0=min(call_short, call_long), x1=max(call_short, call_long),
-        y0=-0.5, y1=len(levels) - 0.5,
-        fillcolor=SF_BEAR, opacity=0.15, line_width=0,
-    )
-
-    # Put spread zone
-    fig.add_shape(type="rect",
-        x0=min(put_long, put_short), x1=max(put_long, put_short),
-        y0=-0.5, y1=len(levels) - 0.5,
-        fillcolor=SF_BEAR, opacity=0.15, line_width=0,
-    )
-
-    for i, (price, label, color, symbol, size) in enumerate(levels):
-        fig.add_trace(go.Scatter(
-            x=[price], y=[i],
-            mode="markers+text",
-            marker=dict(color=color, size=size, symbol=symbol, line=dict(width=1, color="#fff")),
-            text=[f"{label}  {price:,.0f}"],
-            textposition="middle right" if price <= spx_ref else "middle left",
-            textfont=dict(size=11, color=color),
-            showlegend=False,
-            hovertemplate=f"{label}: {price:,.0f}<extra></extra>",
-        ))
-
-    fig.add_vline(x=spx_ref, line_dash="solid", line_color=COLORS["spot"], line_width=2, opacity=0.4)
-    # Live spot — dashed amber line so the reader can eyeball the
-    # distance from current price to either short strike at a glance.
+    # ── Vertical reference lines ──
+    fig.add_vline(x=spx_ref, line_dash="solid", line_color=COLORS["spot"],
+                  line_width=2, opacity=0.35)
     fig.add_vline(x=gex_ctx.spot, line_dash="dash", line_color="#ffc107",
-                   line_width=1.5, opacity=0.55)
+                  line_width=1.5, opacity=0.5)
 
-    all_prices = [l[0] for l in levels]
-    margin_px = (max(all_prices) - min(all_prices)) * 0.15
+    # ── Wing connectors within the TRADE lane ──
+    # Dotted line from short to long so the wing width reads visually.
+    fig.add_shape(type="line",
+        x0=put_short, x1=put_long,
+        y0=LANE_TRADE, y1=LANE_TRADE,
+        line=dict(color=SF_BEAR, width=2, dash="dot"),
+    )
+    fig.add_shape(type="line",
+        x0=call_short, x1=call_long,
+        y0=LANE_TRADE, y1=LANE_TRADE,
+        line=dict(color=SF_BEAR, width=2, dash="dot"),
+    )
+
+    # ── Lane content ──
+    trade_lane = [
+        (put_long,      "Put Long",        SF_BEAR,             "triangle-left",   9),
+        (put_short,     "Put Short",       tier_color,          "diamond",        12),
+        (spx_ref,       f"{ticker} Ref",   COLORS["spot"],      "star",           14),
+        (gex_ctx.spot,  "Spot",            "#ffc107",           "circle",         11),
+        (call_short,    "Call Short",      tier_color,          "diamond",        12),
+        (call_long,     "Call Long",       SF_BEAR,             "triangle-right",  9),
+    ]
+    range_lane = [
+        (plan.effective_lower_px, "Eff Lo", SF_WARN, "triangle-up", 9),
+        (plan.effective_upper_px, "Eff Hi", SF_WARN, "triangle-up", 9),
+    ]
+    if has_em:
+        range_lane.extend([
+            (em_lower, "EM Lo", em_color, "line-ew", 11),
+            (em_upper, "EM Hi", em_color, "line-ew", 11),
+        ])
+    gex_lane = [
+        (gex_ctx.put_wall,   "Put Wall",  COLORS["put_wall"],   "square", 11),
+        (gex_ctx.zero_gamma, "Zero-G",    COLORS["zero_gamma"], "x",      12),
+        (gex_ctx.call_wall,  "Call Wall", COLORS["call_wall"],  "square", 11),
+    ]
+
+    def _plot_lane(markers, y: float):
+        """Place markers on a single lane and alternate labels above/below
+        so adjacent strikes don't stack their text."""
+        markers_sorted = sorted(markers, key=lambda m: m[0])
+        for idx, (x, label, color, symbol, size) in enumerate(markers_sorted):
+            text_pos = "top center" if idx % 2 == 0 else "bottom center"
+            fig.add_trace(go.Scatter(
+                x=[x], y=[y], mode="markers+text",
+                marker=dict(color=color, size=size, symbol=symbol,
+                            line=dict(width=1, color="#ffffff")),
+                text=[f"{label} {x:,.0f}"],
+                textposition=text_pos,
+                textfont=dict(size=10, color=color),
+                showlegend=False,
+                hovertemplate=f"{label}: {x:,.0f}<extra></extra>",
+            ))
+
+    _plot_lane(trade_lane, LANE_TRADE)
+    _plot_lane(range_lane, LANE_RANGE)
+    _plot_lane(gex_lane,   LANE_GEX)
+
+    # ── Lane labels (left gutter, tied to the plot area) ──
+    for text, y in (("TRADE", LANE_TRADE), ("RANGE", LANE_RANGE), ("GEX", LANE_GEX)):
+        fig.add_annotation(
+            xref="paper", x=0.003, y=y,
+            text=f"<b>{text}</b>",
+            showarrow=False,
+            font=dict(size=10, color="#6b7380"),
+            xanchor="left",
+        )
+
+    # ── Axis ──
+    all_prices = [m[0] for m in (trade_lane + range_lane + gex_lane)]
+    margin_px = (max(all_prices) - min(all_prices)) * 0.12
+
+    fig.update_xaxes(
+        range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
+        title_text=f"{ticker} Price Level",
+        title_font=dict(size=11, color="#9aa4b2"),
+        showgrid=True, gridcolor="#1f2530",
+    )
+    fig.update_yaxes(
+        range=[Y_BOT, Y_TOP],
+        visible=False, fixedrange=True,
+    )
 
     fig.update_layout(
         plot_bgcolor=SF_BG, paper_bgcolor=SF_BG, font_color="#e0e0e0",
-        xaxis_title=f"{ticker} Price Level",
-        xaxis_range=[min(all_prices) - margin_px, max(all_prices) + margin_px],
-        yaxis_visible=False, showlegend=False,
-        margin=dict(t=10, b=30, l=10, r=10),
-        height=380, dragmode=False,
+        showlegend=False,
+        margin=dict(t=10, b=40, l=10, r=10),
+        height=320, dragmode=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "scrollZoom": False})
 
