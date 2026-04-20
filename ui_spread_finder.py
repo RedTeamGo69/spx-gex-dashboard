@@ -977,7 +977,18 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     st.session_state["_rtf_spot"]         = spot
     st.session_state["_rtf_gex_adj"]      = gex_adj
 
-    @st.fragment
+    # Previously wrapped in @st.fragment to keep risk-tier clicks from
+    # recomputing the plan. That saved ~100ms per tier toggle but the
+    # cost was a nested-fragment pattern: outer @st.fragment on
+    # _render_spread_finder_tab plus inner @st.fragment on
+    # _risk_tier_fragment. Nested fragments schedule reruns
+    # independently, and when the inner read `_rtf_*` session-state
+    # that the outer had written, rapid ticker/tab switching could
+    # leave the inner rendering against a stale snapshot — strikes
+    # and widths would stop updating until a hard refresh.  Flattened
+    # to a plain nested function: tier toggles now rerun the outer
+    # fragment only (still tab-isolated, no full-app rerun), which
+    # reuses the cached model fit and is fast enough (~100ms).
     def _risk_tier_fragment():
         _TIER_COLORS = {
             "aggressive":   "#ff4b4b",
