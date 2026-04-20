@@ -477,7 +477,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
                 X_train, X_test, y_train, y_test = time_series_split(df_feat, feature_cols=avail_cols)
                 result  = fit_model(X_train, y_train, model_name=spec_name)
                 metrics = evaluate_oos(result, X_test, y_test, model_name=spec_name)
-                save_model(result, avail_cols, spec_name, metrics, conn=conn)
+                save_model(result, avail_cols, spec_name, metrics, conn=conn, ticker=ticker)
 
                 _logger.info(
                     f"    {spec_name}: OOS R² = {metrics['oos_r2']:.4f}, "

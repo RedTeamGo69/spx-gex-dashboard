@@ -37,8 +37,14 @@ def save_model(
     model_name: str,
     metrics: dict,
     conn=None,
+    ticker: str = "SPX",
 ):
-    """Save the fitted model + metadata to Postgres (on-disk pickle fallback)."""
+    """Save the fitted model + metadata to Postgres (on-disk pickle fallback).
+
+    `ticker` scopes the fit so SPX and XSP can coexist under the same
+    `model_name`. Both the DB row and the pickle-fallback filename are
+    keyed by (model_name, ticker).
+    """
     payload = {
         "schema_version":     SCHEMA_VERSION,
         "statsmodels_version": sm.__version__,
@@ -46,6 +52,7 @@ def save_model(
         "result":             result,
         "feature_cols":       feature_cols,
         "model_name":         model_name,
+        "ticker":             ticker,
         "metrics":            metrics,
         "fitted_at":          datetime.now(timezone.utc).isoformat(),
     }
@@ -57,22 +64,22 @@ def save_model(
         try:
             import psycopg2
             conn.execute("""
-                INSERT INTO saved_models (model_name, model_data, fitted_at, updated_at)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT(model_name) DO UPDATE SET
+                INSERT INTO saved_models (model_name, ticker, model_data, fitted_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT(model_name, ticker) DO UPDATE SET
                     model_data = EXCLUDED.model_data,
                     fitted_at  = EXCLUDED.fitted_at,
                     updated_at = EXCLUDED.updated_at
-            """, (model_name, psycopg2.Binary(blob), payload["fitted_at"], now))
+            """, (model_name, ticker, psycopg2.Binary(blob), payload["fitted_at"], now))
             conn.commit()
-            log.info(f"Model saved to database: {model_name}")
+            log.info(f"Model saved to database: {ticker}/{model_name}")
             return
         except Exception as e:
             log.warning(f"DB save failed, falling back to pickle: {e}")
 
-    # Fallback: pickle to disk
+    # Fallback: pickle to disk, ticker-scoped filename
     MODEL_DIR.mkdir(exist_ok=True)
-    path = MODEL_DIR / f"{model_name}.pkl"
+    path = MODEL_DIR / f"{ticker}_{model_name}.pkl"
     with open(path, "wb") as f:
         pickle.dump(payload, f)
     log.info(f"Model saved to disk: {path}")
@@ -129,8 +136,10 @@ def _validate_payload(payload: dict, source: str) -> None:
         )
 
 
-def load_model(model_name: str, conn=None) -> dict:
+def load_model(model_name: str, conn=None, ticker: str = "SPX") -> dict:
     """Load a previously saved model from Postgres (on-disk pickle fallback).
+
+    `ticker` scopes the lookup so SPX and XSP fits don't collide.
 
     Raises IncompatibleModelError if the payload schema_version doesn't
     match the current SCHEMA_VERSION constant — caller should treat this
@@ -139,8 +148,9 @@ def load_model(model_name: str, conn=None) -> dict:
     if conn is not None:
         try:
             cur = conn.execute(
-                "SELECT model_data, fitted_at FROM saved_models WHERE model_name = %s",
-                (model_name,)
+                "SELECT model_data, fitted_at FROM saved_models "
+                "WHERE model_name = %s AND ticker = %s",
+                (model_name, ticker)
             )
             row = cur.fetchone()
             if row:
@@ -148,8 +158,8 @@ def load_model(model_name: str, conn=None) -> dict:
                 if isinstance(blob, memoryview):
                     blob = bytes(blob)
                 payload = pickle.loads(blob)
-                _validate_payload(payload, f"DB:{model_name}")
-                log.info(f"Model loaded from database: {model_name}  (fitted {payload['fitted_at']})")
+                _validate_payload(payload, f"DB:{ticker}/{model_name}")
+                log.info(f"Model loaded from database: {ticker}/{model_name}  (fitted {payload['fitted_at']})")
                 return payload
         except IncompatibleModelError:
             # Don't swallow — let the caller decide what to do
@@ -157,10 +167,15 @@ def load_model(model_name: str, conn=None) -> dict:
         except Exception as e:
             log.warning(f"DB load failed, trying pickle fallback: {e}")
 
-    # Fallback: pickle from disk
-    path = MODEL_DIR / f"{model_name}.pkl"
+    # Fallback: pickle from disk (ticker-scoped filename; legacy SPX fits
+    # fall back to the un-prefixed filename for one upgrade cycle).
+    path = MODEL_DIR / f"{ticker}_{model_name}.pkl"
+    if not path.exists() and ticker == "SPX":
+        legacy = MODEL_DIR / f"{model_name}.pkl"
+        if legacy.exists():
+            path = legacy
     if not path.exists():
-        raise FileNotFoundError(f"No saved model found for {model_name}")
+        raise FileNotFoundError(f"No saved model found for {ticker}/{model_name}")
 
     with open(path, "rb") as f:
         payload = pickle.load(f)
