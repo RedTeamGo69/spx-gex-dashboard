@@ -356,13 +356,44 @@ def init_all_tables(conn) -> None:
     """)
 
     # --- saved_models (Postgres BYTEA — replaces pickle files) ---
+    # PK is (model_name, ticker) so SPX and XSP keep independent fits.
+    # Sharing the key across tickers used to cause cross-contamination:
+    # saving M4_full on XSP would overwrite the SPX fit of the same spec,
+    # and the Spread Finder would then silently load XSP-trained weights
+    # into the SPX view after a ticker-switch round trip.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS saved_models (
-            model_name      TEXT PRIMARY KEY,
+            model_name      TEXT NOT NULL,
+            ticker          TEXT NOT NULL DEFAULT 'SPX',
             model_data      BYTEA NOT NULL,
             fitted_at       TEXT,
-            updated_at      TEXT
+            updated_at      TEXT,
+            PRIMARY KEY (model_name, ticker)
         )
+    """)
+
+    # Migration for existing deploys that pre-date the composite PK: add
+    # the ticker column (legacy rows become ticker='SPX', which is
+    # accurate — every pre-migration fit was SPX) and swap the PK from
+    # (model_name) to (model_name, ticker). Idempotent via IF NOT EXISTS
+    # and a pg_constraint probe, so safe to run on every init.
+    cur.execute("""
+        ALTER TABLE saved_models
+        ADD COLUMN IF NOT EXISTS ticker TEXT NOT NULL DEFAULT 'SPX'
+    """)
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'saved_models_pkey'
+                  AND conrelid = 'saved_models'::regclass
+                  AND COALESCE(array_length(conkey, 1), 0) = 1
+            ) THEN
+                ALTER TABLE saved_models DROP CONSTRAINT saved_models_pkey;
+                ALTER TABLE saved_models ADD PRIMARY KEY (model_name, ticker);
+            END IF;
+        END $$
     """)
 
     # One-time cleanup: M5_garch was removed from MODEL_SPECS because it

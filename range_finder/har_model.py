@@ -520,6 +520,7 @@ def run_full_pipeline(
     next_week_start: str = None,
     preferred_model: str = "M3_extended",
     exclude_covid: bool = True,
+    ticker: str = "SPX",
 ) -> dict:
     """End-to-end: load features -> fit all specs -> compare -> forecast."""
     # --- Load features ---
@@ -585,7 +586,7 @@ def run_full_pipeline(
     run_diagnostics(best_result, model_name=preferred_model)
 
     # --- Save preferred model ---
-    save_model(best_result, best_features, preferred_model, all_metrics.get(preferred_model, {}))
+    save_model(best_result, best_features, preferred_model, all_metrics.get(preferred_model, {}), ticker=ticker)
 
     # --- Live forecast ---
     if spx_close is None:

@@ -419,12 +419,23 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             ref_source = "Fri close" if run_now.weekday() >= 5 else "live spot"
 
     # ── Auto-update reference price and VIX when ticker changes ──
+    # Also evict the ticker we're *leaving*'s cached HAR fit so the
+    # incoming ticker lands on a clean load-from-Postgres path. Without
+    # this, switching SPX→XSP→(GEX tab)→SPX could leave the outgoing
+    # ticker's `_mdl_result_{ticker}` / `_mdl_name_{ticker}` session
+    # entries in place; the name check at the bottom of this function
+    # then sees cached_name == current dropdown choice and skips the
+    # reload, freezing the tab on the last-displayed model.
     ref_key = f"sf_ref_price_{ticker}"
     vix_key = f"sf_vix_level_{ticker}"
     prev_ticker = st.session_state.get("_sf_prev_ticker")
     if prev_ticker != ticker:
         st.session_state[ref_key] = default_ref
         st.session_state[vix_key] = default_vix
+        if prev_ticker:
+            for _suffix in ("sf_model_result_", "sf_model_features_",
+                            "sf_model_metrics_", "sf_model_name_"):
+                st.session_state.pop(f"{_suffix}{prev_ticker}", None)
         st.session_state["_sf_prev_ticker"] = ticker
 
     # Also update the defaults on first render if not yet set
@@ -650,7 +661,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                     )
                     _result  = rf_fit_model(X_train, y_train, model_name=_spec)
                     _metrics = rf_evaluate_oos(_result, X_test, y_test, model_name=_spec)
-                    rf_save_model(_result, avail_cols, _spec, _metrics, conn=conn)
+                    rf_save_model(_result, avail_cols, _spec, _metrics, conn=conn, ticker=ticker)
 
                     if _spec == model_choice:
                         _selected_result  = _result
@@ -691,7 +702,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # Try to load model from session or disk
     if _mdl_result_key not in st.session_state:
         try:
-            payload = rf_load_model(model_choice, conn=conn)
+            payload = rf_load_model(model_choice, conn=conn, ticker=ticker)
             st.session_state[_mdl_result_key]  = payload["result"]
             st.session_state[_mdl_feat_key]    = payload["feature_cols"]
             st.session_state[_mdl_metrics_key] = payload["metrics"]
