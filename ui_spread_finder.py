@@ -603,6 +603,17 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         # Forecast click still fits only the currently-selected spec —
         # that's the fast path for iterating on one model.
         _specs_to_fit = list(RF_MODEL_SPECS.keys()) if do_weekly else [model_choice]
+
+        # Weekly Setup also mirrors the cron's ticker matrix: HAR features
+        # are all SPX-derived (weekly_spx, VIX, FRED) and XSP is just
+        # SPX/10, so the fit math is identical under either ticker. Saving
+        # the same fit under both tickers at once means one click on
+        # either sidebar ticker populates Postgres for both — otherwise
+        # the user has to switch tickers and click again, which is how
+        # we ended up with SPX populated and XSP showing "No saved fit."
+        # A plain Forecast click keeps the fast single-ticker path.
+        _tickers_to_save = ["SPX", "XSP"] if do_weekly else [ticker]
+
         _spinner_label = (
             f"4/4 — Fitting {len(_specs_to_fit)} specs..."
             if len(_specs_to_fit) > 1 else f"4/4 — Fitting {model_choice}..."
@@ -661,7 +672,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                     )
                     _result  = rf_fit_model(X_train, y_train, model_name=_spec)
                     _metrics = rf_evaluate_oos(_result, X_test, y_test, model_name=_spec)
-                    rf_save_model(_result, avail_cols, _spec, _metrics, conn=conn, ticker=ticker)
+                    for _save_ticker in _tickers_to_save:
+                        rf_save_model(_result, avail_cols, _spec, _metrics,
+                                      conn=conn, ticker=_save_ticker)
 
                     if _spec == model_choice:
                         _selected_result  = _result
@@ -673,7 +686,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         # Summary line for the Weekly Setup path so the user can see which
         # specs landed in Postgres at a glance.
         if do_weekly:
-            st.success(f"Fitted {len(_specs_to_fit)} specs (all saved to Postgres)")
+            _ticker_note = " × ".join(_tickers_to_save)
+            st.success(
+                f"Fitted {len(_specs_to_fit)} specs for {_ticker_note} "
+                f"({len(_specs_to_fit) * len(_tickers_to_save)} rows saved)"
+            )
 
         # Prime session state with the currently-selected spec's fit so
         # the rest of this render uses it without falling through to the
