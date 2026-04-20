@@ -837,21 +837,21 @@ side of zero**, not by sign of the number.
         _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker, weekly_em=_sf_weekly_em)
 
     # ── Auto-refresh ──
-    # Uses st.rerun with a placeholder countdown so the app remains
-    # responsive to user interaction during the wait.
+    # The old implementation was `while _elapsed < refresh_seconds: time.sleep()`
+    # at the bottom of the script, which blocked the Python thread for the
+    # whole interval. Streamlit queues widget clicks during a blocked script
+    # but can't process them until the script returns — so the Spread
+    # Finder dropdowns and Risk Tier radio appeared to freeze, and clicks
+    # resolved in weird orders when the queue flushed.  st_autorefresh
+    # schedules a rerun via a browser-side timer instead, so Python exits
+    # cleanly after each render and widget interactions stay responsive
+    # through the entire interval.
     if refresh_seconds > 0:
-        import time as _time
-        _refresh_placeholder = st.empty()
-        _elapsed = 0
-        _tick = 5  # check every 5 seconds
-        while _elapsed < refresh_seconds:
-            remaining = refresh_seconds - _elapsed
-            _refresh_placeholder.caption(f"Auto-refresh in {remaining}s")
-            _time.sleep(min(_tick, remaining))
-            _elapsed += _tick
-        _refresh_placeholder.empty()
-        st.cache_resource.clear()
-        st.rerun()
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(
+            interval=refresh_seconds * 1000,
+            key=f"auto_refresh_{refresh_seconds}",
+        )
 
 
 if __name__ == "__main__":
