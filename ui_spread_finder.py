@@ -70,6 +70,24 @@ def _get_rf_conn():
     return conn
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _cached_rf_get_features(_conn):
+    """Full model_features table, cached for 10 minutes.
+
+    Streamlit reruns the Spread Finder render every time any widget changes
+    — dropdown, number input, slider, risk-tier button — and the raw
+    ``rf_get_features`` helper runs a full ``SELECT *`` on ``model_features``
+    each call. On Neon's free tier that single query dominated the
+    CU-hour bill. The 10 min TTL is well under the weekly cadence at which
+    features actually change; the Refresh/Rebuild/Weekly Setup paths call
+    ``.clear()`` below to force a reload the moment new data lands.
+
+    The ``_conn`` underscore tells Streamlit to skip hashing the connection
+    object (psycopg2 connections aren't hashable).
+    """
+    return rf_get_features(_conn)
+
+
 def _spread_finder_target_friday(ref_date: "date_cls | None" = None) -> "date_cls":
     """Return the calendar Friday of the week the Spread Finder is planning for.
 
@@ -740,6 +758,10 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         with st.spinner("2/4 — Computing feature matrix..."):
             try:
                 rf_build_features(conn)
+                # Drop the cached feature frame so the next read reflects
+                # the rebuild — otherwise the UI would keep serving the
+                # pre-rebuild rows until the 10-minute TTL expires.
+                _cached_rf_get_features.clear()
                 st.success("Features rebuilt")
             except Exception as e:
                 st.error(f"Feature rebuild failed: {e}")
@@ -757,7 +779,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     # ── Check data availability (reload after rebuild if needed) ──
     try:
-        df_feat = rf_get_features(conn)
+        df_feat = _cached_rf_get_features(conn)
     except Exception:
         df_feat = pd.DataFrame()
 
@@ -1149,37 +1171,60 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # Multi-spec export: pull every saved fit for this ticker, rebuild
     # forecast/plan/tiers against the same feature row and live chain, and
     # write one workbook with a combined Summary + per-spec Tiers sheets.
-    # Specs that have never been fitted (no saved_models row) are skipped
-    # silently so clicking the button mid-week still works — only fully
-    # fresh installs (zero fits) fall through to the warning.
+    # Gated behind an explicit "Prepare" click — the build loads every
+    # saved model from Postgres (one pickle blob per spec), so running it
+    # on every Streamlit rerun (hover, slider, auto-refresh) would chew
+    # through Neon CU-hours. Once prepared the bytes are cached in session
+    # state and the download button renders immediately.
+    _multi_key = f"_sf_multi_xlsx_{ticker}_{week_start}"
     with _xlsx_all_col:
-        try:
-            _multi_bytes, _multi_specs = _build_multi_spec_spread_finder_excel(
-                conn         = conn,
-                ticker       = ticker,
-                week_start   = week_start,
-                chain_exp    = chain_exp,
-                feature_row  = feature_row,
-                spx_ref      = spx_close_input,
-                vix          = vix_input,
-                chain_quotes = chain_quotes,
-                gex_ctx      = gex_ctx,
-                weekly_em    = weekly_em,
+        _multi_cached = st.session_state.get(_multi_key)
+        if _multi_cached is None:
+            if st.button(
+                "Prepare multi-spec export",
+                key=f"_sf_multi_prep_{ticker}_{week_start}",
+                use_container_width=True,
+                help="Loads every saved HAR spec and builds a side-by-side comparison workbook. Runs on click only to conserve database compute.",
+            ):
+                try:
+                    with st.spinner("Loading every saved HAR spec..."):
+                        _multi_bytes, _multi_specs = _build_multi_spec_spread_finder_excel(
+                            conn         = conn,
+                            ticker       = ticker,
+                            week_start   = week_start,
+                            chain_exp    = chain_exp,
+                            feature_row  = feature_row,
+                            spx_ref      = spx_close_input,
+                            vix          = vix_input,
+                            chain_quotes = chain_quotes,
+                            gex_ctx      = gex_ctx,
+                            weekly_em    = weekly_em,
+                        )
+                    if _multi_bytes is None:
+                        st.caption("No saved fits yet — run **Weekly Setup** to enable multi-spec export.")
+                    else:
+                        st.session_state[_multi_key] = (_multi_bytes, _multi_specs)
+                        st.rerun()
+                except Exception as _multi_err:
+                    st.caption(f"Multi-spec export unavailable: {_multi_err}")
+        else:
+            _multi_bytes, _multi_specs = _multi_cached
+            st.download_button(
+                label       = f"Export all specs ({len(_multi_specs)})",
+                data        = _multi_bytes,
+                file_name   = f"spread_finder_{ticker}_{week_start}_all_specs.xlsx",
+                mime        = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key         = f"_sf_xlsx_all_{ticker}_{week_start}",
+                help        = f"Specs included: {', '.join(_multi_specs)}",
             )
-            if _multi_bytes is None:
-                st.caption("No saved fits yet — run **Weekly Setup** to enable multi-spec export.")
-            else:
-                st.download_button(
-                    label       = f"Export all specs ({len(_multi_specs)})",
-                    data        = _multi_bytes,
-                    file_name   = f"spread_finder_{ticker}_{week_start}_all_specs.xlsx",
-                    mime        = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key         = f"_sf_xlsx_all_{ticker}_{week_start}",
-                    help        = f"Specs included: {', '.join(_multi_specs)}",
-                )
-        except Exception as _multi_err:
-            st.caption(f"Multi-spec export unavailable: {_multi_err}")
+            if st.button(
+                "↻ Rebuild",
+                key=f"_sf_multi_refresh_{ticker}_{week_start}",
+                help="Discard cached bytes and re-run every spec against the current inputs.",
+            ):
+                st.session_state.pop(_multi_key, None)
+                st.rerun()
 
     st.markdown("---")
 
