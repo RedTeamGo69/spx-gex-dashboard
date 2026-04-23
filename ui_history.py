@@ -79,19 +79,27 @@ def _apply_typed_em_snapshot(em_live_data, is_market_open, spot, ticker, em_type
     sk_snap = f"em_snapshot_{em_type}_{ticker}"
     sk_date = f"em_snapshot_date_{em_type}_{ticker}"
     sk_time = f"em_snapshot_time_{em_type}_{ticker}"
+    # "We already looked in Postgres for today's snapshot and the row was
+    # missing" marker. Without this, a missing snapshot re-fires the
+    # get_em_snapshot query on every Streamlit rerun (every widget
+    # interaction + every auto-refresh tick), and get_em_snapshot opens a
+    # fresh psycopg2 connection each time — Neon's free tier runs out of
+    # CU-hours fast under that load.
+    sk_miss = f"em_snapshot_missing_{em_type}_{ticker}"
 
     # Clear stale snapshot from a previous period
     if st.session_state.get(sk_date) != date_key:
         st.session_state.pop(sk_snap, None)
         st.session_state.pop(sk_date, None)
         st.session_state.pop(sk_time, None)
+        st.session_state.pop(sk_miss, None)
 
     # Try to restore from Postgres whenever session state is empty — this must
     # run regardless of market-open status, otherwise fresh sessions outside
     # 9:30–16:00 ET never pick up the frozen weekly/monthly snap that the
     # scheduled cron already persisted, and downstream code falls back to the
     # live (drifting) EM.
-    if sk_snap not in st.session_state:
+    if sk_snap not in st.session_state and st.session_state.get(sk_miss) != date_key:
         try:
             db_snap = get_em_snapshot(date_key, ticker=ticker, em_type=em_type)
         except Exception:
@@ -109,6 +117,11 @@ def _apply_typed_em_snapshot(em_live_data, is_market_open, spot, ticker, em_type
                     st.session_state[sk_time] = "restored from DB"
             else:
                 st.session_state[sk_time] = "restored from DB"
+        else:
+            # Remember that the DB was empty for this date so we don't
+            # re-query every rerun. A successful capture later in this
+            # function will set sk_snap and effectively override the miss.
+            st.session_state[sk_miss] = date_key
 
     if not is_market_open:
         # Outside market hours we never capture anything new — just return
