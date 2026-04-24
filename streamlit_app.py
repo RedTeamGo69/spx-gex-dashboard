@@ -38,7 +38,7 @@ from phase1.expected_move import (
     find_weekly_expiration, find_monthly_expiration,
 )
 from phase1.gex_history import (
-    save_snapshot, get_weekly_em_date_key, get_monthly_em_date_key,
+    get_weekly_em_date_key, get_monthly_em_date_key,
 )
 
 _logger = logging.getLogger(__name__)
@@ -567,28 +567,6 @@ def main():
         farthest = selected[-1] if selected else None
         display_em = _em_for_exp(farthest) or daily_em
         display_em_label = f"Custom EM ({farthest})" if farthest else "Custom EM"
-
-    # ── Save historical snapshot (market hours only, throttled to refresh interval) ──
-    if is_market_open:
-        now_utc = datetime.now(timezone.utc)
-        last_snap_utc = st.session_state.get("_last_snapshot_utc")
-        # Minimum seconds between saves: use refresh interval, or 300s (5 min) if auto-refresh is off
-        min_gap = refresh_seconds if refresh_seconds > 0 else 300
-        should_save = last_snap_utc is None or (now_utc - last_snap_utc).total_seconds() >= min_gap
-        if should_save:
-            try:
-                save_snapshot(spot, levels, regime, data.stats, data.confidence_info, data.staleness_info, em_analysis, ticker=ticker)
-                st.session_state["_last_snapshot_utc"] = now_utc
-                st.session_state["last_save_ok"] = True
-                st.session_state["last_save_time"] = now_utc.strftime("%H:%M:%S UTC")
-                st.session_state["last_save_error"] = None
-            except Exception as e:
-                st.session_state["last_save_ok"] = False
-                st.session_state["last_save_error"] = str(e)
-                _logger.error(f"History save failed: {e}")
-    else:
-        st.session_state["last_save_ok"] = None
-        st.session_state["last_save_time"] = "skipped (market closed)"
 
     # ── Header metrics ──
     regime_color = regime["color"]
