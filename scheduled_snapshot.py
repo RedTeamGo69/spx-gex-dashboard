@@ -86,24 +86,21 @@ def capture_snapshot():
         _logger.info(f"Market holiday ({today_str}) — skipping")
         sys.exit(0)
 
-    # ── Wait for market open (9:30 AM ET) if triggered slightly early ──
-    import time
-    market_open_time = 9 * 60 + 30  # 9:30 AM in minutes
-    if not force_weekly_setup and time_val < market_open_time:
-        while True:
-            wait_now = now_ny()
-            current_minutes = wait_now.hour * 60 + wait_now.minute
-            if current_minutes >= market_open_time:
-                break
-            wait_seconds = (market_open_time - current_minutes) * 60 - wait_now.second
-            wait_seconds = max(wait_seconds, 1)
-            _logger.info(f"Waiting {wait_seconds}s for market open (currently {wait_now.strftime('%I:%M:%S %p ET')})...")
-            time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
+    # ── Pre-open warm-up ──
+    # The cron fires slightly before 9:30 so the runner is already booted by
+    # the bell. Anything that doesn't require the opening tick runs HERE,
+    # during that idle window, so the post-9:30 critical path is only
+    # spot/chain fetch + GEX compute + DB save.
+    #
+    # Safe to pre-fetch: range_finder table DDL, Tradier client construction,
+    # FRED risk-free rate (daily series, not 9:30-gated), and the Tradier
+    # expirations list (set by CBOE in advance, doesn't change intraday).
+    # NOT safe to pre-fetch: spot price, option chains — those need the open.
 
-    # ── Ensure all Postgres tables exist (idempotent — cheap CREATE IF NOT
-    # EXISTS). Runs every day so the range_finder tables are ready for any
-    # code path that might touch them, including Tue–Fri runs after a fresh
-    # database wipe. Phase1's own tables auto-init on module import. ──
+    # ── Range finder tables (idempotent CREATE IF NOT EXISTS). Runs every
+    # day so the tables are ready for any code path that might touch them,
+    # including Tue–Fri runs after a fresh database wipe. Phase1's own
+    # tables auto-init on module import. ──
     try:
         from range_finder.db import get_connection as _rf_get_connection
         from range_finder.db import init_all_tables as _rf_init_all_tables
@@ -116,11 +113,8 @@ def capture_snapshot():
         # isn't held hostage by a range_finder init failure.
         _logger.warning(f"Range finder table init failed (non-fatal): {e}")
 
-    # ── Fetch market data ──
     client = TradierDataClient(token=tradier_token)
     client.clear_cache()
-
-    calendar_snapshot = get_calendar_snapshot(run_now)
 
     rfr_info = fetch_risk_free_rate(fred_key)
     rfr = rfr_info["rate"]
@@ -135,7 +129,30 @@ def capture_snapshot():
         _logger.error(f"No expirations returned from Tradier API for {ticker}")
         sys.exit(1)
     nearest_exp = next((e for e in avail if e >= today_str), avail[0])
+    # ── Select expirations: 0DTE + next 3 nearest ──
+    target_exps = [e for e in avail if e >= today_str][:4]
 
+    # ── Wait for market open (9:30 AM ET) if triggered slightly early ──
+    import time
+    market_open_time = 9 * 60 + 30  # 9:30 AM in minutes
+    if not force_weekly_setup and time_val < market_open_time:
+        while True:
+            wait_now = now_ny()
+            current_minutes = wait_now.hour * 60 + wait_now.minute
+            if current_minutes >= market_open_time:
+                break
+            wait_seconds = (market_open_time - current_minutes) * 60 - wait_now.second
+            wait_seconds = max(wait_seconds, 1)
+            _logger.info(f"Waiting {wait_seconds}s for market open (currently {wait_now.strftime('%I:%M:%S %p ET')})...")
+            time.sleep(min(wait_seconds, 30))  # sleep in chunks to log progress
+
+    # Re-capture wall clock after the wait so the snapshot's time-to-expiry
+    # math and logged "as of" timestamp reflect the actual post-open moment
+    # rather than when the script first started.
+    run_now = now_ny()
+    calendar_snapshot = get_calendar_snapshot(run_now)
+
+    # ── Fetch live market data (post-open critical path) ──
     spot_info = get_reference_spot_details(
         ticker=ticker,
         nearest_exp=nearest_exp,
@@ -147,9 +164,6 @@ def capture_snapshot():
     )
     spot = spot_info["spot"]
     _logger.info(f"{ticker} Spot: {spot:.2f} (source: {spot_info['source']})")
-
-    # ── Select expirations: 0DTE + next 3 nearest ──
-    target_exps = [e for e in avail if e >= today_str][:4]
 
     # ── Compute GEX ──
     gex_df, stats, all_options, _strike_sup, _exp_sup = (
