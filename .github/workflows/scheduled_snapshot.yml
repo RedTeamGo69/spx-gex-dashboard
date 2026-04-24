@@ -1,8 +1,12 @@
 name: Scheduled GEX Snapshot
 
 on:
-  # Triggered externally by cron-job.org at exactly 9:30 AM ET (Mon-Fri).
-  # cron-job.org handles DST automatically via America/New_York timezone.
+  # Triggered externally by cron-job.org at 9:28 AM ET (Mon-Fri), two minutes
+  # before the bell. The early fire gives the Actions runner time to boot +
+  # pip install so Python is already running pre-open work (FRED rate,
+  # expirations, table init) during the idle window; scheduled_snapshot.py
+  # then parks in its wait loop until 9:30:00 ET before fetching spot +
+  # chains. cron-job.org handles DST automatically via America/New_York.
   # Can also be triggered manually from the GitHub Actions UI.
   workflow_dispatch:
     inputs:
