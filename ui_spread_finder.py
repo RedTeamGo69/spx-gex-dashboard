@@ -5,7 +5,7 @@ Extracted from streamlit_app.py.
 """
 from __future__ import annotations
 
-from datetime import date as date_cls, datetime, timedelta
+from datetime import date as date_cls, datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -586,10 +586,22 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # "We already checked Postgres for this week's Monday open and the row
     # was missing" marker. Without this, a missing weekly_setup row re-fires
     # the SELECT on every Spread Finder rerun (every widget interaction +
-    # every auto-refresh tick). The scheduled cron is the only writer of
-    # weekly_setup, so if a week's row is absent now it will stay absent
-    # until the next Monday cron — safe to remember the miss session-wide.
+    # every auto-refresh tick). The marker stores the UTC timestamp of the
+    # last miss so we re-query every ~15 minutes — long enough to prevent
+    # per-refresh queries, short enough that a manual mid-week backfill
+    # (scheduled_snapshot.py workflow_dispatch with FORCE_WEEKLY_SETUP=1)
+    # is picked up without requiring a session restart.
     mon_miss_key = f"sf_monday_open_miss_week_{ticker}"
+    _MISS_TTL_SECONDS = 900  # 15 min
+
+    def _miss_is_fresh():
+        entry = st.session_state.get(mon_miss_key)
+        if not entry or entry.get("week") != current_week:
+            return False
+        ts = entry.get("ts")
+        if ts is None:
+            return False
+        return (datetime.now(timezone.utc) - ts).total_seconds() < _MISS_TTL_SECONDS
 
     if frozen_week == current_week and frozen_open:
         default_ref = frozen_open
@@ -599,7 +611,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         # Try to restore Monday open + VIX from weekly_setup table
         restored_open = None
         restored_vix = None
-        if run_now.weekday() < 5 and st.session_state.get(mon_miss_key) != current_week:
+        if run_now.weekday() < 5 and not _miss_is_fresh():
             try:
                 from datetime import timedelta as _td
                 days_since_monday = run_now.weekday()
@@ -622,11 +634,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                     # A prior miss for this week is now stale.
                     st.session_state.pop(mon_miss_key, None)
                 else:
-                    # Remember the miss so we don't re-query every rerun.
-                    # A live freeze later in this function (Monday market
-                    # open) or a cron-driven INSERT will write mon_open_key
-                    # directly, which takes precedence over this marker.
-                    st.session_state[mon_miss_key] = current_week
+                    # Remember the miss so we don't re-query every rerun,
+                    # but stamp it so we re-check after _MISS_TTL_SECONDS.
+                    st.session_state[mon_miss_key] = {
+                        "week": current_week,
+                        "ts": datetime.now(timezone.utc),
+                    }
             except Exception:
                 pass
 
