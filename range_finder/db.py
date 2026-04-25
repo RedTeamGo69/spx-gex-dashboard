@@ -130,7 +130,16 @@ class PGConnectionWrapper:
     def _connect(self):
         import psycopg2
         self._conn = psycopg2.connect(self._conn_str, sslmode="require")
-        self._conn.autocommit = False
+        # autocommit=True so read-only paths (e.g. saved_models / model_features
+        # SELECTs from the Spread Finder) don't leave the connection sitting in
+        # `idle in transaction` state. Neon will not auto-suspend a compute as
+        # long as any pooled connection has an open transaction, which kept the
+        # endpoint warm 19+ hrs/day. All writes in this layer are single-
+        # statement UPSERTs with ON CONFLICT DO UPDATE (see data_collector.py,
+        # feature_builder.py, model_persistence.py, spread_persistence.py), so
+        # statement-level autocommit is safe — the trailing `conn.commit()`
+        # calls become harmless no-ops.
+        self._conn.autocommit = True
 
     def _ensure_alive(self):
         try:
