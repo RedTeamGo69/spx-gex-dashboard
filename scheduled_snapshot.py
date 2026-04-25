@@ -92,26 +92,18 @@ def capture_snapshot():
     # during that idle window, so the post-9:30 critical path is only
     # spot/chain fetch + GEX compute + DB save.
     #
-    # Safe to pre-fetch: range_finder table DDL, Tradier client construction,
-    # FRED risk-free rate (daily series, not 9:30-gated), and the Tradier
-    # expirations list (set by CBOE in advance, doesn't change intraday).
+    # Safe to pre-fetch: Tradier client construction, FRED risk-free rate
+    # (daily series, not 9:30-gated), and the Tradier expirations list
+    # (set by CBOE in advance, doesn't change intraday).
     # NOT safe to pre-fetch: spot price, option chains — those need the open.
-
-    # ── Range finder tables (idempotent CREATE IF NOT EXISTS). Runs every
-    # day so the tables are ready for any code path that might touch them,
-    # including Tue–Fri runs after a fresh database wipe. Phase1's own
-    # tables auto-init on module import. ──
-    try:
-        from range_finder.db import get_connection as _rf_get_connection
-        from range_finder.db import init_all_tables as _rf_init_all_tables
-        _rf_conn = _rf_get_connection()
-        _rf_init_all_tables(_rf_conn)
-        _logger.info("Range finder tables verified / created")
-    except Exception as e:
-        # Non-fatal: the GEX snapshot itself doesn't touch range_finder tables
-        # on non-Monday runs. We log and keep going so the daily GEX capture
-        # isn't held hostage by a range_finder init failure.
-        _logger.warning(f"Range finder table init failed (non-fatal): {e}")
+    #
+    # Note: range_finder table init is intentionally NOT done here. The daily
+    # GEX snapshot doesn't read range_finder tables, and _run_weekly_spread_setup
+    # calls init_all_tables itself when it actually needs them. A previous
+    # version inited every day "defensively" — that turned out to cost up to
+    # 15+ min on Neon's free tier when DDL serialised against the parallel
+    # XSP matrix job under compute throttling, which delayed the snapshot save
+    # well past 9:30. Removed.
 
     client = TradierDataClient(token=tradier_token)
     client.clear_cache()
