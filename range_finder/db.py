@@ -8,9 +8,18 @@
 # =============================================================================
 
 import os
+import time
 import logging
 
 log = logging.getLogger(__name__)
+
+# Minimum seconds between proactive `SELECT 1` liveness probes inside
+# _ensure_alive. The Spread Finder render calls cursor() ~5-10 times per
+# pass (directly + via pd.read_sql_query); without throttling, every one
+# of those becomes a Postgres roundtrip just to confirm the connection
+# is alive. The per-cursor() exception fallback below catches the rare
+# case where Neon dropped the connection between probes.
+_ALIVE_PROBE_INTERVAL_SECONDS = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -125,11 +134,13 @@ class PGConnectionWrapper:
     def __init__(self, conn_str: str):
         self._conn_str = conn_str
         self._conn = None
+        self._last_alive_check_ts: float | None = None
         self._connect()
 
     def _connect(self):
         import psycopg2
         self._conn = psycopg2.connect(self._conn_str, sslmode="require")
+        self._last_alive_check_ts = time.monotonic()
         # autocommit=True so read-only paths (e.g. saved_models / model_features
         # SELECTs from the Spread Finder) don't leave the connection sitting in
         # `idle in transaction` state. Neon will not auto-suspend a compute as
@@ -142,16 +153,29 @@ class PGConnectionWrapper:
         self._conn.autocommit = True
 
     def _ensure_alive(self):
+        # Cheap local check first (no roundtrip): if the wrapper has no
+        # connection or psycopg2 already marked it closed, reconnect.
+        if self._conn is None or self._conn.closed:
+            log.info("Postgres connection lost — reconnecting...")
+            self._connect()
+            return
+
+        # Proactive `SELECT 1` probe — but throttled. Doing it on every
+        # cursor() call meant 5-10 extra SELECTs per Spread Finder render,
+        # which kept Neon's compute warm. The per-cursor() exception
+        # fallback in cursor() handles the rare case where Neon drops
+        # the connection between probes.
+        now = time.monotonic()
+        if self._last_alive_check_ts is not None and \
+                (now - self._last_alive_check_ts) < _ALIVE_PROBE_INTERVAL_SECONDS:
+            return
         try:
-            if self._conn is None or self._conn.closed:
-                log.info("Postgres connection lost — reconnecting...")
-                self._connect()
-                return
             cur = self._conn.cursor()
             try:
                 cur.execute("SELECT 1")
             finally:
                 cur.close()
+            self._last_alive_check_ts = now
         except Exception:
             log.info("Postgres connection stale — reconnecting...")
             try:
@@ -162,7 +186,19 @@ class PGConnectionWrapper:
 
     def cursor(self):
         self._ensure_alive()
-        return PGCursor(self._conn.cursor())
+        try:
+            return PGCursor(self._conn.cursor())
+        except Exception as e:
+            # Throttled `_ensure_alive` may have skipped the probe and the
+            # connection died in the meantime. Reconnect transparently
+            # and retry once before bubbling the error up.
+            log.info(f"Postgres cursor() failed ({e!r}) — reconnecting and retrying...")
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._connect()
+            return PGCursor(self._conn.cursor())
 
     def execute(self, sql, params=None):
         cur = self.cursor()

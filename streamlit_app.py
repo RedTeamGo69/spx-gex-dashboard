@@ -445,6 +445,12 @@ def main():
             ["Off", "Every 5 min", "Every 30 min"],
             index=0,
             horizontal=True,
+            help=(
+                "Auto-refresh keeps the Postgres compute warm even when the tab "
+                "is in the background. Leave this off unless you're actively "
+                "watching the dashboard — otherwise it burns Neon CU-hours "
+                "around the clock."
+            ),
         )
         if st.button("🔄 Refresh Now", use_container_width=True, type="primary"):
             st.cache_resource.clear()
