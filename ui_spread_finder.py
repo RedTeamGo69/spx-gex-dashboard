@@ -31,7 +31,6 @@ from range_finder.data_collector import (
 from range_finder.feature_builder import (
     build_features as rf_build_features,
     get_features as rf_get_features,
-    get_feature_for_week as rf_get_feature_for_week,
 )
 from range_finder.har_model import (
     MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
@@ -61,9 +60,17 @@ from range_finder.spread_levels import (
 from theme import SF_BG, SF_BULL, SF_BEAR, SF_NEUT, SF_WARN, SF_CARD
 
 
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def _get_rf_conn():
-    """Get or create the range finder Postgres connection."""
+    """Get or create the range finder Postgres connection.
+
+    1-hour TTL lets a long-idle Streamlit Cloud process drop its backend
+    connection so Neon can auto-suspend the compute. Without a TTL the
+    cached connection persists for the full process lifetime, holding
+    the endpoint warm even when the user has no tab open. ``init_all_tables``
+    is idempotent (CREATE TABLE IF NOT EXISTS + ALTER ... IF NOT EXISTS),
+    so re-running it on each reconnect is safe and fast (<100 ms).
+    """
     from range_finder.db import get_connection, init_all_tables
     conn = get_connection()
     init_all_tables(conn)
@@ -86,6 +93,73 @@ def _cached_rf_get_features(_conn):
     object (psycopg2 connections aren't hashable).
     """
     return rf_get_features(_conn)
+
+
+@st.cache_resource(ttl=3600, show_spinner=False)
+def _cached_rf_load_model(model_name: str, ticker: str):
+    """Load a HAR fit from saved_models, cached for 1 hour across sessions.
+
+    The session-state guards in the render path stop the unpickle from
+    re-running within a single session, but every fresh session was
+    re-fetching the multi-MB BYTEA blob from Neon — up to 8 SELECTs
+    (4 specs × 2 tickers) per session lifetime. This wrapper caches the
+    unpickled payload at the Streamlit-instance level so users sharing
+    the same instance share the load.
+
+    Uses ``@st.cache_resource`` (not ``cache_data``) because the unpickled
+    statsmodels result wrapper is a non-trivial Python object that
+    shouldn't be re-deserialized per call. The cache key is
+    (model_name, ticker), so SPX and XSP fits stay independent — same as
+    the underlying ``saved_models`` PK.
+
+    Save paths in this module call ``_cached_rf_load_model.clear()``
+    after a successful refit so the new fit is picked up immediately
+    instead of waiting for the TTL to expire. The 1-hour TTL bridges
+    the case where ``scheduled_snapshot.py`` (Mondays 9:30 AM ET) writes
+    a new fit without any UI interaction.
+    """
+    from range_finder.db import get_connection
+    # Open a short-lived connection rather than reusing the cached
+    # Streamlit connection — _cached_rf_load_model is keyed on
+    # (model_name, ticker), so passing in the cached `conn` would couple
+    # cache invalidation to connection identity. The blob is pulled once
+    # per (spec, ticker) per hour, so the extra connect cost is trivial.
+    conn = get_connection()
+    try:
+        return rf_load_model(model_name, conn=conn, ticker=ticker)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _cached_weekly_setup(_conn, week_start: str, ticker: str):
+    """Look up the weekly_setup row for (week_start, ticker), cached 15 min.
+
+    Replaces a hand-rolled session-state miss-cache that still hit Neon
+    on every fresh session. Cross-session caching means the SELECT only
+    fires once per Streamlit instance per 15-minute window, regardless
+    of how many users / tabs / reruns happen.
+
+    Returns (monday_open, monday_vix) on hit, or None on miss. Both hits
+    AND misses are cached — the bespoke logic this replaced cached only
+    misses, so hits still re-queried on every fresh session.
+
+    Save paths (``do_weekly`` / ``do_save_gex``) call ``.clear()`` to
+    invalidate, mirroring the existing ``_cached_rf_get_features.clear()``
+    pattern.
+    """
+    cur = _conn.cursor()
+    cur.execute(
+        "SELECT monday_open, monday_vix FROM weekly_setup WHERE week_start = ? AND ticker = ?",
+        (week_start, ticker),
+    )
+    row = cur.fetchone()
+    if row and row[0]:
+        return (row[0], row[1])
+    return None
 
 
 def _spread_finder_target_friday(ref_date: "date_cls | None" = None) -> "date_cls":
@@ -583,63 +657,33 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     frozen_vix = st.session_state.get(mon_vix_key)
     frozen_week = st.session_state.get(mon_open_week_key)
 
-    # "We already checked Postgres for this week's Monday open and the row
-    # was missing" marker. Without this, a missing weekly_setup row re-fires
-    # the SELECT on every Spread Finder rerun (every widget interaction +
-    # every auto-refresh tick). The marker stores the UTC timestamp of the
-    # last miss so we re-query every ~15 minutes — long enough to prevent
-    # per-refresh queries, short enough that a manual mid-week backfill
-    # (scheduled_snapshot.py workflow_dispatch with FORCE_WEEKLY_SETUP=1)
-    # is picked up without requiring a session restart.
-    mon_miss_key = f"sf_monday_open_miss_week_{ticker}"
-    _MISS_TTL_SECONDS = 900  # 15 min
-
-    def _miss_is_fresh():
-        entry = st.session_state.get(mon_miss_key)
-        if not entry or entry.get("week") != current_week:
-            return False
-        ts = entry.get("ts")
-        if ts is None:
-            return False
-        return (datetime.now(timezone.utc) - ts).total_seconds() < _MISS_TTL_SECONDS
-
     if frozen_week == current_week and frozen_open:
         default_ref = frozen_open
         default_vix = frozen_vix or live_vix
         ref_source = "Mon open (frozen)"
     else:
-        # Try to restore Monday open + VIX from weekly_setup table
+        # Try to restore Monday open + VIX from weekly_setup table.
+        # _cached_weekly_setup wraps the SELECT in a 15 min cross-session
+        # cache so widget reruns / auto-refresh ticks don't keep firing
+        # the same query at Neon. A manual mid-week backfill picks up
+        # within the TTL window; the do_weekly / do_save_gex paths also
+        # invalidate explicitly.
         restored_open = None
         restored_vix = None
-        if run_now.weekday() < 5 and not _miss_is_fresh():
+        if run_now.weekday() < 5:
             try:
                 from datetime import timedelta as _td
                 days_since_monday = run_now.weekday()
                 monday = run_now - _td(days=days_since_monday)
                 week_start_str = monday.strftime("%Y-%m-%d")
                 rf_conn = _get_rf_conn()
-                cur = rf_conn.cursor()
-                cur.execute(
-                    "SELECT monday_open, monday_vix FROM weekly_setup WHERE week_start = ? AND ticker = ?",
-                    (week_start_str, ticker),
-                )
-                row = cur.fetchone()
-                if row and row[0]:
-                    restored_open = row[0]
-                    restored_vix = row[1]
+                cached_setup = _cached_weekly_setup(rf_conn, week_start_str, ticker)
+                if cached_setup is not None:
+                    restored_open, restored_vix = cached_setup
                     st.session_state[mon_open_key] = restored_open
                     if restored_vix:
                         st.session_state[mon_vix_key] = restored_vix
                     st.session_state[mon_open_week_key] = current_week
-                    # A prior miss for this week is now stale.
-                    st.session_state.pop(mon_miss_key, None)
-                else:
-                    # Remember the miss so we don't re-query every rerun,
-                    # but stamp it so we re-check after _MISS_TTL_SECONDS.
-                    st.session_state[mon_miss_key] = {
-                        "week": current_week,
-                        "ts": datetime.now(timezone.utc),
-                    }
             except Exception:
                 pass
 
@@ -734,6 +778,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # Weekly Setup runs all four steps in sequence
     if do_weekly:
         do_refresh = do_rebuild = do_save_gex = do_forecast = True
+        # Weekly Setup may land a fresh weekly_setup row (via the cron
+        # path that mirrors Monday's open). Drop the cached lookup so
+        # the next render picks it up immediately instead of waiting
+        # for the 15 min TTL to expire.
+        _cached_weekly_setup.clear()
 
     conn = _get_rf_conn()
 
@@ -800,6 +849,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         try:
             gex_flag = save_gex_to_range_finder(gex_ctx, conn, ticker=ticker)
             regime_label = {1: "positive", 0: "neutral", -1: "negative"}.get(gex_flag, "unknown")
+            # Invalidate the weekly_setup cache so a follow-up render sees
+            # any concurrently-saved row right away (defensive — Save GEX
+            # writes gex_inputs not weekly_setup, but the click is the
+            # canonical "I'm actively setting up this week" signal).
+            _cached_weekly_setup.clear()
             st.success(f"GEX saved: regime={regime_label}, flag={gex_flag} (ticker={ticker})")
         except Exception as e:
             st.error(f"GEX save failed: {e}")
@@ -913,6 +967,12 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                     for _save_ticker in _tickers_to_save:
                         rf_save_model(_result, avail_cols, _spec, _metrics,
                                       conn=conn, ticker=_save_ticker)
+                    # New fit landed in Postgres — drop any cached
+                    # unpickle for this (spec, ticker) pair so a later
+                    # tab switch sees the fresh weights instead of
+                    # serving the previous fit until the 1-hour TTL
+                    # expires.
+                    _cached_rf_load_model.clear()
 
                     if _spec == model_choice:
                         _selected_result  = _result
@@ -957,7 +1017,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # Try to load model from session or disk
     if _mdl_result_key not in st.session_state:
         try:
-            payload = rf_load_model(model_choice, conn=conn, ticker=ticker)
+            payload = _cached_rf_load_model(model_choice, ticker)
             st.session_state[_mdl_result_key]  = payload["result"]
             st.session_state[_mdl_feat_key]    = payload["feature_cols"]
             st.session_state[_mdl_metrics_key] = payload["metrics"]
@@ -995,8 +1055,19 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     sf_ref_date = run_now.date()
 
     # ── Get feature row ──
-    feature_row = rf_get_feature_for_week(conn, week_start)
+    # Look up the row in the already-cached `df_feat` instead of issuing a
+    # fresh `SELECT * FROM model_features WHERE week_start = ?` on every
+    # render. `df_feat` is loaded by `_cached_rf_get_features` (10 min TTL)
+    # and indexed by `week_start` (DatetimeIndex), so this is a pure
+    # in-memory lookup and saves one Neon roundtrip per Spread Finder pass.
+    feature_row = None
     feature_row_is_stale = False
+    try:
+        _wk_ts = pd.Timestamp(week_start)
+        if _wk_ts in df_feat.index:
+            feature_row = df_feat.loc[_wk_ts]
+    except Exception:
+        feature_row = None
     if feature_row is None:
         feature_row = df_feat.iloc[-1]
         feature_row_is_stale = True
