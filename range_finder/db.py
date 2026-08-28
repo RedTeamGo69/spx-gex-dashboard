@@ -284,6 +284,15 @@ def _init_all_tables_body(conn) -> None:
     """The actual DDL body — see init_all_tables for the locking wrapper."""
     cur = conn.cursor()
 
+    # --- gamma_level_history ---
+    # This is an archival research table, not Range Finder application state.
+    # It lives in this explicit bootstrap path so the hot save path never runs
+    # DDL. The helper executes one CREATE TABLE IF NOT EXISTS and adds no
+    # speculative secondary indexes; its composite PK covers the intended
+    # per-ticker/session backtest reads.
+    from phase1.gamma_level_history import init_gamma_level_history_schema
+    init_gamma_level_history_schema(conn)
+
     # --- weekly_spx ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS weekly_spx (

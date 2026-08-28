@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import requests
 
-from phase1.config import DEFAULT_RISK_FREE_RATE
+from phase1.config import DEFAULT_RISK_FREE_RATE, NY_TZ
 
 # Disk cache for last successful rate fetch
 _RATE_CACHE_PATH = Path(__file__).parent / ".rate_cache.json"
@@ -44,6 +44,35 @@ def _read_rate_cache() -> dict | None:
         return payload
     except Exception:
         return None
+
+
+def _read_same_ny_day_rate_cache(now: datetime | None = None) -> dict | None:
+    """Return today's exact cached scalar+curve, if this runner restored it.
+
+    GitHub Actions jobs are ephemeral, so the intraday archive workflow uses a
+    date-keyed actions/cache entry for ``.rate_cache.json``. The first SPY run
+    of a New York day executes the unchanged live FRED/Treasury resolution;
+    later half-hour runs reuse that exact result instead of making redundant
+    requests. ``as_of`` is not used for freshness because Treasury series can
+    legitimately publish with a prior-business-day observation date;
+    ``cached_at`` records when Gamma Lens actually fetched the value.
+    """
+    cached = _read_rate_cache()
+    if not cached or not cached.get("cached_at"):
+        return None
+    try:
+        cached_at = datetime.fromisoformat(str(cached["cached_at"]).replace("Z", "+00:00"))
+        if cached_at.tzinfo is None:
+            cached_at = cached_at.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=NY_TZ)
+        if cached_at.astimezone(NY_TZ).date() != current.astimezone(NY_TZ).date():
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    return {key: value for key, value in cached.items() if key != "cached_at"}
 
 
 def interpolate_rate(curve, dte_days, fallback: float = DEFAULT_RISK_FREE_RATE) -> float:
@@ -243,7 +272,13 @@ def _fetch_treasury():
     return None
 
 
-def fetch_risk_free_rate(fred_api_key: str, debug: bool = False):
+def fetch_risk_free_rate(
+    fred_api_key: str,
+    debug: bool = False,
+    *,
+    prefer_same_day_cache: bool = False,
+    now: datetime | None = None,
+):
     """
     Fetch current risk-free rate with term-structure curve when possible.
 
@@ -272,6 +307,16 @@ def fetch_risk_free_rate(fred_api_key: str, debug: bool = False):
     }
     """
     import time
+
+    if prefer_same_day_cache:
+        cached_today = _read_same_ny_day_rate_cache(now=now)
+        if cached_today is not None:
+            print(
+                f"  Risk-free rate: {cached_today['rate']*100:.2f}% "
+                f"({cached_today.get('label', 'same-day cached rate')}; "
+                "reused from today's archive run)"
+            )
+            return cached_today
 
     has_fred_key = bool(fred_api_key and fred_api_key != "YOUR_FRED_KEY_HERE")
 

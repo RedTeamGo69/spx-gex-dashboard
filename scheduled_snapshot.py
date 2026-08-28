@@ -38,15 +38,13 @@ def capture_snapshot():
     ticker = os.environ.get("TICKER", "SPX")
 
     # ── Imports (after env check so errors are clear) ──
-    from phase1.market_clock import now_ny, get_calendar_snapshot
+    from phase1.market_clock import now_ny
     from phase1.data_client import TradierDataClient
     from phase1.rates import fetch_risk_free_rate
-    from phase1.parity import get_reference_spot_details
-    import phase1.gex_engine as gex_engine
-    from phase1.confidence import build_run_confidence
-    from phase1.staleness import build_staleness_info
     from phase1.expected_move import build_expected_move_analysis
+    from phase1.gamma_archive_capture import calculate_gamma_archive_observation
     from phase1.gex_history import save_em_snapshot
+    from phase1.gamma_level_history import archive_computed_gamma_levels
 
     # FORCE_WEEKLY_SETUP=1 bypasses the market-hours / weekend / holiday gates
     # so the workflow can be triggered manually (e.g. after a DB wipe) on any
@@ -179,9 +177,6 @@ def capture_snapshot():
     if not avail:
         _logger.error(f"No expirations returned from Tradier API for {ticker}")
         sys.exit(1)
-    nearest_exp = next((e for e in avail if e >= today_str), avail[0])
-    # ── Select expirations: 0DTE + next 3 nearest ──
-    target_exps = [e for e in avail if e >= today_str][:4]
 
     # ── Wait for market open (9:30 AM ET) if triggered slightly early ──
     import time
@@ -201,26 +196,26 @@ def capture_snapshot():
     # math and logged "as of" timestamp reflect the actual post-open moment
     # rather than when the script first started.
     run_now = now_ny()
-    calendar_snapshot = get_calendar_snapshot(run_now)
 
-    # ── Fetch live market data (post-open critical path) ──
-    spot_info = get_reference_spot_details(
+    # ── Canonical production Gamma calculation (shared with intraday) ──
+    calculation = calculate_gamma_archive_observation(
+        client=client,
         ticker=ticker,
-        nearest_exp=nearest_exp,
-        get_spot_price_func=client.get_spot_price,
-        get_chain_cached_func=client.get_chain_cached,
-        r=rfr,
-        now=run_now,
-        r_curve=rfr_curve,
+        available_expirations=avail,
+        captured_at=run_now,
+        risk_free_rate=rfr,
+        risk_free_curve=rfr_curve,
     )
-    spot = spot_info["spot"]
+    target_exps = list(calculation.target_expirations)
+    spot = calculation.spot
+    spot_info = calculation.spot_info
+    gex_df = calculation.gex_df
+    stats = calculation.stats
+    levels = calculation.levels
+    regime_info = calculation.regime_info
+    staleness_info = calculation.staleness_info
+    confidence_info = calculation.confidence_info
     _logger.info(f"{ticker} Spot: {spot:.2f} (source: {spot_info['source']})")
-
-    # ── Compute GEX ──
-    gex_df, stats, all_options, _strike_sup, _exp_sup = (
-        gex_engine.calculate_all(client, ticker, target_exps, spot, r=rfr, now=run_now,
-                                 r_curve=rfr_curve)
-    )
 
     if gex_df.empty:
         if force_weekly_setup:
@@ -261,51 +256,47 @@ def capture_snapshot():
         else:
             _logger.error("GEX calculation returned empty — no data to save")
             sys.exit(1)
-    else:
-        levels = gex_engine.find_key_levels(
-            gex_df, spot, all_options=all_options, r=rfr, r_curve=rfr_curve,
-            q=float(_get_cfg(ticker).get("dividend_yield", 0.0) or 0.0))
-        regime_info = gex_engine.get_gamma_regime_text(spot, levels["zero_gamma"])
-    has_0dte = any(e == today_str for e in target_exps)
-    staleness_info = build_staleness_info(calendar_snapshot, spot_info, stats, has_0dte=has_0dte)
-    confidence_info = build_run_confidence(stats, spot_info, staleness_info=staleness_info)
 
     _logger.info(f"Zero Gamma: {levels['zero_gamma']:.2f} | Call Wall: {levels.get('call_wall')} | "
                  f"Put Wall: {levels.get('put_wall')} | Regime: {regime_info.get('regime')}")
 
-    # ── Expected move ──
-    index_quote = None
-    prev_close = 0.0
-    try:
-        index_quote = client.get_full_quote(ticker)
-        prev_close = index_quote.get("prevclose", 0.0)
-    except Exception as e:
-        _logger.warning(f"{ticker} quote fetch failed: {e}")
+    # Successful calculations already include EM from the cached nearest
+    # chain. Force-mode's synthetic fallback is operational-only, but the
+    # existing scheduled EM behavior remains intact for weekly rebuilding.
+    em_analysis = calculation.em_analysis
+    if em_analysis is None:
+        dte0_exp = target_exps[0]
+        dte0_entry = client.get_chain_cached(ticker, dte0_exp)
+        dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
+        dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
+        em_analysis = build_expected_move_analysis(
+            spot=spot,
+            prev_close=float(calculation.quote.get("prevclose") or 0.0),
+            zero_gamma=levels["zero_gamma"],
+            gamma_regime=regime_info.get("regime", "Unknown"),
+            calls_0dte=dte0_calls,
+            puts_0dte=dte0_puts,
+            market_open=True,
+            expiration=dte0_exp,
+            as_of=run_now.date(),
+        )
 
-    dte0_exp = target_exps[0]
-    dte0_entry = client.get_chain_cached(ticker, dte0_exp)
-    dte0_calls = dte0_entry.get("calls", []) if dte0_entry.get("status") == "ok" else []
-    dte0_puts = dte0_entry.get("puts", []) if dte0_entry.get("status") == "ok" else []
-
-    em_analysis = build_expected_move_analysis(
-        spot=spot,
-        prev_close=prev_close,
-        zero_gamma=levels["zero_gamma"],
-        gamma_regime=regime_info.get("regime", "Unknown"),
-        calls_0dte=dte0_calls,
-        puts_0dte=dte0_puts,
-        market_open=True,
-        expiration=dte0_exp,
-        as_of=run_now.date(),
-    )
-
-    # ── GEX snapshot persistence removed ──
-    # The gex_snapshots table was a dead write: the cron wrote one row per
-    # ticker per day, but the GEX history/trend view that read it was removed
-    # in the UI redesign (get_history / get_zero_gamma_trend / get_daily_summary
-    # had no remaining callers). Dropping the write also removes a hard
-    # sys.exit(1) abort path on a save nothing consumed. The EM snapshot below
-    # IS still read (the spread finder's frozen expected-move band), so it stays.
+    # ── Archive derived Gamma levels (first observation in the 09:30 bucket) ──
+    # FORCE_WEEKLY_SETUP can proceed with synthetic spot-relative levels when
+    # the option chain is empty; those are operational fallbacks, not research
+    # observations, and must not enter the forward archive.
+    if not gex_df.empty:
+        archive_computed_gamma_levels(
+            captured_at=run_now,
+            ticker=ticker,
+            spot=spot,
+            levels=levels,
+            regime_info=regime_info,
+            stats=stats,
+            confidence_info=confidence_info,
+            staleness_info=staleness_info,
+            em_analysis=em_analysis,
+        )
 
     # ── Save EM snapshot (only first of day due to ON CONFLICT DO NOTHING) ──
     em_data = em_analysis.get("expected_move", {})

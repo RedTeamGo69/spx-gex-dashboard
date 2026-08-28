@@ -4,7 +4,7 @@ on:
   # PRIMARY: triggered externally by cron-job.org at 9:28 AM ET (Mon-Fri),
   # two minutes before the bell. The early fire gives the Actions runner
   # time to boot + pip install so Python is already running pre-open work
-  # (FRED rate, expirations, table init) during the idle window;
+  # (FRED rate and expirations) during the idle window;
   # scheduled_snapshot.py then parks in its wait loop until 9:30:00 ET
   # before fetching spot + chains. cron-job.org handles DST automatically
   # via America/New_York. Can also be triggered manually from the UI.

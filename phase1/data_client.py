@@ -84,6 +84,7 @@ class TradierDataClient:
         return {
             "symbol": q.get("symbol", fallback_symbol),
             "last": safe_float(q.get("last", 0), 0.0),
+            "close": safe_float(q.get("close", 0), 0.0),
             "prevclose": safe_float(q.get("prevclose", 0), 0.0),
             "open": safe_float(q.get("open", 0), 0.0),
             "high": safe_float(q.get("high", 0), 0.0),

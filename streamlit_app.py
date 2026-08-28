@@ -52,6 +52,7 @@ from phase1.expected_move import (
 from phase1.gex_history import (
     get_weekly_em_date_key, get_monthly_em_date_key,
 )
+from phase1.gamma_level_history import archive_computed_gamma_levels
 
 _logger = logging.getLogger(__name__)
 
@@ -580,6 +581,25 @@ def main():
         market_open=data.market_open,
         expiration=data.dte0_exp,
     )
+
+    # Opportunistic research archive: the observation time comes from the
+    # cached engine result, not this rerun, so a stale cached computation can
+    # never be filed into a later 30-minute bucket. The archive helper skips
+    # non-RTH times, deduplicates by ticker/session/bucket, and never raises.
+    archive_computed_gamma_levels(
+        captured_at=data.calendar_snapshot.get("now_ny", ""),
+        ticker=ticker,
+        spot=spot,
+        levels=levels,
+        regime_info=regime,
+        stats=data.stats,
+        confidence_info=data.confidence_info,
+        staleness_info=data.staleness_info,
+        em_analysis=em_analysis,
+    )
+
+    # EM freezing is UI/application state. Archive the live contemporaneous EM
+    # above before this may substitute the first observation saved for the day.
     em_analysis = _apply_em_snapshot(em_analysis, is_market_open, regime, levels, spot, ticker=ticker)
 
     # ── Weekly & Monthly EM ──

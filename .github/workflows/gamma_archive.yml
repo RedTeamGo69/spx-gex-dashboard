@@ -1,0 +1,44 @@
+name: SPY Intraday Gamma Archive
+
+on:
+  # cron-job.org owns the 10:00–15:30 America/New_York schedule and calls
+  # workflow_dispatch. Deliberately no GitHub recurring cron and no ticker input.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture-spy-gamma:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Resolve New York cache date
+        id: ny-date
+        shell: bash
+        run: echo "date=$(TZ=America/New_York date +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore same-day risk-free rate
+        uses: actions/cache@v4
+        with:
+          path: phase1/.rate_cache.json
+          key: spy-gamma-rate-${{ steps.ny-date.outputs.date }}
+
+      - name: Capture SPY Gamma archive bucket
+        env:
+          TRADIER_TOKEN: ${{ secrets.TRADIER_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python capture_gamma_archive.py
