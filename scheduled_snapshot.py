@@ -459,7 +459,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         GEXContext, extract_gex_context, save_gex_to_range_finder,
     )
     from range_finder.har_model import (
-        time_series_split, fit_model, evaluate_oos,
+        fit_validation_and_production,
         save_model, MODEL_SPECS, forecast_next_week,
         feature_has_enough_data,
     )
@@ -631,13 +631,14 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
                     _logger.info(f"    {spec_name}: skipping — only {len(avail_cols)} usable features")
                     continue
 
-                X_train, X_test, y_train, y_test = time_series_split(df_feat, feature_cols=avail_cols)
-                result  = fit_model(X_train, y_train, model_name=spec_name)
-                metrics = evaluate_oos(result, X_test, y_test, model_name=spec_name)
-                save_model(result, avail_cols, spec_name, metrics, conn=conn, ticker=ticker)
+                _validation, production_result, metrics = fit_validation_and_production(
+                    df_feat, feature_cols=avail_cols, model_name=spec_name
+                )
+                save_model(production_result, avail_cols, spec_name, metrics,
+                           conn=conn, ticker=ticker)
 
                 if spec_name == _CALIBRATION_SPEC:
-                    _cal_fit = (result, avail_cols)
+                    _cal_fit = (production_result, avail_cols)
 
                 _logger.info(
                     f"    {spec_name}: OOS R² = {metrics['oos_r2']:.4f}, "

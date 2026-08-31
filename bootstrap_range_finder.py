@@ -75,7 +75,7 @@ def main():
     )
     from range_finder.feature_builder import build_features, get_features
     from range_finder.har_model import (
-        MODEL_SPECS, time_series_split, fit_model, evaluate_oos,
+        MODEL_SPECS, fit_validation_and_production,
         feature_has_enough_data,
     )
     from range_finder.model_persistence import save_model
@@ -154,13 +154,14 @@ def main():
             continue
 
         try:
-            X_train, X_test, y_train, y_test = time_series_split(
-                df_feat, feature_cols=avail_cols
+            validation_result, production_result, metrics = (
+                fit_validation_and_production(
+                    df_feat, feature_cols=avail_cols, model_name=spec_name
+                )
             )
-            result = fit_model(X_train, y_train, model_name=spec_name)
-            metrics = evaluate_oos(result, X_test, y_test, model_name=spec_name)
             results[spec_name] = {
-                "result": result,
+                "validation_result": validation_result,
+                "production_result": production_result,
                 "metrics": metrics,
                 "features": avail_cols,
             }
@@ -198,7 +199,7 @@ def main():
     _log.info(f"Step 7/7  Saving {args.model} to saved_models...")
     chosen = results[args.model]
     save_model(
-        chosen["result"],
+        chosen["production_result"],
         chosen["features"],
         args.model,
         chosen["metrics"],

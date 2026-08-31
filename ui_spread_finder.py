@@ -36,8 +36,7 @@ from range_finder.har_model import (
     MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
     GEX_MIN_WEEKS_FOR_FIT as RF_GEX_MIN_WEEKS,
     feature_has_enough_data as rf_feature_has_enough_data,
-    time_series_split as rf_time_series_split,
-    fit_model as rf_fit_model, evaluate_oos as rf_evaluate_oos,
+    fit_validation_and_production as rf_fit_validation_and_production,
     forecast_next_week as rf_forecast_next_week,
     estimate_side_share_quantile as rf_estimate_side_share_quantile,
     save_model as rf_save_model, load_model as rf_load_model,
@@ -1288,12 +1287,11 @@ def _auto_warm_up_spread_model(conn, ticker: str, ticker_cfg: dict) -> bool:
         if len(avail_cols) < 2:
             continue
         try:
-            X_train, X_test, y_train, y_test = rf_time_series_split(
-                df_feat, feature_cols=avail_cols
+            _validation, _result, _metrics = rf_fit_validation_and_production(
+                df_feat, feature_cols=avail_cols, model_name=_spec
             )
-            _result = rf_fit_model(X_train, y_train, model_name=_spec)
-            _metrics = rf_evaluate_oos(_result, X_test, y_test, model_name=_spec)
-            rf_save_model(_result, avail_cols, _spec, _metrics, conn=conn, ticker=ticker)
+            rf_save_model(_result, avail_cols, _spec, _metrics,
+                          conn=conn, ticker=ticker)
             fitted_any = True
         except Exception:
             continue
@@ -1966,11 +1964,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                             st.warning(f"{_spec}: only {len(avail_cols)} usable features — skipped")
                         continue
 
-                    X_train, X_test, y_train, y_test = rf_time_series_split(
-                        df_feat, feature_cols=avail_cols
+                    _validation, _result, _metrics = (
+                        rf_fit_validation_and_production(
+                            df_feat, feature_cols=avail_cols, model_name=_spec
+                        )
                     )
-                    _result  = rf_fit_model(X_train, y_train, model_name=_spec)
-                    _metrics = rf_evaluate_oos(_result, X_test, y_test, model_name=_spec)
                     for _save_ticker in _tickers_to_save:
                         rf_save_model(_result, avail_cols, _spec, _metrics,
                                       conn=conn, ticker=_save_ticker)
@@ -2171,7 +2169,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # ── Build forecast → plan → tiers from the latest GEX refresh ──
     # We intentionally DO NOT cache these on a session-state key any more.
     # Everything below is cheap arithmetic on top of the already-loaded HAR
-    # model (the only expensive step — rf_fit_model — is gated behind the
+    # model (the expensive validation + production fits are gated behind the
     # "Forecast" button and cached separately via rf_load_model), so
     # recomputing on every page rerun lets the spread finder pick up fresh
     # chain bid/ask as soon as fetch_all_data refreshes data.chain_cache
@@ -2999,4 +2997,3 @@ def _render_sf_spread_table(spreads):
             f"No spread clears the {MIN_CREDIT_RATIO:.0%} credit-to-width floor — "
             "credit is too thin at these strikes/widths to be worth the risk."
         )
-

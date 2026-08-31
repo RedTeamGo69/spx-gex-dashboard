@@ -159,6 +159,17 @@ MODEL_SPECS = {
 # TRAIN / TEST SPLIT
 # =============================================================================
 
+def _complete_model_frame(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str = "log_range",
+) -> pd.DataFrame:
+    """Rows eligible for fitting: selected features plus a realized target."""
+    if not feature_cols:
+        raise ValueError("feature_cols must contain at least one feature")
+    return df[[target_col] + feature_cols].dropna()
+
+
 def time_series_split(
     df: pd.DataFrame,
     test_size: float = TEST_SIZE,
@@ -169,7 +180,7 @@ def time_series_split(
     Chronological train/test split — NEVER random shuffle.
     """
     cols_needed = [target_col] + (feature_cols or [])
-    clean = df[cols_needed].dropna()
+    clean = _complete_model_frame(df, feature_cols or [], target_col=target_col)
 
     # A single sparse feature silently guts the sample: dropna() is row-wise,
     # so e.g. gex_normalized (only populated for recent weeks) can shrink a
@@ -228,6 +239,26 @@ def fit_model(
     log.info(result.summary2().tables[1].to_string())
 
     return result
+
+
+def fit_production_model(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    model_name: str = "HAR",
+    target_col: str = "log_range",
+) -> sm.regression.linear_model.RegressionResultsWrapper:
+    """Refit a forecasting model on every completed eligible observation.
+
+    Holdout evaluation happens before this function is called. Reusing the
+    same complete-row filter as ``time_series_split`` guarantees that the
+    production fit is exactly validation-train plus holdout, while partial
+    current-week and forecast scaffold rows remain excluded by their NULL
+    targets.
+    """
+    clean = _complete_model_frame(df, feature_cols, target_col=target_col)
+    X_full = sm.add_constant(clean[feature_cols])
+    y_full = clean[target_col]
+    return fit_model(X_full, y_full, model_name=f"{model_name} production")
 
 
 def fit_model_wls(
@@ -321,6 +352,33 @@ def evaluate_oos(
     log.info(f"  N (test)          : {len(y_test)}")
 
     return metrics
+
+
+def fit_validation_and_production(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    model_name: str = "HAR",
+    target_col: str = "log_range",
+) -> tuple[
+    sm.regression.linear_model.RegressionResultsWrapper,
+    sm.regression.linear_model.RegressionResultsWrapper,
+    dict,
+]:
+    """Evaluate a train-only fit, then build the separate forecasting fit."""
+    X_train, X_test, y_train, y_test = time_series_split(
+        df, feature_cols=feature_cols, target_col=target_col
+    )
+    validation_result = fit_model(X_train, y_train, model_name=model_name)
+    metrics = evaluate_oos(
+        validation_result, X_test, y_test, model_name=model_name
+    )
+    production_result = fit_production_model(
+        df,
+        feature_cols=feature_cols,
+        model_name=model_name,
+        target_col=target_col,
+    )
+    return validation_result, production_result, metrics
 
 
 def compare_models(results: dict[str, dict]) -> pd.DataFrame:
@@ -674,11 +732,15 @@ def run_full_pipeline(
             continue
 
         try:
-            X_train, X_test, y_train, y_test = time_series_split(df, feature_cols=feat_cols)
-            result = fit_model(X_train, y_train, model_name=spec_name)
-            metrics = evaluate_oos(result, X_test, y_test, model_name=spec_name)
+            validation_result, production_result, metrics = (
+                fit_validation_and_production(
+                    df, feature_cols=feat_cols, model_name=spec_name
+                )
+            )
             all_metrics[spec_name] = metrics
-            all_results[spec_name] = (result, feat_cols)
+            all_results[spec_name] = (
+                validation_result, production_result, feat_cols
+            )
         except Exception as e:
             log.error(f"Failed to fit {spec_name}: {e}")
 
@@ -690,11 +752,12 @@ def run_full_pipeline(
         preferred_model = list(all_results.keys())[0]
         log.warning(f"Preferred model unavailable — falling back to {preferred_model}")
 
-    best_result, best_features = all_results[preferred_model]
-    run_diagnostics(best_result, model_name=preferred_model)
+    validation_result, production_result, best_features = all_results[preferred_model]
+    run_diagnostics(validation_result, model_name=preferred_model)
 
     # --- Save preferred model ---
-    save_model(best_result, best_features, preferred_model, all_metrics.get(preferred_model, {}), ticker=ticker)
+    save_model(production_result, best_features, preferred_model,
+               all_metrics.get(preferred_model, {}), ticker=ticker)
 
     # --- Live forecast ---
     if spx_close is None:
@@ -718,7 +781,7 @@ def run_full_pipeline(
         feature_row = df.iloc[-1]
 
     forecast = forecast_next_week(
-        best_result,
+        production_result,
         feature_row,
         best_features,
         spx_close,
