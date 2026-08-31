@@ -20,6 +20,78 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 _logger = logging.getLogger(__name__)
 
 
+def _weekly_setup_artifacts_complete(ticker: str, week_start: str) -> bool:
+    """Whether the required persisted weekly anchor + production fit are fresh.
+
+    EM rows are early artifacts and cannot prove the Spread Finder setup
+    finished. The anchor is keyed to the target week; the production model is
+    additionally required to have been fitted during that week, preventing an
+    old but otherwise loadable model from satisfying the backup-cron guard.
+    """
+    from range_finder.db import get_connection
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT ws.monday_open, ws.monday_vix, ws.captured_at, sm.fitted_at "
+        "FROM weekly_setup ws "
+        "JOIN saved_models sm ON sm.ticker = ws.ticker "
+        "WHERE ws.week_start = ? AND ws.ticker = ? AND sm.model_name = ?",
+        (week_start, ticker, _CALIBRATION_SPEC),
+    )
+    row = cur.fetchone()
+    if not row:
+        return False
+    monday_open, monday_vix, captured_at, fitted_at = row
+    if not captured_at or not fitted_at:
+        return False
+    try:
+        if float(monday_open) <= 0 or float(monday_vix) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return str(fitted_at)[:10] >= week_start
+
+
+def _snapshot_completion_state(
+    *,
+    ticker,
+    today_str,
+    run_now,
+    is_week_first_trading_day,
+    em_lookup,
+    weekly_key_fn,
+    weekly_setup_checker=_weekly_setup_artifacts_complete,
+    is_stock=False,
+) -> dict:
+    """Return the independent artifact checks used by backup deduplication."""
+    daily_em = True if is_stock else (
+        em_lookup(today_str, ticker=ticker, em_type="daily") is not None
+    )
+    weekly_em = True
+    weekly_setup = True
+    if is_week_first_trading_day:
+        weekly_key = weekly_key_fn(run_now)
+        weekly_em = (
+            em_lookup(weekly_key, ticker=ticker, em_type="weekly") is not None
+        )
+        weekly_setup = bool(weekly_setup_checker(ticker, weekly_key))
+    return {
+        "daily_em": bool(daily_em),
+        "weekly_em": bool(weekly_em),
+        "weekly_setup": bool(weekly_setup),
+        "complete": bool(daily_em and weekly_em and weekly_setup),
+    }
+
+
+def _execute_required_weekly_setup(setup_fn, *args, **kwargs) -> bool:
+    """Run the required stage and reject a false/partial completion result."""
+    completed = setup_fn(*args, **kwargs)
+    if completed is not True:
+        raise RuntimeError("Required weekly spread setup did not complete")
+    return True
+
+
 def capture_snapshot():
     """Run the full GEX pipeline and save a snapshot + EM to Postgres."""
 
@@ -125,17 +197,19 @@ def capture_snapshot():
         try:
             from phase1.gex_history import get_em_snapshot, get_weekly_em_date_key
             _is_stock = _get_cfg(ticker).get("category") == "stock"
-            _daily_done = True if _is_stock else (
-                get_em_snapshot(today_str, ticker=ticker, em_type="daily") is not None)
-            _weekly_done = True
-            if is_week_first_trading_day:
-                _weekly_key = get_weekly_em_date_key(run_now)
-                _weekly_done = get_em_snapshot(
-                    _weekly_key, ticker=ticker, em_type="weekly") is not None
-            if _daily_done and _weekly_done:
+            _completion = _snapshot_completion_state(
+                ticker=ticker,
+                today_str=today_str,
+                run_now=run_now,
+                is_week_first_trading_day=is_week_first_trading_day,
+                em_lookup=get_em_snapshot,
+                weekly_key_fn=get_weekly_em_date_key,
+                is_stock=_is_stock,
+            )
+            if _completion["complete"]:
                 _logger.info(
                     f"{ticker}: today's snapshot artifacts already exist "
-                    f"(daily={_daily_done}, weekly_checked={is_week_first_trading_day}) "
+                    f"({_completion}) "
                     f"— duplicate/backup fire, exiting green")
                 sys.exit(0)
         except SystemExit:
@@ -401,10 +475,19 @@ def capture_snapshot():
         else:
             _logger.info("Running weekly spread finder setup...")
         try:
-            _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
-                                     levels, regime_info)
+            _execute_required_weekly_setup(
+                _run_weekly_spread_setup,
+                ticker, spot, run_now, fred_key, client, avail,
+                levels, regime_info,
+            )
+            if not _weekly_setup_artifacts_complete(ticker, weekly_key):
+                raise RuntimeError(
+                    f"Required weekly artifacts were not persisted for "
+                    f"{ticker}/{weekly_key}"
+                )
         except Exception as e:
             _logger.error(f"Weekly spread finder setup failed: {e}")
+            raise
 
     # The 0DTE spread finder setup (daily_spx refresh, daily HAR refit,
     # forecast_log_daily logging) was deliberately removed (2026-07): a
@@ -417,6 +500,25 @@ def capture_snapshot():
     # consumer, so the whole public_api package went with them — along with
     # its three tables and the PUBLIC_API_SECRET / PUBLIC_ACCOUNT_ID secrets.
     # Nothing here touches Public.com any more.
+
+    # A normal run is successful only when the same predicate the backup uses
+    # can prove every required artifact. This catches swallowed/soft database
+    # persistence failures as a non-zero process exit while leaving force-mode
+    # operational rebuilds free from daily-EM requirements.
+    if not force_weekly_setup:
+        final_completion = _snapshot_completion_state(
+            ticker=ticker,
+            today_str=today_str,
+            run_now=run_now,
+            is_week_first_trading_day=is_week_first_trading_day,
+            em_lookup=get_em_snapshot,
+            weekly_key_fn=get_weekly_em_date_key,
+            is_stock=_get_cfg(ticker).get("category") == "stock",
+        )
+        if not final_completion["complete"]:
+            raise RuntimeError(
+                f"Scheduled snapshot incomplete for {ticker}: {final_completion}"
+            )
 
     _logger.info("Scheduled snapshot complete")
 
@@ -594,7 +696,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         build_features(conn, ticker=build_target)
     except Exception as e:
         _logger.error(f"  Feature rebuild failed: {e}")
-        return
+        raise RuntimeError("Feature rebuild failed") from e
 
     # ── Step 4: Fit every model spec and save them all ──
     # Fitting every spec Monday (not just M3_extended) means a user who
@@ -617,8 +719,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         df_feat = get_features(conn, min_date=train_window_min_date(),
                                exclude_covid=True, ticker=_features_ticker)
         if df_feat.empty:
-            _logger.warning("  No features available — skipping forecast")
-            return
+            raise RuntimeError("No features available for required weekly fit")
 
         fitted = 0
         failed = []
@@ -650,8 +751,13 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
                 _logger.warning(f"    {spec_name}: fit failed — {e}")
 
         _logger.info(f"  Fitted {fitted}/{len(MODEL_SPECS)} specs" + (f" (failed: {failed})" if failed else ""))
+        if _cal_fit is None:
+            raise RuntimeError(
+                f"Required {_CALIBRATION_SPEC} production fit was not saved"
+            )
     except Exception as e:
         _logger.error(f"  Model fitting stage failed: {e}")
+        raise RuntimeError("Model fitting stage failed") from e
 
     # ── Save Monday open + VIX to DB ──
     # Prefer the true daily-candle Open over the live mid-move `spot` /
@@ -714,7 +820,8 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
             f"VIX={monday_vix:.2f}"
         )
     except Exception as e:
-        _logger.warning(f"  Monday open/VIX save failed: {e}")
+        _logger.error(f"  Monday open/VIX save failed: {e}")
+        raise RuntimeError("Monday open/VIX save failed") from e
 
     # ── Step 5: Log this week's plan for the calibration audit (SPX only) ──
     # Forecast the week with the production spec, build the plan the way the
@@ -777,6 +884,8 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
             )
         except Exception as e:
             _logger.warning(f"  Plan logging failed: {e} (calibration row skipped)")
+
+    return True
 
 
 if __name__ == "__main__":
