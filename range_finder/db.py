@@ -248,6 +248,36 @@ def get_connection():
 # Arbitrary 64-bit key so every job serializes on the SAME advisory lock.
 _INIT_ADVISORY_LOCK_KEY = 776699
 
+
+def _acquire_init_advisory_lock(conn) -> None:
+    """Block until the session owns the schema-init advisory lock.
+
+    ``PGCursor`` intentionally retains its historical numeric adaptation,
+    which turns Python integers into floats. PostgreSQL does not implicitly
+    resolve ``pg_advisory_lock(double precision)`` to the bigint overload, so
+    this one overload-sensitive call casts explicitly instead of changing
+    parameter semantics for every range-finder query.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT pg_advisory_lock(CAST(? AS bigint))",
+        (_INIT_ADVISORY_LOCK_KEY,),
+    )
+    if cur.fetchone() is None:
+        raise RuntimeError("pg_advisory_lock returned no result row")
+
+
+def _release_init_advisory_lock(conn) -> None:
+    """Release the session lock and prove PostgreSQL reported success."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT pg_advisory_unlock(CAST(? AS bigint))",
+        (_INIT_ADVISORY_LOCK_KEY,),
+    )
+    row = cur.fetchone()
+    if not row or row[0] is not True:
+        raise RuntimeError("pg_advisory_unlock reported that the lock was not held")
+
 def init_all_tables(conn) -> None:
     """Create all range finder tables if they don't exist (Postgres DDL).
 
@@ -257,27 +287,25 @@ def init_all_tables(conn) -> None:
     where the pile-up stretched a normally-instant init to 15+ minutes and
     delayed the 9:30 snapshot. pg_advisory_lock makes the others wait for
     the first to finish (after which every statement is a cheap no-op via
-    IF NOT EXISTS / duplicate-column guards). The lock is best-effort — a
-    backend that doesn't support it (sqlite in tests) just proceeds.
+    IF NOT EXISTS / duplicate-column guards). Postgres is the only supported
+    backend, so failure to acquire or release this serialization mechanism is
+    a hard initialization error rather than an unlocked best-effort fallback.
     """
-    _locked = False
     try:
-        cur0 = conn.cursor()
-        cur0.execute("SELECT pg_advisory_lock(?)", (_INIT_ADVISORY_LOCK_KEY,))
-        cur0.fetchone()
-        _locked = True
-    except Exception:
-        pass
+        _acquire_init_advisory_lock(conn)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to acquire Postgres schema init lock"
+        ) from exc
     try:
         _init_all_tables_body(conn)
     finally:
-        if _locked:
-            try:
-                cur1 = conn.cursor()
-                cur1.execute("SELECT pg_advisory_unlock(?)", (_INIT_ADVISORY_LOCK_KEY,))
-                cur1.fetchone()
-            except Exception:
-                pass
+        try:
+            _release_init_advisory_lock(conn)
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to release Postgres schema init lock"
+            ) from exc
 
 
 def _init_all_tables_body(conn) -> None:
