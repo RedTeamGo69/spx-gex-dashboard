@@ -1,6 +1,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
+import phase1.data_client as data_client_mod
 from phase1.parity import get_reference_spot_details
 
 NY = ZoneInfo("America/New_York")
@@ -74,3 +77,30 @@ def test_market_open_can_use_implied(monkeypatch):
     assert diag["put_quality"]["usable"] == 3
     assert diag["common_usable_strikes"] == 3
     assert diag["final_atm_strikes"] == 3
+
+
+@pytest.mark.parametrize("market_open", [False, True])
+def test_reference_spot_paths_preserve_after_hours_quote_fallback(
+        monkeypatch, market_open):
+    quote = {"last": None, "close": 5012.5, "prevclose": 4999}
+
+    def fake_get_chain_cached(_ticker, _exp):
+        return {"status": "error", "calls": [], "puts": []}
+
+    import phase1.parity as parity_mod
+    monkeypatch.setattr(
+        parity_mod, "is_cash_market_open", lambda now=None: market_open,
+    )
+
+    details = get_reference_spot_details(
+        ticker="SPX",
+        nearest_exp="2026-03-20",
+        get_spot_price_func=lambda _ticker: data_client_mod.resolve_quote_spot(quote),
+        get_chain_cached_func=fake_get_chain_cached,
+        r=0.0,
+        now=datetime(2026, 3, 19, 17, 0, tzinfo=NY),
+    )
+
+    assert details["tradier_spot"] == 5012.5
+    assert details["spot"] == 5012.5
+    assert details["parity_attempted"] is market_open

@@ -29,6 +29,23 @@ def safe_float(x, default=0.0):
             _safe_float_coercion_count += 1
         return default
 
+
+def resolve_quote_spot(quote) -> float:
+    """Resolve one positive spot value as last -> close -> prevclose.
+
+    Raw and normalized Tradier quotes share this semantic path. In
+    particular, normalization turns a null ``last`` into 0.0, which must not
+    prevent a valid after-hours ``close`` or ``prevclose`` fallback.
+    """
+    if not isinstance(quote, dict):
+        return 0.0
+    for field in ("last", "close", "prevclose"):
+        value = safe_float(quote.get(field), 0.0)
+        if value > 0:
+            return value
+    return 0.0
+
+
 def get_coercion_count():
     return _safe_float_coercion_count
 
@@ -68,16 +85,7 @@ class TradierDataClient:
             q = q[0] if q else None
         if not isinstance(q, dict):
             return 0.0
-        # Tradier can return "last": null outside regular hours (the key
-        # exists, so dict.get(key, default) never falls back). Walk the
-        # candidates explicitly so a null last degrades to close, then
-        # prevclose, instead of silently returning spot = 0.0 — a zero
-        # spot empties every downstream strike filter.
-        for field in ("last", "close", "prevclose"):
-            val = safe_float(q.get(field), 0.0)
-            if val > 0:
-                return val
-        return 0.0
+        return resolve_quote_spot(q)
 
     @staticmethod
     def _normalize_quote(q, fallback_symbol):

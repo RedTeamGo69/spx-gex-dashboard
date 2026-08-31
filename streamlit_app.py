@@ -38,7 +38,7 @@ from ui_mobile import inject_mobile_shell
 
 # ── Phase1 engine imports ──
 from phase1.market_clock import now_ny, get_calendar_snapshot
-from phase1.data_client import TradierDataClient
+from phase1.data_client import TradierDataClient, resolve_quote_spot
 from phase1.rates import fetch_risk_free_rate
 from phase1.parity import get_reference_spot_details
 import phase1.gex_engine as gex_engine
@@ -156,7 +156,7 @@ def fetch_all_data(tradier_token: str, fred_key: str, selected_exps: tuple, _run
 
     def _spot_price_for(t):
         if t == ticker and index_quote:
-            return index_quote["last"]
+            return resolve_quote_spot(index_quote)
         return client.get_spot_price(t)
 
     spot_info = get_reference_spot_details(
