@@ -33,6 +33,12 @@ from range_finder.feature_builder import (
     get_features as rf_get_features,
     assess_path_provenance as rf_assess_path_provenance,
 )
+from range_finder.gex_policy import (
+    GEX_LIVE_SPREAD_INFLUENCE_ENABLED,
+    GEX_NORMALIZED_FEATURE,
+    live_spread_feature_columns,
+    uses_disabled_gex_feature,
+)
 from range_finder.har_model import (
     MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
     GEX_MIN_WEEKS_FOR_FIT as RF_GEX_MIN_WEEKS,
@@ -54,7 +60,7 @@ from range_finder.spread_levels import (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Spread Finder Tab — Weekly credit spread placement powered by HAR model + GEX
+# Spread Finder Tab — HAR placement with GEX retained as research context
 # ─────────────────────────────────────────────────────────────────────────────
 
 from theme import SF_BG, SF_BULL, SF_BEAR, SF_NEUT, SF_WARN, SF_CARD
@@ -644,6 +650,13 @@ def _collect_week_bands_for_ticker(ticker: str, model_choice: str, week_start: s
             else:
                 out["error"] = f"no saved {model_choice} fit — run Weekly Setup on {ticker}"
                 return out
+
+        if uses_disabled_gex_feature(payload["feature_cols"]):
+            out["error"] = (
+                f"saved {model_choice} fit uses disabled GEX calibration — "
+                f"run Weekly Setup on {ticker}"
+            )
+            return out
 
         wk_ts = pd.Timestamp(week_start)
         if wk_ts not in df_feat.index:
@@ -1294,9 +1307,9 @@ def _auto_warm_up_spread_model(conn, ticker: str, ticker_cfg: dict) -> bool:
 
     fitted_any = False
     for _spec in RF_MODEL_SPECS.keys():
-        feat_cols = list(RF_MODEL_SPECS[_spec])
-        if _spec == "M4_full":
-            gex_col = "gex_normalized"
+        feat_cols = live_spread_feature_columns(RF_MODEL_SPECS[_spec])
+        if _spec == "M4_full" and GEX_LIVE_SPREAD_INFLUENCE_ENABLED:
+            gex_col = GEX_NORMALIZED_FEATURE
             if rf_feature_has_enough_data(df_feat, gex_col) and gex_col not in feat_cols:
                 feat_cols.append(gex_col)
         avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
@@ -1317,7 +1330,7 @@ def _auto_warm_up_spread_model(conn, ticker: str, ticker_cfg: dict) -> bool:
 
 @st.fragment
 def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, ticker: str = "SPX", weekly_em: dict = None):
-    """Render the Spread Finder tab — HAR model forecast + GEX-enhanced spread placement.
+    """Render HAR spread placement with GEX kept as research context.
 
     Wrapped in @st.fragment so widget interactions inside the tab (horizon
     slider, model-spec dropdown, credit width, etc.) only rerun this tab
@@ -1637,8 +1650,8 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     st.html(
         f'<div class="sf-section-title">{ticker} Weekly Credit Spread Finder</div>'
-        '<div class="sf-section-sub">HAR regression range forecast + live GEX adjustment '
-        'for optimal strike placement · 💾 Neon Postgres</div>'
+        '<div class="sf-section-sub">HAR regression range forecast · GEX calibration '
+        'pending — not applied to live buffer or strikes · 💾 Neon Postgres</div>'
     )
     if ref_guard_msg:
         st.warning(ref_guard_msg)
@@ -1710,8 +1723,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             index=_default_idx,
             help=(
                 "Default is set per ticker from walk-forward OOS: M3_extended for "
-                "indices/ETFs, M2_vix for single names. M4_full when GEX data is "
-                "populated. Your pick is remembered per ticker."
+                "indices/ETFs and M2_vix for single names. GEX remains excluded "
+                "from every live fit while BUG-06 calibration is pending. Your "
+                "pick is remembered per ticker."
             ),
             key=f"sf_model_choice_{ticker}",
         )
@@ -1721,7 +1735,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
     with col_btn_main:
         do_weekly = st.button("Weekly Setup", key=f"sf_weekly_{ticker}", type="primary", use_container_width=True,
-                              help="Run all steps: Refresh → Rebuild → Save GEX → Forecast")
+                              help="Run all steps: Refresh → Rebuild → Save GEX for research → Forecast")
     with col_btn1:
         do_refresh = st.button("Refresh Data", key=f"sf_refresh_{ticker}", use_container_width=True)
     with col_btn2:
@@ -1837,7 +1851,10 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             # writes gex_inputs not weekly_setup, but the click is the
             # canonical "I'm actively setting up this week" signal).
             _cached_weekly_setup.clear()
-            st.success(f"GEX saved: regime={regime_label}, flag={gex_flag} (ticker={ticker})")
+            st.success(
+                f"GEX research capture saved: regime={regime_label}, "
+                f"flag={gex_flag} (ticker={ticker})"
+            )
         except Exception as e:
             st.error(f"GEX save failed: {e}")
 
@@ -1939,21 +1956,19 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         with st.spinner(_spinner_label):
             for _spec in _specs_to_fit:
                 try:
-                    # Start from the static feature list but COPY it — we may
-                    # append `gex_normalized` below and we don't want to mutate
-                    # the module-level MODEL_SPECS dict.
-                    feat_cols = list(RF_MODEL_SPECS[_spec])
+                    # BUG-06 filters GEX from every live fit while preserving
+                    # the stored column for the pending historical study.
+                    feat_cols = live_spread_feature_columns(RF_MODEL_SPECS[_spec])
 
-                    # Mirror run_full_pipeline's dynamic GEX injection: when the
-                    # user has built up enough weekly GEX history via the Save
-                    # GEX button (>RF_GEX_MIN_WEEKS non-null rows of gex_normalized),
-                    # fold it into M4_full as a real training feature.  This is
-                    # the whole reason M4_full is called "full" — without this
-                    # the UI-fitted M4 is just M3 + term structure + yield
-                    # spread, ignoring all the GEX snapshots accumulated.
+                    # Keep the former M4 injection path behind the same policy
+                    # switch as run_full_pipeline. The false branch documents
+                    # the research retention without consuming the feature.
                     if _spec == "M4_full":
-                        gex_col = "gex_normalized"
-                        if rf_feature_has_enough_data(df_feat, gex_col):
+                        gex_col = GEX_NORMALIZED_FEATURE
+                        if (
+                            GEX_LIVE_SPREAD_INFLUENCE_ENABLED
+                            and rf_feature_has_enough_data(df_feat, gex_col)
+                        ):
                             if gex_col not in feat_cols:
                                 feat_cols.append(gex_col)
                                 # Only surface the "using N weeks of GEX" note
@@ -1965,7 +1980,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                                         f"ℹ️ M4_full: using {int(df_feat[gex_col].notna().sum())} "
                                         f"weeks of stored GEX history as a training feature."
                                     )
-                        else:
+                        elif GEX_LIVE_SPREAD_INFLUENCE_ENABLED:
                             _weeks = int(df_feat[gex_col].notna().sum()) if gex_col in df_feat.columns else 0
                             if _spec == model_choice:
                                 st.caption(
@@ -1973,6 +1988,16 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                                     f"fold `gex_normalized` into the fit. Keep clicking **Save GEX** "
                                     f"each week; in the meantime M4 runs without the GEX feature."
                                 )
+                        elif _spec == model_choice:
+                            _weeks = (
+                                int(df_feat[gex_col].notna().sum())
+                                if gex_col in df_feat.columns else 0
+                            )
+                            st.caption(
+                                f"GEX calibration: Pending — {_weeks} stored weeks "
+                                "remain available for research, but GEX is not "
+                                "applied to live fits, buffers, or strikes."
+                            )
 
                     avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
                     if len(avail_cols) < 2:
@@ -2065,6 +2090,17 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     feat_cols    = st.session_state[_mdl_feat_key]
     metrics      = st.session_state[_mdl_metrics_key]
     active_model = st.session_state.get(_mdl_name_key, model_choice)
+
+    if uses_disabled_gex_feature(feat_cols):
+        for _k in (_mdl_result_key, _mdl_feat_key, _mdl_metrics_key, _mdl_name_key):
+            st.session_state.pop(_k, None)
+        st.warning(
+            f"Saved {model_choice} fit predates the BUG-06 mitigation and "
+            "contains GEX. Click Forecast to refit it without GEX; no live "
+            "recommendation will be shown from the old fit."
+        )
+        _render_gex_context_panel(gex_ctx, spot)
+        return
 
     # ── Determine week start ──
     # Anchored to NY wall clock (run_now = now_ny() above) so that the
@@ -2273,7 +2309,8 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
               "aggressive ↔ moderate")
         + _mc("Effective Range", f"{plan.effective_range_pct*100:.2f}%",
               f"conservative · buffer +{plan.buffer_pct*100:.2f}%")
-        + _mc("GEX Regime", gex_ctx.gamma_regime.title(), f"flag {_flag:+d}", _reg_color)
+        + _mc("GEX Regime", gex_ctx.gamma_regime.title(),
+              "research · not applied", _reg_color)
         + _mc(f"OOS R² · {_mdl_label}", f"{metrics['oos_r2']:.4f}",
               f"MAE {metrics['mae_pct']*100:.2f}%"
               + (f" · dir {metrics['direction_acc']:.0%}"
@@ -2365,8 +2402,9 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             if gex_ctx.gamma_regime:
                 _gflag = gex_adj.get("gex_regime_flag")
                 _active_notes.append(
-                    f"GEX {gex_ctx.gamma_regime}"
+                    f"GEX research {gex_ctx.gamma_regime}"
                     + (f" ({_gflag:+d})" if isinstance(_gflag, int) else "")
+                    + " — not applied"
                 )
             _active_events = [n for n, f in (("FOMC", plan.has_fomc), ("CPI", plan.has_cpi),
                                              ("NFP", plan.has_nfp), ("OPEX", plan.has_opex)) if f]
@@ -2617,7 +2655,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             _render_gex_context_panel(_gex_ctx, _spot)
 
         with col_warn:
-            st.html('<div class="sf-eyebrow">Warnings &amp; GEX Notes</div>')
+            st.html('<div class="sf-eyebrow">Warnings &amp; GEX Research Notes</div>')
 
             # One coherent GEX story: strips the anchored-regime warning and
             # composes a single anchored-vs-live message (flip-aware) instead
@@ -2673,7 +2711,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
 
 
 def _render_gex_context_panel(gex_ctx: GEXContext, spot: float):
-    """Render the live GEX context panel (terminal styling)."""
+    """Render live GEX as research context, never a spread input."""
     gex_flag = regime_to_gex_flag(gex_ctx.gamma_regime)
     regime_color = SF_BULL if gex_flag == 1 else SF_BEAR if gex_flag == -1 else SF_NEUT
     zg_pct = (abs(spot - gex_ctx.zero_gamma) / spot * 100) if spot else 0.0
@@ -2689,6 +2727,8 @@ def _render_gex_context_panel(gex_ctx: GEXContext, spot: float):
         f'<span class="v" style="color:var(--green);">${gex_ctx.call_wall:,.0f}</span></div>'
         '<div class="row"><span class="k">Put Wall</span>'
         f'<span class="v" style="color:var(--red);">${gex_ctx.put_wall:,.0f}</span></div>'
+        '<div class="row"><span class="k">Spread Influence</span>'
+        '<span class="v" style="color:var(--text-secondary);">Research / disabled</span></div>'
         '<div class="row"><span class="k">Spot</span>'
         f'<span class="v">${spot:,.2f}</span></div>'
         '</div>'

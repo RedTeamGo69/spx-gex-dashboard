@@ -565,6 +565,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         save_model, MODEL_SPECS, forecast_next_week,
         feature_has_enough_data,
     )
+    from range_finder.gex_policy import live_spread_feature_columns
     from range_finder.spread_levels import build_spread_plan, log_spread_plan
     from phase1.ticker_config import (
         get_config, uses_own_har, has_single_name_earnings,
@@ -725,7 +726,7 @@ def _run_weekly_spread_setup(ticker, spot, run_now, fred_key, client, avail,
         failed = []
         for spec_name in MODEL_SPECS:
             try:
-                feat_cols  = MODEL_SPECS[spec_name]
+                feat_cols = live_spread_feature_columns(MODEL_SPECS[spec_name])
                 avail_cols = [c for c in feat_cols if feature_has_enough_data(df_feat, c)]
 
                 if len(avail_cols) < 2:

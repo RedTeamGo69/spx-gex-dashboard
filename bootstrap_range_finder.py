@@ -78,6 +78,7 @@ def main():
         MODEL_SPECS, fit_validation_and_production,
         feature_has_enough_data,
     )
+    from range_finder.gex_policy import live_spread_feature_columns
     from range_finder.model_persistence import save_model
 
     # ── Connect + init tables ──
@@ -141,7 +142,7 @@ def main():
 
     results = {}
     for spec_name in ["M1_baseline", "M2_vix", "M3_extended", "M4_full"]:
-        feat_cols = MODEL_SPECS.get(spec_name, [])
+        feat_cols = live_spread_feature_columns(MODEL_SPECS.get(spec_name, []))
         # Drop features that have too few non-null rows (eg. gex_normalized on
         # a fresh DB — there won't be any historical GEX values)
         avail_cols = [c for c in feat_cols if feature_has_enough_data(df_feat, c)]

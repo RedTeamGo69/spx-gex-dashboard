@@ -15,6 +15,8 @@ from typing import Optional
 
 import pandas as pd
 
+from range_finder.gex_policy import GEX_LIVE_SPREAD_INFLUENCE_ENABLED
+
 # =============================================================================
 # LOGGING
 # =============================================================================
@@ -42,16 +44,16 @@ EVENT_BUFFER_MULTIPLIERS = {
     "opex":  1.10,
 }
 
-# Continuous GEX buffer: scale buffer proportionally to normalized GEX magnitude
-# gex_normalized > 0 means positive gamma (tighten), < 0 means negative (widen)
+# Legacy research transformation. BUG-06 keeps the calculation available for
+# historical comparison, but GEX_LIVE_SPREAD_INFLUENCE_ENABLED is intentionally
+# False until predictive calibration is supported by the pending study.
 GEX_CONTINUOUS_SCALE = 0.002  # buffer adjustment per unit of gex_normalized
 
-# The anchored-regime warning emitted by build_spread_plan when the feature
-# row's gex_flag is -1. Kept as a constant (exact string, unchanged from the
-# inline literal it replaced) so gex_bridge.reconcile_gex_warnings can strip
-# it by exact match and compose a single coherent regime message instead.
+# The anchored-regime research note emitted when gex_flag is -1. Kept as a
+# constant so gex_bridge.reconcile_gex_warnings can replace it with one
+# coherent anchored-vs-live message.
 GEX_NEGATIVE_REGIME_WARNING = (
-    "Negative GEX regime — dealer hedging amplifies moves; buffer widened"
+    "Negative GEX regime — research context only; not applied to live buffer or strikes"
 )
 
 # Legacy module-level SPX defaults. The live per-ticker values come from
@@ -160,13 +162,40 @@ class SpreadPlan:
 # BUFFER CALCULATION
 # =============================================================================
 
+def compute_legacy_gex_buffer_adjustment(
+    feature_row: "pd.Series | dict" = None,
+) -> float:
+    """Return the uncalibrated pre-mitigation GEX adjustment for research.
+
+    This preserves the BUG-06 transformation for audit and historical-study
+    comparisons. Production callers must use ``compute_buffer`` instead.
+    """
+    if feature_row is None:
+        return 0.0
+
+    raw_norm = feature_row.get("gex_normalized")
+    if raw_norm is None:
+        return 0.0
+    try:
+        gex_normalized = float(raw_norm)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(gex_normalized):
+        return 0.0
+
+    gex_adj = -gex_normalized * GEX_CONTINUOUS_SCALE
+    return max(-0.002, min(0.005, gex_adj))
+
+
 def compute_buffer(
     forecast: dict,
     feature_row: "pd.Series | dict" = None,
 ) -> tuple[float, str]:
     """
     Compute the total buffer percentage to add beyond the PI upper bound.
-    Buffer = DEFAULT_BUFFER_PCT x event_multiplier + gex_adjustment
+
+    BUG-06 mitigation leaves event widening intact while the uncalibrated GEX
+    adjustment is excluded from live recommendations.
     """
     buffer = DEFAULT_BUFFER_PCT
     reasons = [f"base={DEFAULT_BUFFER_PCT*100:.2f}%"]
@@ -195,20 +224,16 @@ def compute_buffer(
         buffer *= top_mult
         reasons.append(f"{top_event}_mult={top_mult}x")
 
-    # Continuous GEX buffer adjustment: scale proportionally to magnitude
-    gex_normalized = None
-    if feature_row is not None:
-        raw_norm = feature_row.get("gex_normalized")
-        if raw_norm is not None and not (isinstance(raw_norm, float) and math.isnan(raw_norm)):
-            gex_normalized = float(raw_norm)
-
-    if gex_normalized is not None:
-        # Negative gex_normalized widens buffer, positive tightens
-        gex_adj = -gex_normalized * GEX_CONTINUOUS_SCALE
-        gex_adj = max(-0.002, min(0.005, gex_adj))  # clamp to reasonable range
+    legacy_gex_adj = compute_legacy_gex_buffer_adjustment(feature_row)
+    if GEX_LIVE_SPREAD_INFLUENCE_ENABLED:
+        # Retained behind an explicit policy switch for a future, evidence-
+        # backed calibration. Do not enable by changing the coefficient.
+        gex_adj = legacy_gex_adj
         if abs(gex_adj) > 0.0001:
             buffer += gex_adj
-            reasons.append(f"gex_norm={gex_normalized:.2f}({gex_adj*100:+.3f}%)")
+            reasons.append(f"gex_adjustment={gex_adj*100:+.3f}%")
+    else:
+        reasons.append("gex=disabled_pending_calibration")
 
     buffer = max(buffer, 0.001)
     reason_str = " | ".join(reasons)

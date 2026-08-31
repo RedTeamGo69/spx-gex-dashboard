@@ -179,9 +179,10 @@ def strike_touch_summary(df: pd.DataFrame) -> dict:
 def buffer_breach_rate(df: pd.DataFrame) -> dict:
     """How often the realized range blew through PI-upper PLUS the buffer.
 
-    This is the first empirical audit of the heuristic buffer
-    (spread_levels.compute_buffer: 0.3% base, FOMC/CPI/NFP/OpEx
-    multipliers, GEX adjustment). effective_range_pct = upper_pct + buffer.
+    This audits the persisted heuristic buffer. Historical rows may contain
+    the legacy GEX adjustment; BUG-06 production rows use the 0.3% base plus
+    FOMC/CPI/NFP/OpEx multipliers with GEX disabled pending calibration.
+    effective_range_pct = upper_pct + buffer.
     """
     scored = df[df["effective_range_pct"].notna()] \
         if "effective_range_pct" in df.columns else df.iloc[0:0]

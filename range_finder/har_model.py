@@ -24,6 +24,11 @@ from range_finder.feature_builder import (
     create_gex_table,
     print_feature_summary,
 )
+from range_finder.gex_policy import (
+    GEX_LIVE_SPREAD_INFLUENCE_ENABLED,
+    GEX_NORMALIZED_FEATURE,
+    live_spread_feature_columns,
+)
 
 # =============================================================================
 # LOGGING
@@ -70,10 +75,8 @@ def train_window_min_date(years: int = None) -> str:
 # Weekly default (20): rule-of-thumb that HC3-robust OLS needs ~10
 # obs/feature plus headroom. Daily default (126): half a trading year —
 # proportionally the same information content as the weekly bar.
-# `gex_normalized` uses a lower bar because it's a single-coefficient
-# addition to an already-populated spec, and waiting 20 weeks (~5 months)
-# before live GEX flows into strike placement is overkill for a stable-sign
-# regressor.
+# `gex_normalized` retains its research gate so historical comparisons can be
+# reproduced. BUG-06 currently prevents it from entering live production fits.
 DEFAULT_MIN_WEEKS_FOR_FIT = 20
 DEFAULT_MIN_DAYS_FOR_FIT = 126
 GEX_MIN_WEEKS_FOR_FIT = 12
@@ -136,8 +139,8 @@ MODEL_SPECS = {
         "abs_return_lag1",
         "vix_ts_slope",
         "yield_spread",
-        # gex_normalized added dynamically if GEX data is present
-        # (continuous feature, replacing the old binary gex_flag)
+        # gex_normalized remains a research candidate. BUG-06 prevents its
+        # dynamic inclusion in live fits until historical calibration clears.
     ],
 
     # M5_garch (HAR + VIX + weekly GARCH(1,1) fit) and M6_regime (HAR + VIX +
@@ -705,14 +708,21 @@ def run_full_pipeline(
     log.info(f"Loaded {len(df)} feature rows for modeling ({ticker})")
 
     # --- Determine if GEX is available ---
-    # Use continuous gex_normalized for richer signal than the deprecated binary gex_flag
-    # BUG FIX: use a local copy of the feature list instead of mutating the global
-    gex_available = feature_has_enough_data(df, "gex_normalized")
-    local_specs = {k: list(v) for k, v in MODEL_SPECS.items()}
-    if gex_available:
-        log.info("GEX data available — adding gex_normalized (continuous) to M4_full")
-        if "gex_normalized" not in local_specs["M4_full"]:
-            local_specs["M4_full"].append("gex_normalized")
+    # Keep a local copy so a research feature can never mutate MODEL_SPECS.
+    gex_available = feature_has_enough_data(df, GEX_NORMALIZED_FEATURE)
+    local_specs = {
+        key: live_spread_feature_columns(value)
+        for key, value in MODEL_SPECS.items()
+    }
+    if GEX_LIVE_SPREAD_INFLUENCE_ENABLED and gex_available:
+        log.info("GEX data available — adding gex_normalized to M4_full")
+        if GEX_NORMALIZED_FEATURE not in local_specs["M4_full"]:
+            local_specs["M4_full"].append(GEX_NORMALIZED_FEATURE)
+    elif not GEX_LIVE_SPREAD_INFLUENCE_ENABLED:
+        log.info(
+            "BUG-06 mitigation active — GEX is retained for research but "
+            "excluded from live model fits"
+        )
     else:
         log.info("GEX data sparse — GEX features excluded from M4_full")
 

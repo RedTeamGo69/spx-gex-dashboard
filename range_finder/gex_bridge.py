@@ -3,14 +3,14 @@
 # Bridge between the GEX Dashboard and the Range Finder model.
 #
 # Takes live GEX data computed by the dashboard (spot, zero_gamma, call_wall,
-# put_wall, net GEX, gamma regime) and feeds it into the range finder's
-# gex_inputs table and spread buffer logic.
+# put_wall, net GEX, gamma regime) and feeds it into research persistence and
+# read-only Spread Finder context.
 #
 # This is the key integration point — the GEX dashboard produces real-time
 # gamma exposure levels, and the range finder uses them to:
-#   1. Adjust the gex_flag feature in the HAR model (M4_full spec)
-#   2. Widen/tighten the spread buffer based on dealer positioning
-#   3. Use GEX walls as additional guardrails for strike placement
+#   1. Preserve GEX inputs for pending historical calibration
+#   2. Display regimes, walls, and zero-gamma as research diagnostics
+#   3. Keep GEX separate from live forecasts, buffers, and strikes (BUG-06)
 # =============================================================================
 
 import math
@@ -207,7 +207,7 @@ def save_gex_to_range_finder(
 
 
 # =============================================================================
-# GEX-ENHANCED SPREAD ADJUSTMENT
+# GEX RESEARCH ANNOTATIONS
 # =============================================================================
 
 def adjust_spread_with_gex(
@@ -215,11 +215,11 @@ def adjust_spread_with_gex(
     gex_ctx: GEXContext,
 ) -> dict:
     """
-    Produce GEX-enhanced annotations for the spread plan.
+    Produce research-only GEX annotations for the spread plan.
 
     Uses the GEX walls (call_wall, put_wall) as additional reference points
-    beyond the HAR model's statistical range. This gives the trader two
-    perspectives: statistical (model) and microstructural (GEX).
+    beyond the HAR model's statistical range. These diagnostics never mutate
+    the plan, its buffer, or its strikes.
 
     Returns a dict with:
         gex_call_wall_vs_short : how far the call wall is from the call short strike
@@ -253,12 +253,13 @@ def adjust_spread_with_gex(
         if call_short >= gex_ctx.call_wall:
             notes.append(
                 f"Call short ({call_short:.0f}) is AT or ABOVE the call wall "
-                f"({gex_ctx.call_wall:.0f}) — dealers may pin here, reducing breach risk"
+                f"({gex_ctx.call_wall:.0f}) — research context only; live strikes unchanged"
             )
         elif dist / gex_ctx.spot < 0.004:  # ~0.4% of spot (~20pts SPX, ~2pts XSP)
             notes.append(
                 f"Call short ({call_short:.0f}) is only {dist:.0f} pts below "
-                f"call wall ({gex_ctx.call_wall:.0f}) — consider widening"
+                f"call wall ({gex_ctx.call_wall:.0f}) — research proximity flag; "
+                "live strikes unchanged"
             )
 
     if put_short is not None:
@@ -269,19 +270,17 @@ def adjust_spread_with_gex(
         if put_short <= gex_ctx.put_wall:
             notes.append(
                 f"Put short ({put_short:.0f}) is AT or BELOW the put wall "
-                f"({gex_ctx.put_wall:.0f}) — dealers may pin here, reducing breach risk"
+                f"({gex_ctx.put_wall:.0f}) — research context only; live strikes unchanged"
             )
         elif dist / gex_ctx.spot < 0.004:  # ~0.4% of spot
             notes.append(
                 f"Put short ({put_short:.0f}) is only {dist:.0f} pts above "
-                f"put wall ({gex_ctx.put_wall:.0f}) — consider widening"
+                f"put wall ({gex_ctx.put_wall:.0f}) — research proximity flag; "
+                "live strikes unchanged"
             )
 
-    # Regime-story notes were removed from here: they claimed the buffer was
-    # "tightened/widened proportionally to GEX magnitude", but this function
-    # is annotation-only — the buffer is computed from the *anchored* feature
-    # row in spread_levels.compute_buffer. The single coherent regime message
-    # (anchored vs live, including flips) is composed by
+    # Regime-story notes remain annotation-only. The single coherent regime
+    # message (anchored vs live, including flips) is composed by
     # reconcile_gex_warnings() below; callers pass it this dict's gex_regime.
 
     # Zero-gamma proximity warning
@@ -291,7 +290,7 @@ def adjust_spread_with_gex(
         notes.append(
             f"Spot ({gex_ctx.spot:.0f}) is very close to zero-gamma "
             f"({gex_ctx.zero_gamma:.0f}, {zg_pct:.2f}% away) — "
-            f"regime could flip intraday. Monitor closely."
+            "research context only; the live plan is unchanged."
         )
 
     return result
@@ -325,13 +324,11 @@ def reconcile_gex_warnings(
 ) -> list:
     """Merge plan warnings and GEX annotation notes into one coherent list.
 
-    The spread plan's buffer is computed from the ANCHORED feature row
-    (spread_levels.compute_buffer), while the dashboard supplies a LIVE gamma
-    regime. Rendering both signals verbatim produced contradictory messages
-    ("Negative GEX regime" next to "Positive GEX") whenever the regime moved
-    after the anchor. This function strips the anchored-regime warning and
-    composes AT MOST ONE regime message describing anchored vs live —
-    including an explicit "regime flipped since the anchor" case.
+    The dashboard has both anchored and live gamma observations. Rendering
+    them independently produced contradictory messages whenever the regime
+    moved after the anchor. This function composes AT MOST ONE regime message
+    and makes the BUG-06 production boundary explicit: GEX is research context
+    and is not applied to the live buffer or strikes.
 
     Pure function (no Streamlit, no I/O) so both the weekly and 0DTE tabs can
     share it and it unit-tests trivially.
@@ -341,9 +338,8 @@ def reconcile_gex_warnings(
                             possibly the anchored GEX_NEGATIVE_REGIME_WARNING)
         gex_notes         : adjust_spread_with_gex()["gex_adjustment_notes"]
                             (wall-proximity / zero-gamma notes)
-        anchored_gex_flag : SpreadPlan.gex_flag — the regime baked into the
-                            buffer (+1/0/-1), or None when the feature row had
-                            no GEX data (always the case on the daily matrix)
+        anchored_gex_flag : SpreadPlan.gex_flag at the anchor (+1/0/-1), or
+                            None when the feature row had no GEX data
         live_regime       : GEXContext.gamma_regime from the dashboard
                             (e.g. "Positive Gamma", "negative", "transition")
         anchor_label      : where the anchored features come from, for copy
@@ -360,6 +356,10 @@ def reconcile_gex_warnings(
 
     live_flag = regime_to_gex_flag(live_regime) if live_regime else 0
     anchored = anchored_gex_flag if anchored_gex_flag in (-1, 0, 1) else None
+    policy_note = (
+        "GEX is retained for research and is not applied to the live buffer "
+        "or strikes."
+    )
 
     msg = None
     if anchored in (1, -1) and live_flag != 0:
@@ -367,49 +367,38 @@ def reconcile_gex_warnings(
             if anchored == 1:
                 msg = (
                     f"Positive GEX regime — anchored ({anchor_label}) and live "
-                    "dashboard agree. Dealer hedging tends to suppress moves; "
-                    "the buffer was computed from the anchored GEX features."
+                    f"dashboard agree. {policy_note}"
                 )
             else:
                 msg = (
                     f"Negative GEX regime — anchored ({anchor_label}) and live "
-                    "dashboard agree. Dealer hedging amplifies moves; the buffer "
-                    "was widened from the anchored GEX features. Exercise "
-                    "caution on sizing."
+                    f"dashboard agree. {policy_note}"
                 )
         else:
             msg = (
                 f"GEX regime flipped since the anchor: {_GEX_FLAG_WORD[anchored]} "
                 f"at the {anchor_label}, live dashboard now reads "
-                f"{_GEX_FLAG_WORD[live_flag]}. The buffer was computed from the "
-                "anchor regime (strikes stay anchored by policy) — treat the "
-                "live regime as entry-timing context, not a change to the plan."
+                f"{_GEX_FLAG_WORD[live_flag]}. {policy_note}"
             )
     elif anchored == 1:
         msg = (
             f"Positive GEX regime — anchored ({anchor_label}); dealer hedging "
-            "tends to suppress moves and the buffer was computed from the "
-            "anchored GEX features. Live regime is currently unclear "
-            "(transition or unavailable)."
+            f"may suppress moves, while live regime is unclear. {policy_note}"
         )
     elif anchored == -1:
         msg = (
             f"Negative GEX regime — anchored ({anchor_label}); dealer hedging "
-            "amplifies moves and the buffer was widened from the anchored GEX "
-            "features. Live regime is currently unclear (transition or "
-            "unavailable)."
+            f"may amplify moves, while live regime is unclear. {policy_note}"
         )
     elif live_flag != 0 and anchored == 0:
         msg = (
             f"Anchored GEX regime was neutral at the {anchor_label}; live "
-            f"dashboard reads {_GEX_FLAG_WORD[live_flag]}. The buffer used the "
-            "anchored (neutral) features — live reading is advisory for entries."
+            f"dashboard reads {_GEX_FLAG_WORD[live_flag]}. {policy_note}"
         )
     elif live_flag != 0:
         msg = (
-            f"Live GEX regime is {_GEX_FLAG_WORD[live_flag]} — advisory only. "
-            "The plan's buffer was not adjusted for GEX (no anchored GEX "
-            "features for this session)."
+            f"Live GEX regime is {_GEX_FLAG_WORD[live_flag]} — research context. "
+            f"{policy_note}"
         )
 
     if msg:

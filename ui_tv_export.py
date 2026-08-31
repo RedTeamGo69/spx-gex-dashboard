@@ -52,6 +52,7 @@ def _cached_tv_har_pi(week_start: str, model_choice: str,
         from phase1.ticker_config import (feature_source_ticker,
                                           is_spread_finder_eligible)
         from range_finder.conformal import maybe_apply_conformal
+        from range_finder.gex_policy import uses_disabled_gex_feature
         from range_finder.har_model import PI_ALPHA, forecast_next_week
         from ui_spread_finder import (_cached_prior_week_close,
                                       _cached_rf_get_features,
@@ -75,6 +76,12 @@ def _cached_tv_har_pi(week_start: str, model_choice: str,
             if src == ticker:
                 return None
             payload = _cached_rf_load_model(model_choice, src)
+
+        # A pre-mitigation M4 fit may still be present in Postgres. Omitting
+        # the HAR band is safer than exporting a recommendation influenced by
+        # the disabled GEX calibration.
+        if uses_disabled_gex_feature(payload["feature_cols"]):
+            return None
 
         wk_ts = pd.Timestamp(week_start)
         feature_row = (df_feat.loc[wk_ts] if wk_ts in df_feat.index

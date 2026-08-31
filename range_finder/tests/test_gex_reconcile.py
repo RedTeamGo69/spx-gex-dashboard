@@ -1,9 +1,8 @@
 """GEX warning reconciliation (gex_bridge.reconcile_gex_warnings).
 
-The spread plan's buffer is computed from the ANCHORED feature row while the
-dashboard supplies a LIVE gamma regime. The reconciler must compose AT MOST
-ONE regime message (flip-aware) instead of the old behavior of concatenating
-two independent — and possibly contradictory — regime strings.
+The dashboard keeps anchored and live gamma observations for research. The
+reconciler must compose AT MOST ONE regime message (flip-aware) and state that
+GEX is not applied to the live buffer or strikes.
 """
 from range_finder.gex_bridge import (
     GEXContext, adjust_spread_with_gex, reconcile_gex_warnings,
@@ -34,6 +33,7 @@ def test_agree_positive_single_message_no_false_adjustment_claim():
     assert len(regime) == 1
     assert "agree" in regime[0]
     assert "tightened" not in regime[0]          # the old false claim
+    assert "not applied to the live buffer or strikes" in regime[0]
     assert FOMC_WARNING in out and WALL_NOTE in out
 
 
@@ -60,7 +60,7 @@ def test_flip_negative_anchor_positive_live():
     assert "flipped" in regime[0]
     assert "negative at the Monday anchor" in regime[0]
     assert "now reads positive" in regime[0]
-    assert "computed from the anchor regime" in regime[0]
+    assert "not applied to the live buffer or strikes" in regime[0]
 
 
 def test_flip_positive_anchor_negative_live():
@@ -94,7 +94,7 @@ def test_anchored_negative_live_unclear():
     regime = _regime_messages(out)
     assert len(regime) == 1
     assert "unclear" in regime[0]
-    assert "widened from the anchored GEX features" in regime[0]
+    assert "not applied to the live buffer or strikes" in regime[0]
 
 
 def test_anchored_none_live_positive_advisory():
@@ -107,7 +107,7 @@ def test_anchored_none_live_positive_advisory():
     regime = _regime_messages(out)
     assert len(regime) == 1
     assert regime[0].startswith("Live GEX regime is positive")
-    assert "was not adjusted for GEX" in regime[0]
+    assert "not applied to the live buffer or strikes" in regime[0]
 
 
 def test_anchored_neutral_live_negative():
