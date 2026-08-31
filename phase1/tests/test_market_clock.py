@@ -1,6 +1,8 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from phase1.market_clock import (
     get_session_state,
     is_cash_market_open,
@@ -52,6 +54,93 @@ def test_compute_time_to_expiry_zero_after_close_without_floor():
 
     assert close_dt.tzinfo is not None
     assert y == 0.0
+
+
+@pytest.mark.parametrize(
+    ("root", "expected_day", "expected_hour", "expected_minute"),
+    [
+        ("SPX", 19, 17, 0),    # AM-settled; prior-session Cboe curb close
+        ("SPXW", 20, 16, 0),   # PM-settled
+        ("XSP", 20, 16, 0),    # PM-settled
+        ("NDX", 19, 16, 15),   # AM-settled; prior regular session
+        ("NDXP", 20, 16, 0),   # PM-settled
+    ],
+)
+def test_root_aware_final_trading_timestamp(
+        root, expected_day, expected_hour, expected_minute):
+    _, close_dt = compute_time_to_expiry_years(
+        "2026-03-20",
+        ts=datetime(2026, 3, 19, 12, 0, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+
+    assert close_dt.day == expected_day
+    assert (close_dt.hour, close_dt.minute) == (expected_hour, expected_minute)
+
+
+@pytest.mark.parametrize("root", ["SPXW", "XSP", "NDXP"])
+def test_pm_settled_roots_expire_at_four_not_four_fifteen(root):
+    before, _ = compute_time_to_expiry_years(
+        "2026-03-20",
+        ts=datetime(2026, 3, 20, 15, 59, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+    at_close, _ = compute_time_to_expiry_years(
+        "2026-03-20",
+        ts=datetime(2026, 3, 20, 16, 0, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+    after, _ = compute_time_to_expiry_years(
+        "2026-03-20",
+        ts=datetime(2026, 3, 20, 16, 5, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+
+    assert before > 0
+    assert at_close == 0.0
+    assert after == 0.0
+
+
+@pytest.mark.parametrize("root", ["SPXW", "XSP", "NDXP"])
+def test_pm_root_shortened_session_uses_one_pm_close(root):
+    _, close_dt = compute_time_to_expiry_years(
+        "2026-11-27",
+        ts=datetime(2026, 11, 27, 12, 0, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+
+    assert close_dt.date().isoformat() == "2026-11-27"
+    assert (close_dt.hour, close_dt.minute) == (13, 0)
+
+
+@pytest.mark.parametrize(
+    ("root", "live_time", "dead_time"),
+    [
+        ("SPX", (16, 59), (17, 0)),
+        ("NDX", (16, 14), (16, 15)),
+    ],
+)
+def test_am_roots_stop_on_the_prior_session(root, live_time, dead_time):
+    live, _ = compute_time_to_expiry_years(
+        "2026-03-20",
+        ts=datetime(2026, 3, 19, *live_time, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+    dead, _ = compute_time_to_expiry_years(
+        "2026-03-20",
+        ts=datetime(2026, 3, 19, *dead_time, tzinfo=NY),
+        root=root,
+        floor=None,
+    )
+
+    assert live > 0
+    assert dead == 0.0
 
 
 def test_good_friday_expiration_uses_thursday_close():

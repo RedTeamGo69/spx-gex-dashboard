@@ -10,6 +10,7 @@ from phase1.config import (
     NY_TZ,
     CASH_CALENDAR,
     OPTIONS_CALENDAR,
+    INDEX_OPTION_EXPIRATION_RULES,
     USE_TRADING_TIME,
     TRADING_HOURS_PER_YEAR,
 )
@@ -171,6 +172,47 @@ def get_expiration_close_dt(expiration_str: str, calendar_name: str = OPTIONS_CA
     )
 
 
+def get_root_expiration_close_dt(
+    expiration_str: str,
+    root: str | None,
+    calendar_name: str = OPTIONS_CALENDAR,
+) -> datetime:
+    """Return the actual final-trading timestamp for a known option root.
+
+    The exchange calendar supplies session dates and shortened-session close
+    times. Root rules only select the expiration vs previous session and apply
+    the product's documented offset from the generic 4:15 index-options close.
+    Unknown/missing roots deliberately retain the legacy generic clock.
+    """
+    normalized_root = str(root or "").strip().upper()
+    rule = INDEX_OPTION_EXPIRATION_RULES.get(normalized_root)
+    if rule is None:
+        return get_expiration_close_dt(expiration_str, calendar_name=calendar_name)
+
+    if rule["session"] == "expiration":
+        session_close = get_expiration_close_dt(
+            expiration_str, calendar_name=calendar_name,
+        )
+    else:
+        expiration_date = datetime.strptime(expiration_str, "%Y-%m-%d").date()
+        prior_end = (expiration_date - timedelta(days=1)).isoformat()
+        prior_start = (expiration_date - timedelta(days=8)).isoformat()
+        prior_schedule = get_schedule(calendar_name, prior_start, prior_end)
+        if prior_schedule.empty:
+            raise ValueError(
+                f"No prior trading session for {normalized_root} expiration "
+                f"{expiration_str} on {calendar_name}"
+            )
+        close_ts = prior_schedule.iloc[-1]["market_close"]
+        close_dt = (
+            close_ts.to_pydatetime()
+            if hasattr(close_ts, "to_pydatetime") else close_ts
+        )
+        session_close = _ensure_ny(close_dt)
+
+    return session_close + timedelta(minutes=rule["close_offset_minutes"])
+
+
 # --- Fix #10: Trading-time T ---
 
 def _compute_trading_hours_to_expiry(
@@ -216,6 +258,12 @@ def _compute_trading_hours_to_expiry(
         sess_open = row["market_open"]
         sess_close = row["market_close"]
 
+        # A root-specific final timestamp may extend beyond the generic
+        # calendar close (currently SPX AM curb trading through 5:00 ET).
+        # Preserve that final live interval without hard-coding a date.
+        if sess_close.date() == close_pd.date() and close_pd > sess_close:
+            sess_close = close_pd
+
         # Effective start: max(ts, session open)
         eff_start = max(ts_pd, sess_open)
         # Effective end: min(close_dt, session close)
@@ -232,6 +280,7 @@ def compute_time_to_expiry_years(
     ts: datetime | None = None,
     calendar_name: str = OPTIONS_CALENDAR,
     floor: float | None = None,
+    root: str | None = None,
 ):
     """
     Compute time to expiry in years.
@@ -246,7 +295,9 @@ def compute_time_to_expiry_years(
         (T_years, expiration_close_dt_ny)
     """
     ts_ny = _ensure_ny(ts or now_ny())
-    close_dt = get_expiration_close_dt(expiration_str, calendar_name=calendar_name)
+    close_dt = get_root_expiration_close_dt(
+        expiration_str, root=root, calendar_name=calendar_name,
+    )
 
     if USE_TRADING_TIME:
         trading_hours = _compute_trading_hours_to_expiry(ts_ny, close_dt, calendar_name)

@@ -6,6 +6,19 @@ NY_TZ = ZoneInfo("America/New_York")
 CASH_CALENDAR = "NYSE"
 OPTIONS_CALENDAR = "CBOE_Index_Options"
 
+# Expiring cash-settled index roots do not share one final-trading clock.
+# Offsets are relative to the holiday/early-close-aware 4:15 index-options
+# calendar session. AM roots trade on the prior session; PM roots trade on
+# the expiration session. SPX's expiring AM series currently includes the
+# Cboe curb through 5:00 ET (45 minutes beyond the calendar's regular close).
+INDEX_OPTION_EXPIRATION_RULES = {
+    "SPX":  {"settlement": "AM", "session": "previous",   "close_offset_minutes": 45},
+    "SPXW": {"settlement": "PM", "session": "expiration", "close_offset_minutes": -15},
+    "XSP":  {"settlement": "PM", "session": "expiration", "close_offset_minutes": -15},
+    "NDX":  {"settlement": "AM", "session": "previous",   "close_offset_minutes": 0},
+    "NDXP": {"settlement": "PM", "session": "expiration", "close_offset_minutes": -15},
+}
+
 # Main strike filter for GEX bar chart display
 STRIKE_RANGE_PCT = 0.05
 
@@ -112,6 +125,9 @@ def build_config_snapshot() -> dict:
     return {
         "cash_calendar": CASH_CALENDAR,
         "options_calendar": OPTIONS_CALENDAR,
+        "index_option_expiration_rules": {
+            root: dict(rule) for root, rule in INDEX_OPTION_EXPIRATION_RULES.items()
+        },
         "strike_range_pct": STRIKE_RANGE_PCT,
         "computation_range_pct": COMPUTATION_RANGE_PCT,
         "heatmap_exps": HEATMAP_EXPS,

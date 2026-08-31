@@ -184,13 +184,20 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
     client.prefetch_chains(ticker, all_exps)
 
     expired_exp_count = 0
+    expired_option_count = 0
 
     for i, exp in enumerate(all_exps):
-        T, exp_close = compute_time_to_expiry_years(exp, ts=now_ny, floor=T_FLOOR)
+        generic_T, generic_exp_close = compute_time_to_expiry_years(
+            exp, ts=now_ny, floor=T_FLOOR,
+        )
 
-        # Skip expirations that have already closed for the day.  After
-        # 4:00 PM ET on an expiration day, compute_time_to_expiry_years
-        # returns T = 0 and then floors it at T_FLOOR (~1 minute in years).
+        # Safe fast path after the generic 4:15 index-options close. Before
+        # then, root-level filtering below is mandatory: mixed third-Friday
+        # chains can contain already-dead AM SPX/NDX and still-live PM
+        # SPXW/NDXP contracts under the same expiration date.
+        #
+        # Once a contract's actual close passes, raw T is zero and then the
+        # model floor raises it to T_FLOOR (~1 minute in years).
         # Black-Scholes ATM gamma goes as 1/sqrt(T), so that tiny floor
         # produces a gamma value ~100x larger than a live 4DTE expiration's
         # gamma — a single expired 0DTE strike near spot then swamps every
@@ -199,16 +206,13 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         # that exists is the dead 0DTE session.  Expired options have zero
         # gamma left for dealers to hedge (the contracts have settled), so
         # drop them from the current GEX picture entirely.
-        if exp_close is not None and exp_close <= now_ny:
+        if generic_exp_close is not None and generic_exp_close <= now_ny:
             expired_exp_count += 1
-            print(f"  [{i+1}/{len(all_exps)}] {exp}  — skipped (expired at {exp_close.strftime('%H:%M %Z')})")
+            print(
+                f"  [{i+1}/{len(all_exps)}] {exp}  — skipped "
+                f"(expired by {generic_exp_close.strftime('%H:%M %Z')})"
+            )
             continue
-
-        # Per-expiration rate: when a curve is available, interpolate to
-        # this expiration's own DTE so BS gamma and any rate-sensitive
-        # downstream math use the right point on the term structure
-        # instead of the flat 3M scalar.
-        r_for_exp = interpolate_rate(r_curve, T * DAYS_PER_YEAR_CAL, fallback=r)
 
         entry = client.get_chain_cached(ticker, exp)
         calls_raw = entry["calls"]
@@ -219,14 +223,27 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
             print(f"  [{i+1}/{len(all_exps)}] {exp}  — FAILED ({entry.get('error', 'unknown error')})")
             continue
 
-        # first_live_exp drives the headline call_iv/put_iv stats — an
-        # ok-but-EMPTY chain (Tradier returns status ok with a null options
-        # block on some outages) must not claim the slot, or the IV stats
-        # silently read 0 while a later expiration had live quotes.
-        if first_live_exp is None and (calls_raw or puts_raw):
-            first_live_exp = exp
+        contract_clocks = {}
+        live_contract_count = 0
+        live_T_values = []
 
         for raw_opt, sign in [(c, +1) for c in calls_raw] + [(p, -1) for p in puts_raw]:
+            # Tradier normalization preserves OCC root identity. Missing roots
+            # retain the legacy generic clock; guessing SPX vs SPXW (or NDX vs
+            # NDXP) would be less safe than refusing to invent settlement type.
+            root = str(raw_opt.get("root") or "").strip().upper() or None
+            if root not in contract_clocks:
+                contract_clocks[root] = compute_time_to_expiry_years(
+                    exp, ts=now_ny, floor=T_FLOOR, root=root,
+                )
+            T, contract_close = contract_clocks[root]
+            if contract_close is not None and contract_close <= now_ny:
+                expired_option_count += 1
+                continue
+
+            live_contract_count += 1
+            live_T_values.append(T)
+
             K = raw_opt["strike"]
             if K < lower or K > upper:
                 range_filtered_count += 1
@@ -261,7 +278,15 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
             _this_strike_size = size
             _this_strike_volume_dominates = volume > oi
 
-            prep = prepare_option_for_model(raw_opt, sign, T, spot, r_for_exp, q=q)
+            # Root-specific T also drives curve interpolation and BS gamma;
+            # otherwise a PM contract at 3:59 would still be priced with the
+            # generic 4:15 clock even if the liveness guard were correct.
+            r_for_option = interpolate_rate(
+                r_curve, T * DAYS_PER_YEAR_CAL, fallback=r,
+            )
+            prep = prepare_option_for_model(
+                raw_opt, sign, T, spot, r_for_option, q=q,
+            )
             norm_opt = prep["normalized"]
 
             if not prep["accepted"]:
@@ -278,6 +303,11 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
             model_iv = norm_opt["iv"]
             gamma_now = norm_opt["gamma_now"]
             gex = sign * size * gamma_now * 100.0 * spot * spot
+
+            # Headline IVs come from the first expiration that contributes an
+            # accepted LIVE contract, not merely the first non-empty chain.
+            if first_live_exp is None:
+                first_live_exp = exp
 
             if exp in target_exps:
                 if K not in agg:
@@ -342,7 +372,26 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
                     if norm_opt.get("synthetic_fit_rel_error") is not None:
                         synthetic_fit_rel_errors.append(norm_opt["synthetic_fit_rel_error"])
 
-        print(f"  [{i+1}/{len(all_exps)}] {exp}  (T={T*365.25:.2f}d)  — {len(calls_raw)}C / {len(puts_raw)}P")
+        raw_contract_count = len(calls_raw) + len(puts_raw)
+        if raw_contract_count > 0 and live_contract_count == 0:
+            expired_exp_count += 1
+            root_closes = [close for _, close in contract_clocks.values()]
+            latest_close = max(root_closes) if root_closes else generic_exp_close
+            close_label = (
+                latest_close.strftime("%H:%M %Z")
+                if latest_close is not None else "unknown"
+            )
+            print(
+                f"  [{i+1}/{len(all_exps)}] {exp}  — skipped "
+                f"(all contract roots expired by {close_label})"
+            )
+        else:
+            display_T = max(live_T_values) if live_T_values else generic_T
+            print(
+                f"  [{i+1}/{len(all_exps)}] {exp}  "
+                f"(T={display_T*365.25:.2f}d)  — "
+                f"{len(calls_raw)}C / {len(puts_raw)}P"
+            )
 
     rows = []
     for K in sorted(agg):
@@ -437,6 +486,7 @@ def calculate_all(client, ticker, target_exps, spot, r=DEFAULT_RISK_FREE_RATE,
         "failed_expirations": failed_expirations,
         "failed_exp_count": len(failed_expirations),
         "expired_exp_count": int(expired_exp_count),
+        "expired_option_count": int(expired_option_count),
         "coverage_ratio": coverage_ratio,
         "hybrid_iv_mode": HYBRID_IV_MODE,
         # Volume amplification diagnostics

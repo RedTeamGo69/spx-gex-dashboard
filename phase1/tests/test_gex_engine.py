@@ -320,6 +320,107 @@ def test_calculate_all_after_hours_all_expirations_expired():
     assert regime["regime"] == "At Zero Gamma"
 
 
+@pytest.mark.parametrize(
+    ("ticker", "am_root", "pm_root", "spot"),
+    [
+        ("SPX", "SPX", "SPXW", 5000),
+        ("NDX", "NDX", "NDXP", 18000),
+    ],
+)
+def test_calculate_all_filters_expired_root_inside_mixed_third_friday_chain(
+        ticker, am_root, pm_root, spot):
+    """At 3:59 Friday, stale AM rows are dead but PM rows remain live."""
+    def _opt(strike, root):
+        return {
+            "strike": strike,
+            "openInterest": 100,
+            "volume": 0,
+            "impliedVolatility": 0.20,
+            "vendorGamma": 0.0,
+            "bid": 10.0,
+            "ask": 10.5,
+            "mid": 10.25,
+            "root": root,
+        }
+
+    class FakeClient:
+        def prefetch_chains(self, ticker, expirations):
+            return None
+
+        def get_chain_cached(self, ticker, exp):
+            return {
+                "status": "ok",
+                "calls": [_opt(spot - 10, am_root), _opt(spot, pm_root)],
+                "puts": [_opt(spot - 10, am_root), _opt(spot, pm_root)],
+                "error": None,
+            }
+
+    gex_df, stats, all_options, _, _ = gex_engine.calculate_all(
+        client=FakeClient(),
+        ticker=ticker,
+        target_exps=["2026-03-20"],
+        spot=spot,
+        r=0.04,
+        now=datetime(2026, 3, 20, 15, 59, tzinfo=NY_TZ),
+    )
+
+    assert not gex_df.empty
+    assert {row[0] for row in all_options} == {spot}
+    assert stats["used_option_count"] == 2
+    assert stats["expired_option_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("ticker", "root", "spot"),
+    [
+        ("SPX", "SPXW", 5000),
+        ("XSP", "XSP", 500),
+        ("NDX", "NDXP", 18000),
+    ],
+)
+@pytest.mark.parametrize("minute", [0, 5])
+def test_calculate_all_drops_pm_root_at_and_after_four(
+        ticker, root, spot, minute):
+    def _opt(root):
+        return {
+            "strike": spot,
+            "openInterest": 100,
+            "volume": 0,
+            "impliedVolatility": 0.20,
+            "vendorGamma": 0.0,
+            "bid": 10.0,
+            "ask": 10.5,
+            "mid": 10.25,
+            "root": root,
+        }
+
+    class FakeClient:
+        def prefetch_chains(self, ticker, expirations):
+            return None
+
+        def get_chain_cached(self, ticker, exp):
+            return {
+                "status": "ok",
+                "calls": [_opt(root)],
+                "puts": [_opt(root)],
+                "error": None,
+            }
+
+    gex_df, stats, all_options, _, _ = gex_engine.calculate_all(
+        client=FakeClient(),
+        ticker=ticker,
+        target_exps=["2026-03-20"],
+        spot=spot,
+        r=0.04,
+        now=datetime(2026, 3, 20, 16, minute, tzinfo=NY_TZ),
+    )
+
+    assert gex_df.empty
+    assert all_options == []
+    assert stats["expired_exp_count"] == 1
+    assert stats["expired_option_count"] == 2
+
+
 # ── dividend yield in BS gamma (audit G20) ───────────────────────────────────
 
 def test_bs_gamma_vec_dividend_yield_matches_closed_form():
