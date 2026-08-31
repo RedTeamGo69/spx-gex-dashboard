@@ -40,6 +40,33 @@ COVID_START = pd.Timestamp("2020-03-01")
 COVID_END = pd.Timestamp("2020-09-30")
 
 
+def assess_path_provenance(feature_row: pd.Series, forecast_week) -> tuple:
+    """Return whether a forecast row uses the immediately prior week's path.
+
+    Monday's build may create next week's scaffold before the current weekly
+    high/low path is complete.  The row is structurally valid for storage, but
+    it is not valid to serve after the UI rolls to that next week on Friday.
+    ``path_source_week`` makes that distinction explicit instead of treating
+    mere row existence (or a recent ``updated_at``) as proof of freshness.
+    """
+    required_week = pd.Timestamp(forecast_week)
+    if required_week.tzinfo is not None:
+        required_week = required_week.tz_localize(None)
+    required_week = required_week.normalize() - pd.Timedelta(days=7)
+
+    raw_source = feature_row.get("path_source_week")
+    if raw_source is None or pd.isna(raw_source):
+        return False, None, required_week
+    try:
+        source_week = pd.Timestamp(raw_source)
+        if source_week.tzinfo is not None:
+            source_week = source_week.tz_localize(None)
+        source_week = source_week.normalize()
+    except (TypeError, ValueError):
+        return False, None, required_week
+    return source_week == required_week, source_week, required_week
+
+
 # =============================================================================
 # DATABASE — add model_features table
 # =============================================================================
@@ -433,11 +460,13 @@ def build_features(conn, exclude_covid: bool = True,
     # When the last bar is complete, har_source IS weekly and the output is
     # byte-identical — historical builds and walk-forward runs are untouched.
     har_source = weekly
+    forecast_path_source_week = last_bar_week if last_bar_is_complete else None
     if not last_bar_is_complete:
         _prior_weeks = weekly.index[weekly.index < last_bar_week]
         if len(_prior_weeks) > 0:
             har_source = weekly.copy()
             _prior_week = _prior_weeks.max()
+            forecast_path_source_week = _prior_week
             for _col in ("range_pct", "log_range", "spx_return"):
                 if _col in har_source.columns:
                     har_source.loc[last_bar_week, _col] = weekly.loc[_prior_week, _col]
@@ -569,6 +598,15 @@ def build_features(conn, exclude_covid: bool = True,
     if not last_bar_is_complete and last_bar_week in df.index:
         df.loc[last_bar_week, ["range_pct", "log_range"]] = np.nan
 
+    # Record which weekly bar supplied each row's path statistics. Historical
+    # and current-week rows use the immediately prior week. The next-week
+    # scaffold is the exception while the latest bar is incomplete: its HAR
+    # path is deliberately proxied from one week earlier, and that provenance
+    # must survive persistence so Friday-Sunday consumers can reject it.
+    df["path_source_week"] = df.index - pd.Timedelta(days=7)
+    if forecast_week in df.index:
+        df.loc[forecast_week, "path_source_week"] = forecast_path_source_week
+
     # Exclude COVID crash period if requested (default True)
     if exclude_covid:
         pre_filter = len(df)
@@ -630,9 +668,10 @@ def _save_features(conn, df: pd.DataFrame, ticker: str = "SPX") -> None:
                 spx_return_lag1, abs_return_lag1,
                 has_fomc, has_cpi, has_nfp, has_opex, event_count,
                 has_earnings,
+                path_source_week,
                 updated_at
             ) VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
             )
             ON CONFLICT(week_start, ticker) DO UPDATE SET
                 log_range           = excluded.log_range,
@@ -664,6 +703,7 @@ def _save_features(conn, df: pd.DataFrame, ticker: str = "SPX") -> None:
                 has_opex            = excluded.has_opex,
                 event_count         = excluded.event_count,
                 has_earnings        = excluded.has_earnings,
+                path_source_week    = excluded.path_source_week,
                 updated_at          = excluded.updated_at
         """, (
             week_start.strftime("%Y-%m-%d"), ticker,
@@ -682,6 +722,7 @@ def _save_features(conn, df: pd.DataFrame, ticker: str = "SPX") -> None:
             _i(row, "has_nfp"),          _i(row, "has_opex"),
             _i(row, "event_count"),
             _i(row, "has_earnings"),
+            _d(row, "path_source_week"),
             now,
         ))
         rows += 1
@@ -785,3 +826,14 @@ def _i(row: pd.Series, col: str) -> int | None:
     """Safe int extractor."""
     val = _f(row, col)
     return None if val is None else int(val)
+
+
+def _d(row: pd.Series, col: str) -> str | None:
+    """Safe ISO-date extractor for persisted provenance fields."""
+    val = row.get(col)
+    if val is None or pd.isna(val):
+        return None
+    try:
+        return pd.Timestamp(val).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None

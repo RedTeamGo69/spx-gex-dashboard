@@ -217,6 +217,43 @@ def test_partial_week_target_is_nulled_midweek(patched_builder, monkeypatch):
         weekly.loc[LAST_MONDAY, "vix_close"])
 
 
+def test_next_week_path_provenance_rolls_only_after_week_completion(
+        patched_builder, monkeypatch):
+    """A Monday scaffold must not masquerade as fresh after Friday rolls.
+
+    The separate Monday-open strike anchor is represented by the immutable
+    sentinel below: rebuilding path features after the weekly bar completes
+    must not alter it.
+    """
+    weekly, _ = patched_builder
+    monday_open_anchor = weekly.loc[LAST_MONDAY, "spx_open"]
+
+    _freeze_clock(monkeypatch, "2026-06-08 09:31")
+    monday_build = fb.build_features(conn=None, ticker="SPX")
+    provisional = monday_build.loc[FORECAST_MONDAY]
+
+    fresh, source_week, required_week = fb.assess_path_provenance(
+        provisional, FORECAST_MONDAY,
+    )
+    assert fresh is False
+    assert source_week == LAST_MONDAY - pd.Timedelta(days=7)
+    assert required_week == LAST_MONDAY
+    assert monday_open_anchor == weekly.loc[LAST_MONDAY, "spx_open"]
+
+    _freeze_clock(monkeypatch, "2026-06-13 10:00")
+    weekend_rebuild = fb.build_features(conn=None, ticker="SPX")
+    refreshed = weekend_rebuild.loc[FORECAST_MONDAY]
+
+    fresh, source_week, required_week = fb.assess_path_provenance(
+        refreshed, FORECAST_MONDAY,
+    )
+    assert fresh is True
+    assert source_week == required_week == LAST_MONDAY
+    assert refreshed["har_d1"] == pytest.approx(
+        weekly.loc[LAST_MONDAY, "range_pct"])
+    assert monday_open_anchor == weekly.loc[LAST_MONDAY, "spx_open"]
+
+
 def test_fit_excludes_null_target_rows(patched_builder, monkeypatch):
     _, _ = patched_builder
     _freeze_clock(monkeypatch, "2026-06-10 12:00")

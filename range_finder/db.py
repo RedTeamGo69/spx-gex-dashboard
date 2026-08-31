@@ -422,6 +422,7 @@ def _init_all_tables_body(conn) -> None:
             has_opex            INTEGER,
             event_count         INTEGER,
             has_earnings        INTEGER DEFAULT 0,
+            path_source_week    TEXT,
             updated_at          TEXT,
             PRIMARY KEY (week_start, ticker)
         )
@@ -432,6 +433,7 @@ def _init_all_tables_body(conn) -> None:
         ("high_vol_regime", "INTEGER"),
         ("gex_normalized", "REAL"),
         ("has_earnings", "INTEGER DEFAULT 0"),
+        ("path_source_week", "TEXT"),
     ]:
         try:
             cur.execute(f"ALTER TABLE model_features ADD COLUMN IF NOT EXISTS {col} {ctype}")

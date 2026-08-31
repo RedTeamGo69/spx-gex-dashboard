@@ -31,6 +31,7 @@ from range_finder.data_collector import (
 from range_finder.feature_builder import (
     build_features as rf_build_features,
     get_features as rf_get_features,
+    assess_path_provenance as rf_assess_path_provenance,
 )
 from range_finder.har_model import (
     MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
@@ -645,11 +646,26 @@ def _collect_week_bands_for_ticker(ticker: str, model_choice: str, week_start: s
                 return out
 
         wk_ts = pd.Timestamp(week_start)
-        if wk_ts in df_feat.index:
-            feature_row = df_feat.loc[wk_ts]
-        else:
-            feature_row = df_feat.iloc[-1]
-            out["notes"].append("stale features")
+        if wk_ts not in df_feat.index:
+            out["error"] = (
+                f"forecast blocked: no feature row for {week_start}; "
+                "run Weekly Setup after the prior week closes"
+            )
+            return out
+        feature_row = df_feat.loc[wk_ts]
+        _fresh, _source_week, _required_week = rf_assess_path_provenance(
+            feature_row, wk_ts,
+        )
+        if not _fresh:
+            _source_label = (
+                _source_week.strftime("%Y-%m-%d")
+                if _source_week is not None else "missing"
+            )
+            out["error"] = (
+                f"forecast blocked: {week_start} path source is "
+                f"{_source_label}; requires {_required_week:%Y-%m-%d}"
+            )
+            return out
 
         # Reference price: Monday-open capture, else prior weekly close.
         ref = None
@@ -2075,7 +2091,6 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # and indexed by `week_start` (DatetimeIndex), so this is a pure
     # in-memory lookup and saves one Neon roundtrip per Spread Finder pass.
     feature_row = None
-    feature_row_is_stale = False
     try:
         _wk_ts = pd.Timestamp(week_start)
         if _wk_ts in df_feat.index:
@@ -2083,8 +2098,39 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     except Exception:
         feature_row = None
     if feature_row is None:
-        feature_row = df_feat.iloc[-1]
-        feature_row_is_stale = True
+        _fallback_idx = df_feat.index[-1]
+        _fallback_label = (
+            _fallback_idx.strftime("%Y-%m-%d")
+            if hasattr(_fallback_idx, "strftime") else str(_fallback_idx)
+        )
+        st.error(
+            f"⚠️ **Forecast blocked:** no feature row exists for {week_start}. "
+            f"The newest persisted row is {_fallback_label}. Run **Weekly "
+            "Setup** (or **Refresh Data** + **Rebuild Features**) before "
+            "using this week's strikes."
+        )
+        _render_gex_context_panel(gex_ctx, spot)
+        return
+
+    _path_fresh, _path_source, _path_required = rf_assess_path_provenance(
+        feature_row, _wk_ts,
+    )
+    if not _path_fresh:
+        _source_label = (
+            _path_source.strftime("%Y-%m-%d")
+            if _path_source is not None else "missing"
+        )
+        st.error(
+            f"⚠️ **Forecast blocked:** the {week_start} row uses weekly path "
+            f"inputs from **{_source_label}**, but it requires "
+            f"**{_path_required:%Y-%m-%d}**. A provisional next-week row "
+            "created before Friday's close cannot be reused after the week "
+            "rolls. Run **Weekly Setup** (or **Refresh Data** + **Rebuild "
+            "Features**) to refresh the HAR inputs. The saved Monday-open "
+            "strike anchor will remain unchanged."
+        )
+        _render_gex_context_panel(gex_ctx, spot)
+        return
 
     # ── Regime-shift circuit breaker ──────────────────────────────────────
     # HAR features are lagged by one week — vix_close in feature_row is
@@ -2139,33 +2185,6 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
             f"current straddle) and treat any short strike inside it as too "
             f"risky — or, better, skip the trade until features catch up."
         )
-    if feature_row_is_stale:
-        # On Fri-Sun the spread finder forecasts NEXT week, so it asks for
-        # next-Monday's feature row. The feature builder appends that
-        # forecast row (features lagged from the current week's bar) on
-        # every rebuild — so if it's missing here, the features simply
-        # haven't been rebuilt since before this week's data existed.
-        _is_weekend_or_friday = run_now.weekday() >= 4
-        _fallback_idx = df_feat.index[-1]
-        _fallback_label = (
-            _fallback_idx.strftime("%Y-%m-%d")
-            if hasattr(_fallback_idx, "strftime") else str(_fallback_idx)
-        )
-        if _is_weekend_or_friday:
-            st.warning(
-                f"⚠️ Forecasting next week ({week_start}) but its feature row "
-                f"hasn't been built yet — falling back to the {_fallback_label} "
-                "row, whose inputs are one week staler than necessary. Click "
-                "**Weekly Setup** (or **Refresh Data** + **Rebuild Features**) "
-                "to build next week's forecast row from this week's market data."
-            )
-        else:
-            st.warning(
-                "⚠️ This week's features have not been rebuilt yet — "
-                "using the most recent available feature row. Forecast may be "
-                "stale. Click **Weekly Setup** (or **Rebuild Features**) to refresh."
-            )
-
     # ── Build forecast → plan → tiers from the latest GEX refresh ──
     # We intentionally DO NOT cache these on a session-state key any more.
     # Everything below is cheap arithmetic on top of the already-loaded HAR
