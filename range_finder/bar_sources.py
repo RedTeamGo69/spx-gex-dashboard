@@ -30,8 +30,10 @@ log = logging.getLogger(__name__)
 SOURCE_MAP: dict[str, str] = {}
 DEFAULT_SOURCE = "tradier"
 
-# Trading gaps longer than this (calendar days) mean the series has a hole —
-# reject it and fall back. Covers long holiday weekends with buffer.
+# Daily trading gaps longer than this (calendar days) mean the series has a
+# hole. Weekly cadence is validated against expected exchange-session weeks
+# below; multiplying this value by seven was the bug that admitted ~98-day
+# weekly holes.
 _MAX_GAP_DAYS = 14
 
 # Weekly bars must be Monday-labeled to match the weekly_spx convention.
@@ -63,15 +65,21 @@ def fetch_daily_bars(yf_symbol: str, tradier_symbol: str | None,
     return _fetch_bars(yf_symbol, tradier_symbol, "1d", years, label)
 
 
-def _fetch_bars(yf_symbol: str, tradier_symbol: str | None, interval: str,
-                years: float, label: str) -> pd.DataFrame:
+def _request_window(years: float) -> tuple[datetime, datetime]:
+    """Return the buffered history window requested from either source."""
     end = datetime.today()
     start = end - timedelta(days=int(years * 365 + 30))
+    return start, end
+
+
+def _fetch_bars(yf_symbol: str, tradier_symbol: str | None, interval: str,
+                years: float, label: str) -> pd.DataFrame:
+    start, end = _request_window(years)
 
     if primary_source_for(tradier_symbol) == "tradier":
         try:
             df = _fetch_tradier(tradier_symbol, interval, start, end)
-            ok, reason = _validate_bars(df, interval)
+            ok, reason = _validate_bars(df, interval, start=start, end=end)
             if ok:
                 log.info(f"[{label}] {interval} bars via Tradier "
                          f"({tradier_symbol}): {len(df)} rows")
@@ -134,7 +142,76 @@ def _fetch_yfinance(yf_symbol: str, interval: str,
 # VALIDATION — a primary series must look sane before it replaces yfinance
 # =============================================================================
 
-def _validate_bars(df: pd.DataFrame, interval: str) -> tuple[bool, str]:
+def _expected_week_labels(start, end) -> pd.DatetimeIndex:
+    """Monday labels for every cash-market week represented in [start, end]."""
+    from phase1.config import CASH_CALENDAR
+    from phase1.market_clock import get_schedule
+
+    start_ts = pd.Timestamp(start).normalize()
+    end_ts = pd.Timestamp(end).normalize()
+    schedule = get_schedule(
+        CASH_CALENDAR,
+        start_ts.date().isoformat(),
+        end_ts.date().isoformat(),
+    )
+    if schedule.empty:
+        return pd.DatetimeIndex([])
+    sessions = pd.DatetimeIndex(pd.to_datetime(schedule.index)).tz_localize(None)
+    labels = sessions.normalize() - pd.to_timedelta(sessions.weekday, unit="D")
+    return pd.DatetimeIndex(labels.unique()).sort_values()
+
+
+def _validate_weekly_cadence(
+    df: pd.DataFrame,
+    start=None,
+    end=None,
+) -> tuple[bool, str]:
+    """Validate row cadence and requested coverage using exchange sessions."""
+    actual = pd.DatetimeIndex(pd.to_datetime(df.index)).tz_localize(None).normalize()
+    if actual.has_duplicates:
+        return False, "duplicate weekly labels"
+
+    requested_start = pd.Timestamp(start).normalize() if start is not None else actual.min()
+    requested_end = pd.Timestamp(end).normalize() if end is not None else actual.max()
+    expected = _expected_week_labels(requested_start, requested_end)
+    if expected.empty:
+        return True, ""
+
+    actual_set = set(actual)
+    missing = [label for label in expected if label not in actual_set]
+
+    # The request may begin midweek, in which case the source is not required
+    # to return the Monday-labeled bar whose week began before `start`.
+    if expected[0] < requested_start and missing and missing[0] == expected[0]:
+        missing = missing[1:]
+
+    if not missing:
+        return True, ""
+
+    latest_expected = expected[-1]
+    if latest_expected in missing and actual.max() < latest_expected:
+        return False, (
+            f"stale tail: latest weekly label is {actual.max():%Y-%m-%d}, "
+            f"requires {latest_expected:%Y-%m-%d} for requested end"
+        )
+
+    if missing[0] < actual.min():
+        return False, (
+            f"requested start not covered: first weekly label is "
+            f"{actual.min():%Y-%m-%d}; missing {missing[0]:%Y-%m-%d}"
+        )
+
+    labels = ", ".join(label.strftime("%Y-%m-%d") for label in missing[:3])
+    suffix = "..." if len(missing) > 3 else ""
+    return False, f"missing {len(missing)} expected weekly observation(s): {labels}{suffix}"
+
+
+def _validate_bars(
+    df: pd.DataFrame,
+    interval: str,
+    start=None,
+    end=None,
+) -> tuple[bool, str]:
     """Sanity-check a bar series. Returns (ok, reason-if-not)."""
     if df is None or df.empty:
         return False, "empty frame"
@@ -144,10 +221,9 @@ def _validate_bars(df: pd.DataFrame, interval: str) -> tuple[bool, str]:
         if vals.empty or (vals <= 0).any():
             return False, f"non-positive or missing {col} values"
 
-    if len(df) >= 2:
+    if len(df) >= 2 and interval != "1wk":
         max_gap = df.index.to_series().diff().dropna().max()
-        limit = _MAX_GAP_DAYS * (7 if interval == "1wk" else 1)
-        if max_gap > pd.Timedelta(days=limit):
+        if max_gap > pd.Timedelta(days=_MAX_GAP_DAYS):
             return False, f"gap of {max_gap.days} days in series"
 
     if interval == "1wk":
@@ -155,6 +231,11 @@ def _validate_bars(df: pd.DataFrame, interval: str) -> tuple[bool, str]:
         if monday_frac < _MIN_MONDAY_FRACTION:
             return False, (f"only {monday_frac:.0%} of weekly bars are "
                            "Monday-labeled")
+        cadence_ok, cadence_reason = _validate_weekly_cadence(
+            df, start=start, end=end,
+        )
+        if not cadence_ok:
+            return False, cadence_reason
 
     return True, ""
 

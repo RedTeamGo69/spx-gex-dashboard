@@ -13,10 +13,21 @@ Pins the cutover safety contracts:
 No live API calls — TradierDataClient.get_history and yf.download are
 mocked, mirroring phase1/tests/test_data_client.py conventions.
 """
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
 import range_finder.bar_sources as bs
+
+
+@pytest.fixture(autouse=True)
+def fixed_request_window(monkeypatch):
+    """Keep mocked fetch fixtures inside the request they claim to satisfy."""
+    monkeypatch.setattr(
+        bs, "_request_window",
+        lambda years: (datetime(2026, 6, 15), datetime(2026, 7, 5)),
+    )
 
 
 # ── fixtures / helpers ─────────────────────────────────────────────────────────
@@ -164,6 +175,17 @@ def test_non_monday_weekly_labels_fall_back(monkeypatch):
     assert df.index[0] == pd.Timestamp("2026-06-15")  # yfinance's Mondays
 
 
+def test_missing_expected_week_triggers_existing_fallback(monkeypatch):
+    gapped = _tradier_days({"2026-06-15": 100.0, "2026-06-29": 104.0})
+    _patch_tradier(monkeypatch, gapped)
+    _patch_yfinance(monkeypatch, _WEEK_MONDAYS)
+
+    df = bs.fetch_weekly_bars("^GSPC", "SPX", 1.0, "SPX")
+
+    assert list(df.index) == list(pd.DatetimeIndex(_WEEK_MONDAYS))
+    assert list(df["close"]) == list(_WEEK_MONDAYS.values())
+
+
 def test_holiday_monday_weeks_still_pass():
     # A weekly series labeled entirely on Mondays validates even when a
     # session gap (holiday week) exists inside the window.
@@ -177,6 +199,89 @@ def test_holiday_monday_weeks_still_pass():
     ok, reason = bs._validate_bars(df, "1wk")
 
     assert ok, reason
+
+
+def _weekly_frame(labels) -> pd.DataFrame:
+    n = len(labels)
+    return pd.DataFrame({
+        "open": [100.0] * n,
+        "high": [102.0] * n,
+        "low": [99.0] * n,
+        "close": [101.0] * n,
+        "volume": [0.0] * n,
+    }, index=pd.DatetimeIndex(labels))
+
+
+def test_weekly_validation_accepts_normal_and_holiday_weeks():
+    # MLK Day is Monday 2026-01-19; the weekly bar remains Monday-labeled
+    # even though its first cash session is Tuesday.
+    df = _weekly_frame(pd.date_range("2026-01-05", "2026-02-02", freq="W-MON"))
+
+    ok, reason = bs._validate_bars(
+        df, "1wk", start="2026-01-01", end="2026-02-08",
+    )
+
+    assert ok, reason
+
+
+def test_weekly_validation_rejects_one_missing_interior_week():
+    df = _weekly_frame(["2026-01-05", "2026-01-12", "2026-01-26"])
+
+    ok, reason = bs._validate_bars(
+        df, "1wk", start="2026-01-05", end="2026-02-01",
+    )
+
+    assert not ok
+    assert "missing" in reason and "2026-01-19" in reason
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        ["2026-01-05", "2026-01-12", "2026-02-02"],
+        ["2026-01-05", "2026-04-13"],
+    ],
+)
+def test_weekly_validation_rejects_multiweek_and_thirteen_week_holes(labels):
+    ok, reason = bs._validate_bars(
+        _weekly_frame(labels), "1wk", start=labels[0], end=labels[-1],
+    )
+
+    assert not ok
+    assert "missing" in reason
+
+
+def test_weekly_validation_rejects_stale_requested_tail():
+    df = _weekly_frame(pd.date_range("2026-01-05", "2026-01-19", freq="W-MON"))
+
+    ok, reason = bs._validate_bars(
+        df, "1wk", start="2026-01-01", end="2026-02-08",
+    )
+
+    assert not ok
+    assert "stale tail" in reason
+
+
+def test_weekly_validation_allows_only_the_partial_start_boundary():
+    # Request starts Thursday Jan 1, so the Dec-29-labeled partial boundary
+    # week may be absent. Starting another week later is insufficient.
+    boundary_ok = _weekly_frame(
+        pd.date_range("2026-01-05", "2026-02-02", freq="W-MON"),
+    )
+    late = _weekly_frame(
+        pd.date_range("2026-01-12", "2026-02-02", freq="W-MON"),
+    )
+
+    ok, reason = bs._validate_bars(
+        boundary_ok, "1wk", start="2026-01-01", end="2026-02-08",
+    )
+    late_ok, late_reason = bs._validate_bars(
+        late, "1wk", start="2026-01-01", end="2026-02-08",
+    )
+
+    assert ok, reason
+    assert not late_ok
+    assert "requested start" in late_reason
 
 
 # ── output schema parity between sources ───────────────────────────────────────
