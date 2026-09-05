@@ -390,6 +390,16 @@ def main():
     inject_pwa_head()
     inject_mobile_shell()
 
+    # Historical results remain usable without a live quote or a selected
+    # ticker. The tab callback sets _tab_last before this rerun begins.
+    rehydrate_from_url()
+    if st.session_state.get("_tab_last") == "forward":
+        from ui_forward_test import render_forward_test
+        render_tab_control()
+        render_forward_test()
+        sync_to_url()
+        return
+
     tradier_token, fred_key = get_credentials()
 
     # ── Credentials gate (only if no token configured) ──
@@ -768,6 +778,9 @@ def main():
             )
         elif tab == "spread":
             _render_spread_finder_tab(spot, levels, regime, data, ticker=ticker, weekly_em=(weekly_em_snap or {}))
+        elif tab == "forward":
+            from ui_forward_test import render_forward_test
+            render_forward_test()
 
     # ── Auto-refresh (aligned to the wall clock, not to page-load time) ──
     if refresh_seconds > 0:

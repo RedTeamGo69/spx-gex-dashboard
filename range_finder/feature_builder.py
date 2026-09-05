@@ -397,7 +397,8 @@ def _load_earnings_flags(conn, ticker: str) -> pd.DataFrame:
 
 def build_features(conn, exclude_covid: bool = True,
                     ticker: str = "SPX",
-                    history_years: int = 6) -> pd.DataFrame:
+                    history_years: int = 6, *, inputs: dict | None = None,
+                    as_of=None, persist: bool = True) -> pd.DataFrame:
     """
     Assemble the full model-ready feature matrix and save to model_features.
     Every feature is lagged so that at row t (target week), you only
@@ -412,10 +413,12 @@ def build_features(conn, exclude_covid: bool = True,
     log.info(f"Building feature matrix for {ticker}...")
 
     # --- Load base data (per-ticker for own-HAR; SPX/XSP share SPX rows) ---
-    weekly  = _load_weekly_for_ticker(conn, ticker)
-    macro   = get_macro_daily(conn)
-    events  = get_event_flags(conn)
-    earnings = _load_earnings_flags(conn, ticker)
+    # Headless callers inject a point-in-time snapshot. Arithmetic below is
+    # shared, and persist=False prevents writes to legacy calibration inputs.
+    weekly  = (inputs["weekly"].copy() if inputs is not None else _load_weekly_for_ticker(conn, ticker))
+    macro   = inputs["macro"] if inputs is not None else get_macro_daily(conn)
+    events  = inputs["events"] if inputs is not None else get_event_flags(conn)
+    earnings = inputs["earnings"] if inputs is not None else _load_earnings_flags(conn, ticker)
 
     if weekly.empty:
         log.warning(f"weekly OHLC empty for {ticker} — skipping feature build")
@@ -443,7 +446,10 @@ def build_features(conn, exclude_covid: bool = True,
     _last_bar_friday_close = (
         last_bar_week + pd.Timedelta(days=4, hours=16)
     ).tz_localize("America/New_York")
-    last_bar_is_complete = _ny_now() >= _last_bar_friday_close
+    if as_of is not None:
+        from range_finder.trading_week import trading_week
+        _last_bar_friday_close = trading_week(last_bar_week.date()).evaluation_close
+    last_bar_is_complete = (as_of if as_of is not None else _ny_now()) >= _last_bar_friday_close
 
     # --- Partial-bar quarantine for lagged PATH statistics ---
     # The scaffold row's har_d1 is shift(1) of range_pct — i.e. the LAST bar's
@@ -479,12 +485,12 @@ def build_features(conn, exclude_covid: bool = True,
     # --- Fetch supplemental data (depth follows history_years so the 10y
     # history experiment can build a full-depth matrix; production callers
     # leave the default 6) ---
-    daily_underlying = _load_daily_for_ticker(ticker, years=history_years)
+    daily_underlying = inputs["daily"] if inputs is not None else _load_daily_for_ticker(ticker, years=history_years)
     # VIX9D/VIX3M term structure stays VIX-anchored across all tickers — it's
     # a macro-vol regime feature that single names also covary with. Cboe's
     # official CSVs carry both back past 2011, so any history_years the
     # experiment asks for is available (yfinance stays the fallback).
-    vix_ts    = fetch_vix_term_structure(years=history_years)
+    vix_ts = inputs["vix_ts"] if inputs is not None else fetch_vix_term_structure(years=history_years)
 
     # --- HAR components (from the quarantined lag source) ---
     har = compute_har_features(har_source)
@@ -496,7 +502,7 @@ def build_features(conn, exclude_covid: bool = True,
     macro_wk = resample_macro_to_weekly(macro)
 
     # --- GEX (per-ticker — see save_gex_to_range_finder writes per ticker) ---
-    gex_df = load_gex_inputs(conn, ticker=ticker)
+    gex_df = inputs["gex"] if inputs is not None else load_gex_inputs(conn, ticker=ticker)
 
     # --- Vol-proxy implied range ---
     # Vol proxy is annualized 1-SD vol in percent (VIX for SPX/stocks, VXN for
@@ -619,7 +625,8 @@ def build_features(conn, exclude_covid: bool = True,
     log.info(f"Feature matrix ({ticker}): {len(df)} rows x {len(df.columns)} columns")
 
     # --- Save to DB ---
-    _save_features(conn, df, ticker=ticker)
+    if persist:
+        _save_features(conn, df, ticker=ticker)
 
     return df
 

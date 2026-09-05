@@ -285,32 +285,7 @@ def build_event_flags(conn) -> int:
     _warn_if_calendar_stale("CPI", CPI_DATES)
     _warn_if_calendar_stale("NFP", NFP_DATES)
 
-    # Map week_start → flags
-    flags: dict[str, dict] = {}
-
-    def mark(date_str: str, field: str):
-        ws = _get_week_start(date_str)
-        if ws not in flags:
-            flags[ws] = {"has_fomc": 0, "has_cpi": 0, "has_nfp": 0, "has_opex": 0}
-        flags[ws][field] = 1
-
-    for d in FOMC_DATES:
-        mark(d, "has_fomc")
-    for d in CPI_DATES:
-        mark(d, "has_cpi")
-    for d in NFP_DATES:
-        mark(d, "has_nfp")
-
-    # Monthly opex: 3rd Friday of each month, 2016 through the END of next
-    # year (2016+ matches the backfilled FOMC/CPI/NFP calendars above).
-    # 3rd Fridays are deterministic, so flagging future weeks is
-    # exact — the old `third_friday <= today` filter meant the UPCOMING
-    # opex week (the one the HAR forecast and buffer logic actually care
-    # about) was never flagged until after it had already passed.
-    today = datetime.today()
-    for year in range(2016, today.year + 2):
-        for month in range(1, 13):
-            mark(_third_friday(year, month), "has_opex")
+    flags = event_flag_rows()
 
     # Upsert into DB
     cur = conn.cursor()
@@ -334,3 +309,37 @@ def build_event_flags(conn) -> int:
     conn.commit()
     log.info(f"Event flags: {rows_written} weeks flagged")
     return rows_written
+
+
+def event_flag_rows(as_of=None) -> dict:
+    """Pure calendar inputs shared by persistence and the forward tester."""
+    # Map week_start → flags
+    flags: dict[str, dict] = {}
+
+    def mark(date_str: str, field: str):
+        ws = _get_week_start(date_str)
+        if ws not in flags:
+            flags[ws] = {"has_fomc": 0, "has_cpi": 0, "has_nfp": 0, "has_opex": 0}
+        flags[ws][field] = 1
+
+    for d in FOMC_DATES:
+        mark(d, "has_fomc")
+    for d in CPI_DATES:
+        mark(d, "has_cpi")
+    for d in NFP_DATES:
+        mark(d, "has_nfp")
+
+    # Monthly opex: 3rd Friday of each month, 2016 through the END of next
+    # year (2016+ matches the backfilled FOMC/CPI/NFP calendars above).
+    # 3rd Fridays are deterministic, so flagging future weeks is
+    # exact — the old `third_friday <= today` filter meant the UPCOMING
+    # opex week (the one the HAR forecast and buffer logic actually care
+    # about) was never flagged until after it had already passed.
+    today = as_of or datetime.today()
+    for year in range(2016, today.year + 2):
+        for month in range(1, 13):
+            mark(_third_friday(year, month), "has_opex")
+
+    for f in flags.values():
+        f["event_count"] = sum(f.values())
+    return flags
