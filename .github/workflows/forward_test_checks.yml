@@ -12,6 +12,8 @@ on:
       - 'scripts/demo_forward_test.py'
       - 'scripts/view_forward_test_fixture.py'
       - 'scripts/check_forward_test_prerequisites.py'
+      - 'scripts/diagnose_forward_history.py'
+      - 'scripts/analyze_forward_history.py'
       - 'requirements.txt'
       - 'streamlit_app.py'
       - 'forward_test.py'

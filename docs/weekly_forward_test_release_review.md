@@ -1,5 +1,9 @@
 # Weekly forward tester pre-activation review — 2026-09-04 ET
 
+**Follow-up:** the [full history-quality review](weekly_forward_test_history_review.md)
+reproduced these defects and found additional internally valid source
+contradictions. Activation remains disabled; no replacement prices were accepted.
+
 **Release blocked; `FORWARD_TEST_ENABLED=false`.** The implementation passes its local verification gates, but the intended Tradier account returns invalid required SPX and SPY history. The reviewed implementation is being preserved in a scoped review branch. Merge, production migrations, registration, deployment and activation remain conditional on repairing those prerequisites. No production forecasts, observations or synthetic demonstration records were written.
 
 ## Cumulative identity and regression evidence
