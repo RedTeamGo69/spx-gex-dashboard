@@ -43,6 +43,7 @@ from range_finder.har_model import (
     MODEL_SPECS as RF_MODEL_SPECS, PI_ALPHA as RF_PI_ALPHA,
     GEX_MIN_WEEKS_FOR_FIT as RF_GEX_MIN_WEEKS,
     feature_has_enough_data as rf_feature_has_enough_data,
+    production_feature_columns,
     fit_validation_and_production as rf_fit_validation_and_production,
     forecast_next_week as rf_forecast_next_week,
     estimate_side_share_quantile as rf_estimate_side_share_quantile,
@@ -62,6 +63,10 @@ from range_finder.spread_levels import (
 # ─────────────────────────────────────────────────────────────────────────────
 # Spread Finder Tab — HAR placement with GEX retained as research context
 # ─────────────────────────────────────────────────────────────────────────────
+
+from range_finder.recommendations import (
+    build_recommendations, displayed_tier, tier_bands, chain_entry_to_quotes,
+)
 
 from theme import SF_BG, SF_BULL, SF_BEAR, SF_NEUT, SF_WARN, SF_CARD
 
@@ -244,55 +249,13 @@ def find_spread_finder_friday_exp(
     avail: "list[str]",
     ref_date: "date_cls | None" = None,
 ) -> "str | None":
-    """Return the Tradier-listed expiration that matches the target Friday.
-
-    Prefers an exact ISO-date match against ``avail``; falls back to the
-    nearest listed expiration within 3 calendar days of the target (handles
-    holiday-shifted weeklies such as Good Friday).  Returns ``None`` when
-    no candidate is available.
-    """
-    target = _spread_finder_target_friday(ref_date)
-    target_iso = target.strftime("%Y-%m-%d")
-    if target_iso in avail:
-        return target_iso
-
-    window_start = (target - timedelta(days=3)).strftime("%Y-%m-%d")
-    window_end = (target + timedelta(days=3)).strftime("%Y-%m-%d")
-    candidates = [e for e in avail if window_start <= e <= window_end]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda e: abs((date_cls.fromisoformat(e) - target).days))
-    return candidates[0]
+    """Listed end-of-week expiration for the UI's planned trading week."""
+    from range_finder.trading_week import trading_week, listed_week_expiration
+    return listed_week_expiration(avail, trading_week(_spread_finder_target_friday(ref_date)))
 
 
 def _chain_entry_to_quotes(entry: dict) -> dict:
-    """Convert a chain entry ({"calls": [...], "puts": [...]}, as returned by
-    TradierDataClient.get_chain_once or held in data.chain_cache) into the
-    strike -> {call_bid, call_ask, put_bid, put_ask} lookup that
-    build_spread_side / _snap_to_chain_strike expect. A $0.00 bid is a valid
-    quote (option worthless), so every listed strike is kept.
-
-    Filtered to a single OCC root first (SPXW over SPX on 3rd Fridays) so a
-    stale AM-settled monthly row can never overwrite the live PM-settled
-    weekly quote at the same strike — the spread quoted here must be one
-    tradeable contract."""
-    from phase1.quote_filters import filter_to_preferred_root
-    calls, puts, _root = filter_to_preferred_root(
-        entry.get("calls", []), entry.get("puts", []))
-    entry = {"calls": calls, "puts": puts}
-
-    quotes: dict = {}
-    for opt in entry.get("calls", []):
-        K = opt["strike"]
-        quotes.setdefault(K, {})
-        quotes[K]["call_bid"] = opt.get("bid", 0.0) or 0.0
-        quotes[K]["call_ask"] = opt.get("ask", 0.0) or 0.0
-    for opt in entry.get("puts", []):
-        K = opt["strike"]
-        quotes.setdefault(K, {})
-        quotes[K]["put_bid"] = opt.get("bid", 0.0) or 0.0
-        quotes[K]["put_ask"] = opt.get("ask", 0.0) or 0.0
-    return quotes
+    return chain_entry_to_quotes(entry)
 
 
 def _build_chain_quotes_for_spreads(
@@ -540,39 +503,7 @@ def _cb_remove_extra_pill() -> None:
 
 
 def _tier_bands_from_tiers(spread_tiers) -> dict:
-    """Map a SpreadTier list to {slot: (put_short, call_short) | None}.
-
-    Slots follow the tab's Risk Tier order: lower_pi / point / pi_upper /
-    effective. Low = put short ("Puts below"), High = call short ("Calls
-    above").
-
-    Writes the HAR model's ORIGINAL (pre weekly-EM-floor) strikes to match
-    what the tab now shows on screen — `model_*_short` when the floor moved
-    the strike, else the (unchanged) floored value. The model no longer
-    snaps shorts out to the EM boundary for display; the export follows suit.
-    """
-    def _find(pred):
-        for t in (spread_tiers or []):
-            if pred(str(getattr(t, "label", "") or "").strip().lower()):
-                return t
-        return None
-
-    def _disp(t, model_attr, floored_attr):
-        mv = getattr(t, model_attr, None)
-        return mv if mv is not None else getattr(t, floored_attr)
-
-    slots = {
-        "lower_pi":  _find(lambda l: l == "lower pi"),
-        "point":     _find(lambda l: l.startswith("point")),
-        "pi_upper":  _find(lambda l: "pi upper" in l),
-        "effective": _find(lambda l: l.startswith("effective")),
-    }
-    return {
-        k: ((round(float(_disp(t, "model_put_short", "put_short")), 2),
-             round(float(_disp(t, "model_call_short", "call_short")), 2))
-            if t is not None else None)
-        for k, t in slots.items()
-    }
+    return tier_bands(spread_tiers)
 
 
 def _prior_week_close(conn, ticker: str, week_start: str):
@@ -716,18 +647,12 @@ def _collect_week_bands_for_ticker(ticker: str, model_choice: str, week_start: s
         )
 
         _side_q = _cached_side_share_q(ticker)
-        forecast = rf_forecast_next_week(
-            payload["result"], feature_row, payload["feature_cols"],
-            ref, alpha=RF_PI_ALPHA, side_share_q=_side_q,
-        )
-        plan = rf_build_spread_plan(
-            forecast=forecast, feature_row=feature_row, week_start=week_start,
-            vix_level=vix, ticker=ticker, chain_quotes=None,
-            side_share_q=_side_q,
-        )
-        tiers = rf_build_spread_tiers(
-            forecast=forecast, plan=plan, spx_ref=ref, vix_level=vix,
-            chain_quotes=chain_quotes or None, ticker=ticker, weekly_em=wem,
+        forecast, plan, tiers = build_recommendations(
+            result=payload["result"], feature_row=feature_row,
+            feature_cols=payload["feature_cols"], reference=ref, vix=vix,
+            week_start=week_start, ticker=ticker, side_share_q=_side_q,
+            chain_quotes=chain_quotes or None, weekly_em=wem,
+            conn=conn, model_name=model_choice,
         )
 
         out["ref"] = round(float(ref), 2)
@@ -1312,7 +1237,7 @@ def _auto_warm_up_spread_model(conn, ticker: str, ticker_cfg: dict) -> bool:
             gex_col = GEX_NORMALIZED_FEATURE
             if rf_feature_has_enough_data(df_feat, gex_col) and gex_col not in feat_cols:
                 feat_cols.append(gex_col)
-        avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
+        avail_cols = production_feature_columns(df_feat, _spec)
         if len(avail_cols) < 2:
             continue
         try:
@@ -1999,7 +1924,7 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
                                 "applied to live fits, buffers, or strikes."
                             )
 
-                    avail_cols = [c for c in feat_cols if rf_feature_has_enough_data(df_feat, c)]
+                    avail_cols = production_feature_columns(df_feat, _spec)
                     if len(avail_cols) < 2:
                         if _spec == model_choice:
                             st.warning(f"{_spec}: only {len(avail_cols)} usable features — skipped")
@@ -2239,43 +2164,14 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
     # legacy /2 split when weekly history is unavailable). Cached 1h.
     side_share_q = _cached_side_share_q(ticker)
 
-    forecast = rf_forecast_next_week(
-        result, feature_row, feat_cols,
-        spx_close_input, alpha=RF_PI_ALPHA, side_share_q=side_share_q,
-    )
-
-    # Optional conformal interval correction — a NO-OP unless
-    # conformal.CONFORMAL_ENABLED is flipped on AND the offline adoption
-    # gate persisted a λ for this ticker/spec (see range_finder/conformal.py).
-    from range_finder.conformal import maybe_apply_conformal
-    forecast = maybe_apply_conformal(forecast, conn, ticker, model_choice)
-
-    # Live chain quotes for the Spread Finder's planned Friday, read from
-    # data.chain_cache on every rerun (fetch_all_data repopulates that
-    # snapshot with fresh Tradier bid/ask on each refresh — see the
-    # pre-fetch block in streamlit_app.fetch_all_data).
     chain_quotes, chain_exp = _build_chain_quotes_for_spreads(
         data, ticker, ref_date=sf_ref_date,
     )
-
-    plan = rf_build_spread_plan(
-        forecast    = forecast,
-        feature_row = feature_row,
-        week_start  = week_start,
-        vix_level   = vix_input,
-        ticker      = ticker,
-        chain_quotes= chain_quotes,
-        side_share_q= side_share_q,
-    )
-
-    spread_tiers = rf_build_spread_tiers(
-        forecast     = forecast,
-        plan         = plan,
-        spx_ref      = spx_close_input,
-        vix_level    = vix_input,
-        chain_quotes = chain_quotes,
-        ticker       = ticker,
-        weekly_em    = weekly_em,
+    forecast, plan, spread_tiers = build_recommendations(
+        result=result, feature_row=feature_row, feature_cols=feat_cols,
+        reference=spx_close_input, vix=vix_input, week_start=week_start,
+        ticker=ticker, side_share_q=side_share_q, chain_quotes=chain_quotes,
+        weekly_em=weekly_em, conn=conn, model_name=model_choice,
     )
 
     gex_adj = adjust_spread_with_gex(plan, gex_ctx)
@@ -2571,18 +2467,11 @@ def _render_spread_finder_tab(spot: float, levels: dict, regime: dict, data, tic
         # inside the weekly expected move (warning below + EM band on the map).
         # Falling back to the floored value when the model field is None is
         # exact: None means the floor never moved that strike.
-        disp_call_short = (
-            selected_tier.model_call_short
-            if selected_tier.model_call_short is not None
-            else selected_tier.call_short
-        )
-        disp_put_short = (
-            selected_tier.model_put_short
-            if selected_tier.model_put_short is not None
-            else selected_tier.put_short
-        )
-        disp_call_spreads = selected_tier.model_call_spreads or selected_tier.call_spreads
-        disp_put_spreads = selected_tier.model_put_spreads or selected_tier.put_spreads
+        displayed = displayed_tier(selected_tier)
+        disp_call_short = displayed["call_short"]
+        disp_put_short = displayed["put_short"]
+        disp_call_spreads = displayed["call_spreads"]
+        disp_put_spreads = displayed["put_spreads"]
 
         tier_color = _TIER_COLORS.get(selected_tier.risk_level, "#888")
         st.markdown(

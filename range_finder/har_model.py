@@ -57,12 +57,12 @@ PI_ALPHA = 0.20
 TRAIN_WINDOW_YEARS = 6
 
 
-def train_window_min_date(years: int = None) -> str:
+def train_window_min_date(years: int = None, *, as_of=None) -> str:
     """ISO date `years` (default TRAIN_WINDOW_YEARS) back from today —
     the min_date every production fit passes to get_features."""
     from datetime import timedelta as _td
     yrs = years if years is not None else TRAIN_WINDOW_YEARS
-    return (datetime.today() - _td(days=int(yrs * 365.25))).strftime("%Y-%m-%d")
+    return ((as_of if as_of is not None else datetime.today()) - _td(days=int(yrs * 365.25))).strftime("%Y-%m-%d")
 
 # Minimum non-null observations required to fold a feature into a fit.
 # These are cadence-specific: the gate counts ROWS at whatever cadence the
@@ -100,6 +100,15 @@ def feature_has_enough_data(df, col: str, min_obs: int | None = None) -> bool:
     default = min_obs if min_obs is not None else DEFAULT_MIN_WEEKS_FOR_FIT
     threshold = _FEATURE_MIN_WEEKS_OVERRIDES.get(col, default)
     return bool(df[col].notna().sum() > threshold)
+
+
+def production_feature_columns(df, model_name: str) -> list[str]:
+    """The production UI's availability filter, shared with forward capture."""
+    cols = live_spread_feature_columns(MODEL_SPECS[model_name])
+    if model_name == "M4_full" and GEX_LIVE_SPREAD_INFLUENCE_ENABLED:
+        if feature_has_enough_data(df, GEX_NORMALIZED_FEATURE):
+            cols.append(GEX_NORMALIZED_FEATURE)
+    return [c for c in cols if feature_has_enough_data(df, c)]
 
 
 # =============================================================================

@@ -88,6 +88,7 @@ REFRESH_MODES = [("off", "Off"), ("5min", "5 min"), ("30min", "30 min")]
 TABS = [
     ("gex", "Strike GEX"),
     ("spread", "Spread Finder"),
+    ("forward", "Forward Test"),
 ]
 
 

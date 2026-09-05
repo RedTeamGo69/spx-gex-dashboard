@@ -400,6 +400,13 @@ class TradierDataClient:
                 # to one root (quote_filters.filter_to_preferred_root); GEX
                 # aggregation deliberately keeps every root's OI.
                 "root": str(o.get("root_symbol") or "").upper(),
+                # Audit identity/timing for observational capture. GEX continues
+                # to aggregate the same rows and ignores these extra fields.
+                "symbol": o.get("symbol"),
+                "expiration_date": o.get("expiration_date"),
+                "bid_date": o.get("bid_date"),
+                "ask_date": o.get("ask_date"),
+                "contract_size": o.get("contract_size"),
             }
 
             if o.get("option_type") == "call":

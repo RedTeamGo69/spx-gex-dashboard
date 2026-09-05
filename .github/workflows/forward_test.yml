@@ -1,0 +1,55 @@
+name: Weekly Spread Finder Forward Test
+
+# Inactive until explicitly enabled using the repository variable below.
+# This is independent of scheduled_snapshot.yml and its GEX universe.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "45,55 13,14 * * 1-5"
+    - cron: "5 14,15 * * 1-5"
+    - cron: "10 22,23 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-forward-test
+  cancel-in-progress: false
+
+jobs:
+  forward-test:
+    if: vars.FORWARD_TEST_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Gate duplicate DST schedule entries before install/connect
+        id: gate
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import os
+          now = datetime.now(ZoneInfo('America/New_York'))
+          minute = now.hour * 60 + now.minute
+          run = os.environ['MANUAL'] == 'true' or 585 <= minute < 615 or 1090 <= minute < 1140
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'run={str(run).lower()}\n')
+          PY
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: pip install -r requirements.txt
+      - name: Capture or reconcile the observational study
+        if: steps.gate.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TRADIER_TOKEN: ${{ secrets.TRADIER_TOKEN }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          FORWARD_TEST_DATA_DELAY_SECONDS: ${{ vars.FORWARD_TEST_DATA_DELAY_SECONDS || '0' }}
+        run: python forward_test.py run
